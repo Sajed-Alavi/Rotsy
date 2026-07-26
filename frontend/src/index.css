@@ -1,0 +1,54 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+ * The base canvas color is set on <body> for both themes; panels/borders layer
+ * on top via Tailwind's slate-* + dark: slate-* utilities. Numbers stay
+ * monospace + tabular everywhere — the main "tooling, not marketing" cue.
+ */
+
+html, body, #root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  /* Light is the base; dark overrides via the `dark` class on <html>. */
+  background-color: #f8fafc;   /* slate-50 */
+  color: #1e293b;              /* slate-800 */
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  font-feature-settings: "tnum";
+  -webkit-font-smoothing: antialiased;
+}
+
+html.dark body {
+  background-color: #020617;   /* slate-950 */
+  color: #e2e8f0;              /* slate-200 */
+}
+
+/* Thin scrollbars that adapt to the active theme. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #cbd5e1 transparent; /* slate-300 */
+}
+html.dark * {
+  scrollbar-color: #1e293b transparent; /* slate-800 */
+}
+*::-webkit-scrollbar { width: 8px; height: 8px; }
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-thumb { background: #cbd5e1; }       /* slate-300 */
+*::-webkit-scrollbar-thumb:hover { background: #94a3b8; } /* slate-400 */
+html.dark *::-webkit-scrollbar-thumb { background: #1e293b; }       /* slate-800 */
+html.dark *::-webkit-scrollbar-thumb:hover { background: #334155; }/* slate-700 */
+
+/* Inputs inherit the active palette. */
+input, select, textarea, button { font: inherit; color: inherit; }
+select option {
+  background: #ffffff;
+  color: #1e293b;
+}
+html.dark select option {
+  background: #0f172a; /* slate-900 */
+  color: #e2e8f0;
+}

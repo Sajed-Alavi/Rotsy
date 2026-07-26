@@ -1,0 +1,21 @@
+# FastAPI backend dependencies — pinned for reproducible builds.
+fastapi==0.111.0
+uvicorn[standard]==0.30.1
+httpx==0.27.0
+redis==5.0.7
+sse-starlette==2.1.2
+pydantic==2.7.4
+pydantic-settings==2.3.3
+pydantic[email]==2.7.4
+email-validator==2.1.1
+
+# Database + migrations (v2: persistence layer for users/roles/permissions)
+SQLAlchemy[asyncio]==2.0.30
+asyncpg==0.29.0          # async driver for the app runtime
+psycopg[binary]==3.1.19  # sync driver used by alembic + entrypoint DB-wait loop
+alembic==1.13.1
+
+# Auth: password hashing + JWT
+passlib[bcrypt]==1.7.4
+bcrypt==4.1.2
+python-jose[cryptography]==3.3.0

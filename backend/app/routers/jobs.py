@@ -13,7 +13,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from typing import Annotated, Any, AsyncIterator
+from typing import Any, AsyncIterator
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel
@@ -21,9 +21,8 @@ from sse_starlette.sse import EventSourceResponse
 
 from ..core.jobs import JobQueue
 from ..core.sse import event
-from ..dependencies import RequirePermission, get_current_user
+from ..dependencies import RequirePermission
 from ..state import app_state
-from ..models import User
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/jobs", tags=["jobs"])

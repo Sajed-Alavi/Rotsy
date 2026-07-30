@@ -1,19 +1,22 @@
 """Retention policy: rule-based cleanup rules.
 
 A policy combines two optional conditions; BOTH are applied when set:
-  * ``keep_last_n`` — keep only the most recent N components per repo.
+  * ``keep_last_n`` — keep the most recent N versions **of each image**. Counting
+    per image is the only sane reading: counted across a whole repository,
+    ``keep_last_n=3`` would delete entire images just because other images were
+    pushed more recently.
   * ``delete_older_than_days`` — delete components older than X days.
 
-Policies are evaluated by the periodic scheduler (and can be run on demand
-as a background job). Deletion calls Nexus' component DELETE endpoint and
-then triggers a compact task so physical blobs are reclaimed too.
+Policies are evaluated by the daily scheduler and can be run on demand as a
+background job. Deletion goes through Nexus' component DELETE endpoint and then
+triggers the compact task so physical blobs are reclaimed too.
 """
 
 from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import Boolean, Column, DateTime, Integer, String, func
+from sqlalchemy import Boolean, DateTime, Integer, String, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from ..db.base import Base

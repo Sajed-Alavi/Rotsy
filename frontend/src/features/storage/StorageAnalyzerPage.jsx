@@ -3,7 +3,7 @@ import { api } from '../../lib/api.js';
 import Stat from '../../components/Stat.jsx';
 import Icon from '../../components/Icon.jsx';
 import Badge from '../../components/Badge.jsx';
-import { formatBytes, formatNumber, percent } from '../../lib/format.js';
+import { formatBytes, formatDateTime, formatNumber, percent, relativeTime } from '../../lib/format.js';
 
 const PHASES = {
   init: 'initialising',
@@ -285,11 +285,12 @@ export default function StorageAnalyzerPage() {
                   <th className="px-3 py-2 text-left font-mono text-[10px] uppercase tracking-wider text-slate-500">Name</th>
                   <th className="px-3 py-2 text-right font-mono text-[10px] uppercase tracking-wider text-slate-500">{isDocker ? 'Tags' : 'Versions'}</th>
                   <th className="px-3 py-2 text-right font-mono text-[10px] uppercase tracking-wider text-slate-500">Size</th>
+                  <th className="px-3 py-2 text-left font-mono text-[10px] uppercase tracking-wider text-slate-500">Created</th>
                 </tr>
               </thead>
               <tbody>
                 {filtered.length === 0 ? (
-                  <tr><td colSpan={4} className="px-3 py-8 text-center font-mono text-xs text-slate-400 dark:text-slate-600">no items match "{query}"</td></tr>
+                  <tr><td colSpan={5} className="px-3 py-8 text-center font-mono text-xs text-slate-400 dark:text-slate-600">no items match "{query}"</td></tr>
                 ) : (
                   filtered.map((it) => {
                     if (!it || !it.name) return null;
@@ -301,6 +302,11 @@ export default function StorageAnalyzerPage() {
                           <td className="px-3 py-2 font-mono text-slate-800 dark:text-slate-200">{it.name}</td>
                           <td className="px-3 py-2 text-right font-mono tabular-nums text-slate-500 dark:text-slate-400">{formatNumber(it.version_count || 0)}</td>
                           <td className="px-3 py-2 text-right font-mono tabular-nums text-slate-800 dark:text-slate-200">{formatBytes(it.total_bytes || 0)}</td>
+                          {/* Newest push across this item's versions — size alone
+                              doesn't tell you whether something is worth keeping. */}
+                          <td className="px-3 py-2 font-mono text-xs text-slate-400 dark:text-slate-600" title={it.last_pushed_at || 'unknown'}>
+                            {it.last_pushed_at ? relativeTime(it.last_pushed_at) : '—'}
+                          </td>
                         </tr>
                         {open && (it.versions || []).map((v) => (
                           <tr key={`${it.name}-${v.version}`} className="border-b border-slate-50 bg-slate-50/50 dark:border-slate-800/40 dark:bg-slate-900/30">
@@ -308,6 +314,9 @@ export default function StorageAnalyzerPage() {
                             <td className="px-3 py-1.5 pl-8 font-mono text-xs text-slate-500 dark:text-slate-400">#{v.version}</td>
                             <td />
                             <td className="px-3 py-1.5 text-right font-mono tabular-nums text-xs text-slate-500 dark:text-slate-400">{formatBytes(v.size_bytes || 0)}</td>
+                            <td className="px-3 py-1.5 font-mono text-xs text-slate-400 dark:text-slate-600" title={v.created_at || 'unknown'}>
+                              {v.created_at ? formatDateTime(v.created_at) : '—'}
+                            </td>
                           </tr>
                         ))}
                       </React.Fragment>

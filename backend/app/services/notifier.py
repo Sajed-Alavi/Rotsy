@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 async def send_webhook(url: str, payload: dict, timeout: float = 10.0) -> bool:
     """POST ``payload`` to ``url``. Returns True on 2xx, False otherwise."""
     envelope = {
-        "source": "nexus-console",
+        "source": "sharpy",
         "event": "alert.triggered",
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "data": payload,

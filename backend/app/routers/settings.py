@@ -18,13 +18,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..dependencies import RequirePermission, get_current_user, get_session, get_settings
 from ..config import Settings
 from ..core.security import hash_password, verify_password
-from ..core.config_store import (
-    get_nexus_connection,
-    nexus_connection_masked,
-    save_nexus_connection,
-)
+from ..core.config_store import nexus_connection_masked, save_nexus_connection
 from ..models import User
 from ..schemas.auth import MeResponse, RoleBrief
+from ..services import registry
 from ..state import app_state
 
 
@@ -101,7 +98,12 @@ class NexusConnectionUpdate(BaseModel):
     url: str = Field(..., min_length=4, max_length=512)
     username: str = Field(..., min_length=1, max_length=128)
     password: str = Field(..., min_length=1, max_length=256, description="Leave as the current value to keep it unchanged")
-    verify_ssl: bool = True
+    verify_ssl: bool = Field(
+        default=True,
+        description="Verify TLS certificates on the Nexus REST connection. Does not affect how "
+                    "scanners reach Docker connectors — that is derived per repository from the "
+                    "connector Nexus reports.",
+    )
 
 
 @router.get("/nexus", dependencies=[Depends(RequirePermission("system:execute"))])
@@ -119,8 +121,10 @@ async def update_nexus_settings(
 ) -> dict[str, Any]:
     """Save the Nexus connection and reconfigure the live client immediately.
 
-    The password is stored encrypted at rest. No restart required — the
-    running NexusClient is swapped to the new URL/creds atomically.
+    The password is stored encrypted at rest. No restart required — the running
+    NexusClient is swapped to the new URL/creds atomically, and the Docker
+    registry discovery cache is dropped so the next scan re-discovers connector
+    ports against the new target.
     """
     await save_nexus_connection(
         session, settings, body.url, body.username, body.password, body.verify_ssl,
@@ -129,6 +133,7 @@ async def update_nexus_settings(
     nexus = app_state(request).nexus
     if nexus is not None:
         await nexus.reconfigure(body.url, body.username, body.password, body.verify_ssl)
+    await registry.invalidate(app_state(request).cache)
     return {"ok": True}
 
 

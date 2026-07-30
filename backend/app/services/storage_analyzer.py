@@ -27,6 +27,7 @@ from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Protocol
 
 from ..core.nexus_client import DOCKER_MANIFEST_ACCEPT, NexusClient
+from .images import component_timestamps
 
 logger = logging.getLogger(__name__)
 
@@ -45,23 +46,56 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _build_item_tree(item_version_sizes: dict[str, dict[str, int]]) -> list[dict[str, Any]]:
+def _earliest(*values: str | None) -> str | None:
+    """Oldest of the given RFC3339 timestamps, ignoring None.
+
+    Nexus emits a fixed RFC3339 layout, so string comparison orders these
+    correctly without the cost of parsing every one.
+    """
+    present = [v for v in values if v]
+    return min(present) if present else None
+
+
+def _latest(*values: str | None) -> str | None:
+    """Newest of the given RFC3339 timestamps, ignoring None."""
+    present = [v for v in values if v]
+    return max(present) if present else None
+
+
+def _build_item_tree(
+    item_version_sizes: dict[str, dict[str, int]],
+    timestamps: dict[tuple[str, str], tuple[str | None, str | None]] | None = None,
+) -> list[dict[str, Any]]:
     """Convert ``{name: {version: size}}`` into a sorted tree payload.
 
     Names (images for docker, group/name for generic) are sorted by total size
     descending; versions within an item likewise.
+
+    ``timestamps`` maps ``(name, version)`` to ``(created_at, last_modified)``.
+    Knowing an image's size without knowing when it arrived makes it impossible
+    to judge whether it is worth keeping, so both are carried through to the UI.
     """
+    stamps = timestamps or {}
     items: list[dict[str, Any]] = []
     for name, versions in item_version_sizes.items():
-        sorted_versions = [
-            {"version": v, "size_bytes": s}
-            for v, s in sorted(versions.items(), key=lambda kv: kv[1], reverse=True)
-        ]
+        sorted_versions = []
+        for version, size in sorted(versions.items(), key=lambda kv: kv[1], reverse=True):
+            created, modified = stamps.get((name, version), (None, None))
+            sorted_versions.append({
+                "version": version,
+                "size_bytes": size,
+                "created_at": created,
+                "last_modified": modified,
+            })
+        newest = max((v["created_at"] for v in sorted_versions if v["created_at"]), default=None)
+        oldest = min((v["created_at"] for v in sorted_versions if v["created_at"]), default=None)
         items.append(
             {
                 "name": name,
                 "total_bytes": sum(versions.values()),
                 "version_count": len(versions),
+                "created_at": oldest,
+                "last_pushed_at": newest,
                 "versions": sorted_versions,
             }
         )
@@ -125,7 +159,7 @@ class StorageAnalyzer:
         emit: Callable[[dict[str, Any]], Awaitable[None]],
     ) -> dict[str, Any]:
         total_raw_bytes = await self._total_physical_usage(repo, emit)
-        target_tags = await self._collect_docker_components(repo, emit)
+        target_tags, timestamps = await self._collect_docker_components(repo, emit)
 
         if not target_tags:
             logger.warning("No image components found in repo '%s'.", repo)
@@ -144,7 +178,7 @@ class StorageAnalyzer:
                 "wasted_bytes": wasted_bytes,
                 "item_count": len(target_tags),
             },
-            "items": _build_item_tree(image_tag_sizes),
+            "items": _build_item_tree(image_tag_sizes, timestamps),
         }
         await emit({"type": "result", "message": "Analysis complete", "result": result})
         return result
@@ -169,17 +203,25 @@ class StorageAnalyzer:
         self,
         repo: str,
         emit: Callable[[dict[str, Any]], Awaitable[None]],
-    ) -> list[tuple[str, str]]:
+    ) -> tuple[list[tuple[str, str]], dict[tuple[str, str], tuple[str | None, str | None]]]:
+        """Phase 2: the live ``(image, tag)`` list plus each tag's push time.
+
+        The timestamps come from the same listing, so surfacing "when was this
+        pushed" costs no extra requests — Nexus already returns the asset
+        metadata that carries it.
+        """
         await emit({"type": "phase", "phase": "collecting_tags", "message": "Collecting live image tags"})
         targets: list[tuple[str, str]] = []
+        timestamps: dict[tuple[str, str], tuple[str | None, str | None]] = {}
         async for component in self._nexus.paginate("/service/rest/v1/components", params={"repository": repo}):
             name = component.get("name")
             version = component.get("version")
             if name and version:
                 targets.append((name, version))
+                timestamps[(name, version)] = component_timestamps(component)
         await emit({"type": "progress", "phase": "collecting_tags", "percent": 100, "message": f"Discovered {len(targets)} tags"})
         logger.info("[%s] Phase 2 discovered %d tags.", repo, len(targets))
-        return targets
+        return targets, timestamps
 
     async def _deep_scan(
         self,
@@ -288,6 +330,7 @@ class StorageAnalyzer:
         await emit({"type": "phase", "phase": "collecting_components", "message": "Aggregating components and assets"})
 
         item_version_sizes: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
+        timestamps: dict[tuple[str, str], tuple[str | None, str | None]] = {}
         total_bytes = 0
         asset_count = 0
 
@@ -307,6 +350,16 @@ class StorageAnalyzer:
             if size:
                 item_version_sizes[name][version] += size
 
+            # A component version spans several assets: keep the earliest
+            # creation and the latest modification across all of them.
+            created = str(asset["blobCreated"]) if asset.get("blobCreated") else None
+            modified = str(asset["lastModified"]) if asset.get("lastModified") else created
+            prev_created, prev_modified = timestamps.get((name, version), (None, None))
+            timestamps[(name, version)] = (
+                _earliest(prev_created, created),
+                _latest(prev_modified, modified),
+            )
+
         item_count = sum(len(v) for v in item_version_sizes.values())
         await emit({"type": "progress", "phase": "collecting_components", "percent": 100,
                     "message": f"{asset_count} assets · {item_count} component versions"})
@@ -323,7 +376,7 @@ class StorageAnalyzer:
                 "item_count": item_count,
                 "asset_count": asset_count,
             },
-            "items": _build_item_tree(item_version_sizes),
+            "items": _build_item_tree(item_version_sizes, timestamps),
         }
         await emit({"type": "result", "message": "Analysis complete", "result": result})
         return result

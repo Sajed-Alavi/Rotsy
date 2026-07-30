@@ -55,6 +55,12 @@ Thumbs.db
 # -----------------------------------------------------------------------------
 docker-compose.override.yml
 
-# Offline scanner DB archives (large binaries, not source)
+# Local Nexus instance used for development: its compose file, blob store,
+# database and logs. Runtime data, not source — every container start rewrites
+# hundreds of files under nexus-data/.
+docker-compose-nexus/
+
+# Offline scanner DB archives (large binaries, not source). The directory
+# itself is tracked so the docker-compose bind mount always has a target.
 offline-db/*
-!offline-db/README.md
+!offline-db/.gitkeep

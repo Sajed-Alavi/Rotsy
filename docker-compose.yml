@@ -1,13 +1,19 @@
 # =============================================================================
-# Nexus Repository Manager — Advanced Web Wrapper (v2 stack)
+# Sharpy — management and image-scanning console for Sonatype Nexus
 # -----------------------------------------------------------------------------
-# Services: postgres (persistence), redis (cache), backend (FastAPI),
-#           frontend (React SPA via nginx).
+# Services: postgres (persistence), redis (cache + job queue), backend
+#           (FastAPI + Trivy/Grype), frontend (React SPA via nginx).
 #
 #     cp .env.example .env   # then edit values
 #     docker compose up --build
 #
 # All containers read the same ".env" via env_file (single source of truth).
+#
+# NOTE — no Docker socket is mounted anywhere in this file, and that is
+# deliberate. Image scanning is static: the scanners read manifests and layer
+# blobs over the registry API and never start a container. Mounting
+# /var/run/docker.sock would both break that guarantee and hand the backend
+# root on the host.
 # =============================================================================
 
 services:
@@ -64,7 +70,8 @@ services:
       # (large: trivy ~1.2GB, grype ~1.9GB) databases are NOT wiped and
       # re-downloaded every `docker compose up --build`.
       - scanner-cache:/app/.cache
-    # Lets the container reach services on the Docker host (e.g. Nexus on :8081).
+    # Lets the container reach services on the Docker host: the Nexus REST API
+    # (:8081) and every Docker connector port discovery finds, whatever they are.
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
@@ -72,6 +79,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    # Published so Nexus (which runs on the host network) can deliver push
+    # webhooks to http://localhost:${BACKEND_PORT}/api/scan/events/nexus.
     ports:
       - "${BACKEND_PORT}:${BACKEND_PORT}"
     networks:

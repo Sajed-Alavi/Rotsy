@@ -47,7 +47,7 @@ export default function RetentionPage() {
       render: (_, p) => (
         <span className="font-mono text-xs text-slate-500 dark:text-slate-400">
           {[
-            p.keep_last_n != null ? `keep last ${p.keep_last_n}` : null,
+            p.keep_last_n != null ? `keep last ${p.keep_last_n}/image` : null,
             p.delete_older_than_days != null ? `older than ${p.delete_older_than_days}d` : null,
           ].filter(Boolean).join(' · ') || '—'}
         </span>
@@ -143,14 +143,17 @@ function PolicyModal({ initial, repos, onClose, onSaved }) {
           </select>
         </Field>
         <div className="grid grid-cols-2 gap-3">
-          <Field label="Keep last N (blank = ignore)">
+          <Field label="Keep last N per image (blank = ignore)">
             <input type="number" value={form.keep_last_n} onChange={(e) => setForm({ ...form, keep_last_n: e.target.value })} placeholder="3" className={INPUT} />
           </Field>
           <Field label="Delete older than (days, blank = ignore)">
             <input type="number" value={form.delete_older_than_days} onChange={(e) => setForm({ ...form, delete_older_than_days: e.target.value })} placeholder="3" className={INPUT} />
           </Field>
         </div>
-        <p className="font-mono text-[10px] text-slate-400 dark:text-slate-600">both conditions apply when set together · physical blobs are reclaimed via compaction after delete</p>
+        <p className="font-mono text-[10px] text-slate-400 dark:text-slate-600">
+          both conditions apply when set together · “keep last N” counts tags <span className="text-slate-500">within each image</span>, not across the whole repository ·
+          physical blobs are reclaimed by the Nexus “Compact blob store” task, triggered after a delete
+        </p>
         <label className="flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300">
           <input type="checkbox" checked={form.enabled} onChange={(e) => setForm({ ...form, enabled: e.target.checked })} className="accent-sky-500" />
           <span className="font-mono text-xs">enabled</span>
@@ -168,8 +171,37 @@ function PreviewModal({ preview, onClose }) {
       <div className="space-y-3">
         <div className="grid grid-cols-2 gap-2 font-mono text-xs">
           <div className="border border-slate-200 p-2 dark:border-slate-800"><div className="text-slate-500">repo</div><div className="text-slate-800 dark:text-slate-200">{preview.repo}</div></div>
-          <div className="border border-slate-200 p-2 dark:border-slate-800"><div className="text-slate-500">would delete</div><div className="text-rose-600 dark:text-rose-400">{preview.candidate_count}</div></div>
+          <div className="border border-slate-200 p-2 dark:border-slate-800">
+            <div className="text-slate-500">{preview.dry_run ? 'would delete' : 'deleted'}</div>
+            <div className="text-rose-600 dark:text-rose-400">{preview.dry_run ? preview.candidate_count : preview.deleted}</div>
+          </div>
         </div>
+
+        {/* A run that deletes nothing must say why. Silent failures here were
+            indistinguishable from "the policy matched nothing". */}
+        {preview.failed_count > 0 && (
+          <div className="border border-rose-200 bg-rose-50 px-3 py-2 dark:border-rose-800 dark:bg-rose-950/30">
+            <div className="mb-1 font-mono text-[10px] uppercase tracking-wider text-rose-700 dark:text-rose-400">
+              {preview.failed_count} delete{preview.failed_count === 1 ? '' : 's'} failed
+            </div>
+            {(preview.failures || []).map((f, i) => (
+              <div key={i} className="font-mono text-[11px] text-rose-700 dark:text-rose-300">
+                {f.name}:{f.version} — {f.reason}
+              </div>
+            ))}
+          </div>
+        )}
+        {preview.skipped_undated > 0 && (
+          <div className="border border-amber-200 bg-amber-50 px-3 py-2 font-mono text-[11px] text-amber-700 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-400">
+            {preview.skipped_undated} component{preview.skipped_undated === 1 ? '' : 's'} skipped: Nexus reports no
+            timestamp for them, so an age rule cannot judge them. They are never deleted on a guess.
+          </div>
+        )}
+        {preview.compact && preview.compact.triggered === false && (
+          <div className="border border-amber-200 bg-amber-50 px-3 py-2 font-mono text-[11px] text-amber-700 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-400">
+            Disk space not reclaimed yet: {preview.compact.reason}
+          </div>
+        )}
         {preview.candidates?.length > 0 && (
           <div className="max-h-72 overflow-y-auto border border-slate-200 dark:border-slate-800">
             <table className="w-full border-collapse text-sm">

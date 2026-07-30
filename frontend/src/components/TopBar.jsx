@@ -16,7 +16,7 @@ export default function TopBar() {
 
   return (
     <header className="flex h-12 items-center justify-between border-b border-slate-200 bg-white px-4 dark:border-slate-800 dark:bg-slate-950">
-      <div className="font-mono text-xs text-slate-400 dark:text-slate-600">sonatype nexus · advanced console</div>
+      <div className="font-mono text-xs text-slate-400 dark:text-slate-600">sharpy · sonatype nexus console</div>
       <div className="flex items-center gap-2">
         <button
           onClick={toggleTheme}

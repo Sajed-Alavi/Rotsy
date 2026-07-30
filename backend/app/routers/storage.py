@@ -23,9 +23,8 @@ from sse_starlette.sse import EventSourceResponse
 
 from ..config import Settings, get_settings
 from ..core.sse import event
-from ..dependencies import RequirePermission, get_current_user
+from ..dependencies import RequirePermission
 from ..state import app_state
-from ..models import User
 from ..services.storage_analyzer import StorageAnalyzer
 
 logger = logging.getLogger(__name__)

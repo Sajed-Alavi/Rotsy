@@ -13,6 +13,7 @@ REST endpoints.
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from typing import Any, AsyncIterator
 
 import httpx
@@ -20,6 +21,34 @@ import httpx
 from ..config import Settings
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class NexusRuntimeConfig:
+    """The connection parameters actually in force.
+
+    Mirrors the subset of :class:`~app.config.Settings` the client and its
+    consumers need, so a dashboard-driven :meth:`NexusClient.reconfigure` can
+    replace them without re-validating the whole environment. A typed object
+    rather than an ad-hoc namespace: consumers read these attributes, and a
+    missing one should fail loudly at the source.
+    """
+
+    NEXUS_URL: str
+    NEXUS_USERNAME: str
+    NEXUS_PASSWORD: str
+    NEXUS_VERIFY_SSL: bool
+    ANALYZER_REQUEST_TIMEOUT: int
+
+    @classmethod
+    def from_settings(cls, settings: Settings) -> NexusRuntimeConfig:
+        return cls(
+            NEXUS_URL=settings.NEXUS_URL.rstrip("/"),
+            NEXUS_USERNAME=settings.NEXUS_USERNAME,
+            NEXUS_PASSWORD=settings.NEXUS_PASSWORD,
+            NEXUS_VERIFY_SSL=settings.NEXUS_VERIFY_SSL,
+            ANALYZER_REQUEST_TIMEOUT=settings.ANALYZER_REQUEST_TIMEOUT,
+        )
 
 
 # Accept headers used when talking to the Docker v2 registry endpoints. These
@@ -36,7 +65,7 @@ class NexusClient:
     """Thin async wrapper around the Nexus REST + Docker registry APIs."""
 
     def __init__(self, settings: Settings) -> None:
-        self._settings = settings
+        self._settings: Settings | NexusRuntimeConfig = settings
         self._client: httpx.AsyncClient | None = None
 
     # ------------------------------------------------------------------
@@ -64,16 +93,24 @@ class NexusClient:
             self._client = None
             logger.info("NexusClient closed")
 
-    async def reconfigure(self, url: str, username: str, password: str, verify_ssl: bool) -> None:
+    async def reconfigure(
+        self,
+        url: str,
+        username: str,
+        password: str,
+        verify_ssl: bool,
+    ) -> None:
         """Swap the connection target live (dashboard-driven config change).
 
         Closes the existing httpx client and opens a new one against the
         provided URL/credentials. Safe to call while requests are in flight
         (in-flight requests finish on the old client; new ones use the new).
+
+        The Docker registry endpoint is **not** a parameter: it is discovered
+        from Nexus per repository at scan time (see
+        :mod:`app.services.registry`).
         """
-        # Build the new settings-bearing object without re-validating env.
-        from types import SimpleNamespace
-        self._settings = SimpleNamespace(
+        self._settings = NexusRuntimeConfig(
             NEXUS_URL=url.rstrip("/"),
             NEXUS_USERNAME=username,
             NEXUS_PASSWORD=password,
@@ -99,8 +136,27 @@ class NexusClient:
         return self._client
 
     @property
-    def settings(self) -> Settings:
+    def settings(self) -> Settings | NexusRuntimeConfig:
+        """The connection parameters in force (env defaults or dashboard values)."""
         return self._settings
+
+    @property
+    def credentials(self) -> tuple[str, str]:
+        """``(username, password)`` for the Nexus service account.
+
+        The Docker connectors authenticate against the same account, so the
+        scanners use these too.
+        """
+        return self._settings.NEXUS_USERNAME, self._settings.NEXUS_PASSWORD
+
+    @property
+    def verify_ssl(self) -> bool:
+        """Whether TLS certificates are verified on the **REST** connection.
+
+        Deliberately not reused to decide how to talk to a Docker connector —
+        that is derived from the connector the repository declares.
+        """
+        return bool(self._settings.NEXUS_VERIFY_SSL)
 
     # ------------------------------------------------------------------
     # REST helpers

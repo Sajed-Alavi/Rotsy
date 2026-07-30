@@ -2,6 +2,26 @@
 #
 # All configuration is supplied via environment variables (docker-compose
 # env_file). No secrets are baked into the image.
+#
+# The image contains scanner *binaries* only. It has no Docker client, no
+# container runtime and (see docker-compose.yml) no Docker socket: images are
+# read over the registry API and analysed statically, never executed.
+
+# Scanner versions. These default to floating tags so a clean build always
+# works, but pin them for anything you care about reproducing: a scanner major
+# release can change its database schema, at which point the database on the
+# persisted cache volume stops validating and every scan fails until it is
+# re-downloaded. Discover the current tags with:
+#   docker run --rm aquasec/trivy:latest --version
+#   docker run --rm anchore/grype:latest version
+ARG TRIVY_VERSION=latest
+ARG GRYPE_VERSION=latest
+ARG ORAS_VERSION=main
+
+# BuildKit workaround: Define helper stages so variable expansion works
+FROM aquasec/trivy:${TRIVY_VERSION} AS trivy-source
+FROM anchore/grype:${GRYPE_VERSION} AS grype-source
+FROM ghcr.io/oras-project/oras:${ORAS_VERSION} AS oras-source
 
 FROM python:3.11-slim AS base
 
@@ -14,20 +34,17 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 # ---------------------------------------------------------------------------
-# External Tools via Multi-Stage Build
-# Here we use the official images as "disposable containers" to extract the 
-# binaries. This bypasses the need for curl and avoids network/proxy issues.
+# Scanner binaries, copied out of the official images.
+# Using the upstream images as build sources (rather than curl-ing install
+# scripts) keeps the build working behind a proxy and needs no extra tooling.
+# ARGs are re-declared here: a global ARG is not visible inside a build stage.
 # ---------------------------------------------------------------------------
-# Trivy
-COPY --from=aquasec/trivy:latest /usr/local/bin/trivy /usr/local/bin/trivy
+COPY --from=trivy-source /usr/local/bin/trivy /usr/local/bin/trivy
+COPY --from=grype-source /grype /usr/local/bin/grype
+# oras: pulls the Trivy database, which ships as a plain OCI artifact.
+COPY --from=oras-source /bin/oras /usr/local/bin/oras
 
-# Grype
-COPY --from=anchore/grype:latest /grype /usr/local/bin/grype
-
-# oras (OCI registry CLI used for DB pulls)
-COPY --from=ghcr.io/oras-project/oras:main /bin/oras /usr/local/bin/oras
-
-# Verify installations
+# Fail the build now rather than at first scan if a binary did not come through.
 RUN trivy --version && grype version && oras version
 
 # ---------------------------------------------------------------------------

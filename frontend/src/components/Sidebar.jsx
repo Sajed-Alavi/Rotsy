@@ -14,7 +14,7 @@ export default function Sidebar() {
     <aside className="flex h-full w-56 flex-col border-r border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-950">
       <div className="flex h-12 items-center gap-2 border-b border-slate-200 dark:border-slate-800 px-4">
         <div className="h-2 w-2 rounded-full bg-emerald-400" />
-        <span className="font-mono text-xs tracking-tight text-slate-600 dark:text-slate-300">nexus-console</span>
+        <span className="font-mono text-xs tracking-tight text-slate-600 dark:text-slate-300">sharpy</span>
       </div>
 
       <nav className="flex-1 overflow-y-auto py-2 text-sm">

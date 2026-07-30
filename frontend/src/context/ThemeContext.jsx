@@ -7,7 +7,7 @@ import { createContext, useCallback, useContext, useEffect, useState } from 'rea
  * Initial theme resolution order: stored preference → OS preference → dark.
  */
 const ThemeContext = createContext(null);
-const STORAGE_KEY = 'nexus-console-theme';
+const STORAGE_KEY = 'sharpy-theme';
 
 function getInitialTheme() {
   if (typeof window === 'undefined') return 'dark';

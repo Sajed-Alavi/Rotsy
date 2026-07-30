@@ -32,7 +32,7 @@ export default function LoginPage() {
       <form onSubmit={onSubmit} className="w-full max-w-xs border border-slate-200 bg-white p-6 dark:border-slate-800 dark:bg-slate-900/60">
         <div className="mb-5 flex items-center gap-2">
           <div className="h-2 w-2 rounded-full bg-emerald-400" />
-          <span className="font-mono text-xs tracking-tight text-slate-600 dark:text-slate-300">nexus-console</span>
+          <span className="font-mono text-xs tracking-tight text-slate-600 dark:text-slate-300">sharpy</span>
         </div>
 
         <label className="mb-1 block font-mono text-[10px] uppercase tracking-wider text-slate-500">

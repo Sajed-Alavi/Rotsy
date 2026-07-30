@@ -33,7 +33,12 @@ NEXUS_CONFIG_KEY = "nexus_connection"
 
 @dataclass
 class NexusConnection:
-    """Resolved Nexus connection parameters."""
+    """Resolved Nexus connection parameters.
+
+    Intentionally has no Docker registry field: the scanners' registry endpoints
+    are discovered per repository from Nexus itself (see
+    :mod:`app.services.registry`), not configured.
+    """
 
     url: str
     username: str
@@ -120,7 +125,12 @@ async def save_nexus_connection(
         row.value_json = blob
     await session.commit()
     logger.info("Nexus connection updated via dashboard.")
-    return NexusConnection(url=url.rstrip("/"), username=username, password=password, verify_ssl=verify_ssl)
+    return NexusConnection(
+        url=url.rstrip("/"),
+        username=username,
+        password=password,
+        verify_ssl=verify_ssl,
+    )
 
 
 async def nexus_connection_masked(session: AsyncSession) -> dict:
@@ -143,3 +153,52 @@ async def nexus_connection_masked(session: AsyncSession) -> dict:
         }
     except (json.JSONDecodeError, TypeError):
         return {"configured": False}
+
+
+# ---------------------------------------------------------------------------
+# Nexus webhook secret (shared with the Nexus webhook capability)
+# ---------------------------------------------------------------------------
+WEBHOOK_SECRET_KEY = "nexus_webhook_secret"
+
+
+async def get_or_create_webhook_secret(session: AsyncSession, settings: Settings) -> str:
+    """Return the shared secret Nexus signs its webhook deliveries with.
+
+    Generated on first use and persisted, so the operator has one value to copy
+    into the Nexus webhook capability and never has to invent it. An env-provided
+    ``NEXUS_WEBHOOK_SECRET`` seeds it on first call.
+    """
+    row = await session.scalar(select(SystemConfig).where(SystemConfig.key == WEBHOOK_SECRET_KEY))
+    if row is not None:
+        try:
+            secret = json.loads(row.value_json).get("secret", "")
+        except (json.JSONDecodeError, TypeError):
+            secret = ""
+        if secret:
+            return secret
+
+    import secrets as _secrets
+    secret = (settings.NEXUS_WEBHOOK_SECRET or "").strip() or _secrets.token_hex(24)
+    blob = json.dumps({"secret": secret})
+    if row is None:
+        session.add(SystemConfig(key=WEBHOOK_SECRET_KEY, value_json=blob))
+    else:
+        row.value_json = blob
+    await session.commit()
+    logger.info("Nexus webhook secret provisioned.")
+    return secret
+
+
+async def rotate_webhook_secret(session: AsyncSession) -> str:
+    """Issue a new webhook secret. Nexus must be updated to match."""
+    import secrets as _secrets
+    secret = _secrets.token_hex(24)
+    row = await session.scalar(select(SystemConfig).where(SystemConfig.key == WEBHOOK_SECRET_KEY))
+    blob = json.dumps({"secret": secret})
+    if row is None:
+        session.add(SystemConfig(key=WEBHOOK_SECRET_KEY, value_json=blob))
+    else:
+        row.value_json = blob
+    await session.commit()
+    logger.warning("Nexus webhook secret rotated — update the Nexus webhook capability to match.")
+    return secret

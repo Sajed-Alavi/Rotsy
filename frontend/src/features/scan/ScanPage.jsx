@@ -8,15 +8,20 @@ import { formatBytes, formatDateTime, formatNumber, relativeTime } from '../../l
 
 /**
  * Vulnerability scanning dashboard.
- *  - Scanner DB status card (version, the date it's for, size, refresh)
- *  - Summary tiles (totals across latest reports)
- *  - Per-repository scan-target management (enable Trivy/Grype, auto-scan)
- *  - Latest reports table
+ *  - Scanner DB status card (version, the date it's for, size, readiness)
+ *  - Summary tiles (totals across latest reports + the ledger breakdown)
+ *  - Per-repository scan-target management (enable Trivy/Grype, scan-on-push)
+ *  - Known images with a per-image Scan button
+ *  - Latest reports table, with the reason for any failure
  *  - Per-finding vulnerability list (filter by severity)
+ *
+ * Scans are triggered on push or by the Scan button — this page has no
+ * "scan everything" action, by design.
  */
 export default function ScanPage() {
   const [summary, setSummary] = useState(null);
   const [targets, setTargets] = useState([]);
+  const [images, setImages] = useState([]);
   const [reports, setReports] = useState([]);
   const [vulns, setVulns] = useState([]);
   const [dbStatus, setDbStatus] = useState(null);
@@ -29,9 +34,10 @@ export default function ScanPage() {
 
   const load = async () => {
     try {
-      const [s, t, r, v, d, o] = await Promise.all([
+      const [s, t, i, r, v, d, o] = await Promise.all([
         api.get('/scan/summary').catch(() => null),
         api.get('/scan/targets').catch(() => []),
+        api.get('/scan/images?limit=200').catch(() => []),
         api.get('/scan/reports?limit=50').catch(() => []),
         api.get('/scan/vulnerabilities?limit=200').catch(() => []),
         api.get('/scan/db-status').catch(() => null),
@@ -39,6 +45,7 @@ export default function ScanPage() {
       ]);
       setSummary(s);
       setTargets(t);
+      setImages(i);
       setReports(r);
       setVulns(v);
       setDbStatus(d);
@@ -87,6 +94,24 @@ export default function ScanPage() {
   };
 
   const [detailReport, setDetailReport] = useState(null);
+  const [scanning, setScanning] = useState({});
+
+  /** Trigger (b): scan one image on request. The only way to re-scan. */
+  const scanImage = async (repo, image) => {
+    const key = `${repo}/${image}`;
+    setMsg('');
+    setScanning((s) => ({ ...s, [key]: true }));
+    try {
+      const r = await api.post('/scan/image', { repo, image });
+      setMsg(`Scan queued for ${key} — job ${r.job_id.slice(0, 8)}. Live progress in Background Jobs.`);
+      // Give the worker a moment, then refresh so the row reflects the result.
+      setTimeout(load, 4000);
+    } catch (e) {
+      setMsg(`could not queue a scan for ${key}: ${e.message}`);
+    } finally {
+      setScanning((s) => ({ ...s, [key]: false }));
+    }
+  };
 
   const deleteReport = async (id, e) => {
     e.stopPropagation();
@@ -107,14 +132,16 @@ export default function ScanPage() {
   };
 
   const totals = summary?.totals || { critical: 0, high: 0, medium: 0, low: 0, unknown: 0, scanned_images: 0, failed: 0 };
+  const ledger = summary?.ledger;
   const sevTone = { CRITICAL: 'bad', HIGH: 'warn', MEDIUM: 'info', LOW: 'neutral', UNKNOWN: 'neutral' };
+  const stateTone = { scanned: 'ok', queued: 'info', failed: 'bad', baseline: 'neutral' };
 
   return (
     <div className="p-6">
       <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
         <div>
           <h1 className="text-base font-medium text-slate-900 dark:text-slate-100">Vulnerability Scanning</h1>
-          <p className="mt-0.5 font-mono text-[11px] text-slate-500 dark:text-slate-500">Trivy + Grype · enable per repository · auto-scan on push</p>
+          <p className="mt-0.5 font-mono text-[11px] text-slate-500 dark:text-slate-500">Trivy + Grype · static registry analysis · scans on push or on request only</p>
         </div>
         <div className="flex items-center gap-2">
           <button onClick={refreshDb} disabled={dbUpdating} className="border border-slate-300 px-3 py-1.5 font-mono text-xs uppercase tracking-wider text-slate-600 hover:bg-slate-100 disabled:opacity-50 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800">
@@ -156,6 +183,15 @@ export default function ScanPage() {
         <Stat label="Failed" count={totals.failed} tone={totals.failed ? 'warn' : 'ok'} />
       </div>
 
+      {/* Ledger breakdown — makes it visible that history is left alone. */}
+      {ledger && (
+        <p className="mb-6 font-mono text-[11px] text-slate-500 dark:text-slate-500">
+          Known images: {formatNumber(ledger.scanned || 0)} scanned · {formatNumber(ledger.baseline || 0)} baseline
+          (present before scanning was enabled — never auto-scanned) · {formatNumber(ledger.queued || 0)} queued
+          · {formatNumber(ledger.failed || 0)} failed
+        </p>
+      )}
+
       {/* Targets */}
       <div className="mb-6">
         <div className="mb-2 flex items-center justify-between">
@@ -192,6 +228,65 @@ export default function ScanPage() {
         </div>
       </div>
 
+      {/* Known images — the ledger, with the per-image Scan action */}
+      <div className="mb-6">
+        <div className="mb-2 flex items-center justify-between">
+          <h2 className="font-mono text-[10px] uppercase tracking-wider text-slate-500">Images · {formatNumber(images.length)}</h2>
+          <span className="font-mono text-[10px] text-slate-400 dark:text-slate-600">scan runs on push, or when you click scan</span>
+        </div>
+        <div className="max-h-96 overflow-y-auto border border-slate-200 dark:border-slate-800">
+          <table className="w-full border-collapse text-sm">
+            <thead className="sticky top-0">
+              <tr className="border-b border-slate-200 bg-slate-50 dark:border-slate-800 dark:bg-slate-900/60">
+                <th className="px-3 py-2 text-left font-mono text-[10px] uppercase tracking-wider text-slate-500">Repo</th>
+                <th className="px-3 py-2 text-left font-mono text-[10px] uppercase tracking-wider text-slate-500">Image</th>
+                <th className="px-3 py-2 text-left font-mono text-[10px] uppercase tracking-wider text-slate-500">State</th>
+                <th className="px-3 py-2 text-center font-mono text-[10px] uppercase tracking-wider text-slate-500">C/H/M/L</th>
+                <th className="px-3 py-2 text-left font-mono text-[10px] uppercase tracking-wider text-slate-500">Last scan</th>
+                <th className="px-3 py-2 text-right font-mono text-[10px] uppercase tracking-wider text-slate-500">·</th>
+              </tr>
+            </thead>
+            <tbody>
+              {!loading && images.length === 0 ? (
+                <tr><td colSpan={6} className="px-3 py-8 text-center font-mono text-xs text-slate-400 dark:text-slate-600">no images known yet — enable a repository above</td></tr>
+              ) : images.map((img) => {
+                const key = `${img.repo}/${img.image}`;
+                const failure = (img.reports || []).find((r) => r.status === 'failed' && r.error);
+                return (
+                  <tr key={img.id} className="border-b border-slate-100 last:border-0 dark:border-slate-800/60 hover:bg-slate-50 dark:hover:bg-slate-800/30">
+                    <td className="px-3 py-1.5 font-mono text-xs text-slate-600 dark:text-slate-400">{img.repo}</td>
+                    <td className="px-3 py-1.5 font-mono text-xs text-slate-800 dark:text-slate-200">
+                      {img.image}
+                      {failure && <span className="block text-[10px] text-rose-600 dark:text-rose-400" title={failure.error}>{failure.scanner}: {failure.error}</span>}
+                    </td>
+                    <td className="px-3 py-1.5">
+                      <Badge tone={stateTone[img.state] || 'neutral'} title={img.state === 'baseline' ? 'Present before scanning was enabled — not auto-scanned' : `source: ${img.source}`}>{img.state}</Badge>
+                    </td>
+                    <td className="px-3 py-1.5 text-center font-mono tabular-nums text-xs">
+                      {img.state === 'scanned' ? (<>
+                        <span className="text-rose-600 dark:text-rose-400">{img.critical}</span>/
+                        <span className="text-amber-600 dark:text-amber-400">{img.high}</span>/
+                        <span className="text-sky-600 dark:text-sky-400">{img.medium}</span>/
+                        <span className="text-slate-500">{img.low}</span>
+                      </>) : <span className="text-slate-400 dark:text-slate-600">—</span>}
+                    </td>
+                    <td className="px-3 py-1.5 font-mono text-xs text-slate-400 dark:text-slate-600">{img.last_scan_at ? relativeTime(img.last_scan_at) : 'never'}</td>
+                    <td className="px-3 py-1.5 text-right">
+                      <button
+                        onClick={() => scanImage(img.repo, img.image)}
+                        disabled={!!scanning[key] || img.state === 'queued'}
+                        className="border border-sky-300 bg-sky-50 px-2 py-0.5 font-mono text-[10px] uppercase text-sky-700 hover:bg-sky-100 disabled:opacity-50 dark:border-sky-700 dark:bg-sky-950/40 dark:text-sky-300 dark:hover:bg-sky-900/40">
+                        {scanning[key] || img.state === 'queued' ? '···' : (img.scan_count > 0 ? 'rescan' : 'scan')}
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
       {/* Recent reports */}
       <div className="mb-6">
         <div className="mb-2 flex items-center justify-between">
@@ -217,9 +312,12 @@ export default function ScanPage() {
               {!loading && reports.length === 0 ? (
                 <tr><td colSpan={7} className="px-3 py-8 text-center font-mono text-xs text-slate-400 dark:text-slate-600">no scans run yet</td></tr>
               ) : reports.map((r) => (
-                <tr key={r.id} onClick={() => r.status === 'success' && setDetailReport(r.id)} className={`border-b border-slate-100 last:border-0 dark:border-slate-800/60 ${r.status === 'success' ? 'cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800/30' : ''}`}>
+                <tr key={r.id} onClick={() => setDetailReport(r.id)} className="cursor-pointer border-b border-slate-100 last:border-0 hover:bg-slate-50 dark:border-slate-800/60 dark:hover:bg-slate-800/30">
                   <td className="px-3 py-2 font-mono text-xs text-slate-700 dark:text-slate-300">{r.target_repo}</td>
-                  <td className="px-3 py-2 font-mono text-xs text-slate-800 dark:text-slate-200">{r.image}</td>
+                  <td className="px-3 py-2 font-mono text-xs text-slate-800 dark:text-slate-200">
+                    {r.image}
+                    {r.error && <span className="block text-[10px] text-rose-600 dark:text-rose-400">{r.error}</span>}
+                  </td>
                   <td className="px-3 py-2 font-mono text-xs text-slate-500 dark:text-slate-400">{r.scanner}</td>
                   <td className="px-3 py-2 text-center font-mono tabular-nums text-xs">
                     <span className="text-rose-600 dark:text-rose-400">{r.critical}</span>/
@@ -231,7 +329,7 @@ export default function ScanPage() {
                   <td className="px-3 py-2 font-mono text-xs text-slate-400 dark:text-slate-600">{formatDateTime(r.started_at)}</td>
                   <td className="px-3 py-2 text-right">
                     <div className="flex items-center justify-end gap-1">
-                      {r.status === 'success' && <button onClick={(e) => { e.stopPropagation(); setDetailReport(r.id); }} className="border border-slate-200 px-2 py-0.5 font-mono text-[10px] uppercase text-slate-500 hover:bg-slate-100 dark:border-slate-700 dark:text-slate-400 dark:hover:bg-slate-800">view</button>}
+                      <button onClick={(e) => { e.stopPropagation(); setDetailReport(r.id); }} className="border border-slate-200 px-2 py-0.5 font-mono text-[10px] uppercase text-slate-500 hover:bg-slate-100 dark:border-slate-700 dark:text-slate-400 dark:hover:bg-slate-800">view</button>
                       <button onClick={(e) => deleteReport(r.id, e)} className="border border-rose-200 px-2 py-0.5 font-mono text-[10px] uppercase text-rose-600 hover:bg-rose-50 dark:border-rose-800 dark:text-rose-400 dark:hover:bg-rose-950/40">del</button>
                     </div>
                   </td>
@@ -338,9 +436,12 @@ function TargetModal({ initial, onClose, onSaved }) {
           <input type="checkbox" checked={form.enabled} onChange={(e) => setForm({ ...form, enabled: e.target.checked })} className="accent-sky-500" />
           <span className="font-mono text-xs">enabled</span>
         </label>
-        <label className="flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300">
-          <input type="checkbox" checked={form.auto_scan} onChange={(e) => setForm({ ...form, auto_scan: e.target.checked })} className="accent-sky-500" />
-          <span className="font-mono text-xs">auto-scan on push (polls for new images)</span>
+        <label className="flex items-start gap-2 text-sm text-slate-700 dark:text-slate-300">
+          <input type="checkbox" checked={form.auto_scan} onChange={(e) => setForm({ ...form, auto_scan: e.target.checked })} className="mt-0.5 accent-sky-500" />
+          <span className="font-mono text-xs">
+            scan images pushed from now on
+            <span className="block text-[10px] text-slate-400 dark:text-slate-600">Images already in this repository are recorded as baseline and left unscanned — scan those individually if you want them covered.</span>
+          </span>
         </label>
         {error && <div className="font-mono text-xs text-rose-600 dark:text-rose-400">{error}</div>}
       </form>
@@ -359,8 +460,10 @@ function Field({ label, children }) {
 function DbCard({ name, info, updating }) {
   const installed = info?.installed;
   const present = info?.present;
-  const dateFor = info?.created_at || info?.built || info?.downloaded_at;
-  const stale = info?.next_update && new Date(info.next_update).getTime() < Date.now();
+  // Readiness is computed by the backend — the same check the scanner preflight
+  // runs — so the card can never disagree with whether a scan would work.
+  const stale = info?.stale;
+  const dateFor = info?.built || info?.downloaded_at;
 
   return (
     <div className="bg-white p-3 dark:bg-slate-900/40">
@@ -401,15 +504,20 @@ function DbCard({ name, info, updating }) {
         </div>
       )}
       {installed && !present && (
-        <p className="mt-1 font-mono text-[10px] text-slate-400 dark:text-slate-600">
-          no vulnerability database on disk yet — click “Refresh vuln DBs”.
+        <p className="mt-1 font-mono text-[10px] text-amber-600 dark:text-amber-400">
+          {info?.reason || 'no vulnerability database on disk yet'} — use “Refresh vuln DBs”, or
+          “Import offline DBs” on a restricted network. Scans fail until this is resolved.
         </p>
       )}
     </div>
   );
 }
 
-/** Detailed vulnerability breakdown for a single scan report. */
+/**
+ * Detailed breakdown for a single scan report. For a failure this shows the
+ * reason and the scanner's own output — the point where "FAILED" stops being
+ * a dead end.
+ */
 function ReportDetailModal({ reportId, onClose }) {
   const [vulns, setVulns] = useState([]);
   const [report, setReport] = useState(null);
@@ -419,7 +527,7 @@ function ReportDetailModal({ reportId, onClose }) {
   useEffect(() => {
     Promise.all([
       api.get(`/scan/reports/${reportId}/vulnerabilities`).catch(() => []),
-      api.get('/scan/reports?limit=200').then((rs) => rs.find((r) => r.id === reportId)).catch(() => null),
+      api.get(`/scan/reports/${reportId}`).catch(() => null),
     ]).then(([v, r]) => {
       setVulns(v);
       setReport(r);
@@ -437,6 +545,21 @@ function ReportDetailModal({ reportId, onClose }) {
         <div className="py-8 text-center font-mono text-xs text-slate-400">loading…</div>
       ) : (
         <div className="space-y-3">
+          {report?.registry_ref && (
+            <div className="font-mono text-[11px] text-slate-500 dark:text-slate-500">
+              scanned <span className="text-slate-700 dark:text-slate-300">{report.registry_ref}</span>
+              {report.duration_ms ? ` · ${(report.duration_ms / 1000).toFixed(1)}s` : ''}
+            </div>
+          )}
+          {report?.status === 'failed' && (
+            <div className="border border-rose-200 bg-rose-50 p-3 dark:border-rose-800 dark:bg-rose-950/30">
+              <div className="mb-1 font-mono text-[10px] uppercase tracking-wider text-rose-700 dark:text-rose-400">Scan failed</div>
+              <div className="font-mono text-xs text-rose-700 dark:text-rose-300">{report.error || 'no reason recorded'}</div>
+              {report.detail && (
+                <pre className="mt-2 max-h-56 overflow-auto whitespace-pre-wrap break-all border border-rose-200 bg-white/60 p-2 font-mono text-[10px] text-slate-600 dark:border-rose-900 dark:bg-slate-950/60 dark:text-slate-400">{report.detail}</pre>
+              )}
+            </div>
+          )}
           {report && (
             <div className="grid grid-cols-4 gap-2 font-mono text-xs">
               <div className="border border-slate-200 p-2 text-center dark:border-slate-800"><div className="text-slate-500">Critical</div><div className="text-lg text-rose-600 dark:text-rose-400">{report.critical}</div></div>

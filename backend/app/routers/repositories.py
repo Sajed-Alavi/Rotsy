@@ -17,9 +17,11 @@ from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field
 
 from ..core.nexus_client import NexusClient
 from ..dependencies import RequirePermission
+from ..services import images
 from ..state import app_state
 
 logger = logging.getLogger(__name__)
@@ -64,6 +66,56 @@ async def list_repositories(
     if format_filter:
         repos = [r for r in repos if r.get("format") == format_filter]
     return repos
+
+
+@router.get("/{name}/images", dependencies=[Depends(RequirePermission("repositories:read"))])
+async def list_repository_images(request: Request, name: str) -> list[dict[str, Any]]:
+    """List a repository's contents as images and tags rather than raw blobs.
+
+    A Docker repository's asset listing is mostly layer blobs
+    (``v2/myapp/blobs/sha256:…``), which is not a useful view of what the
+    repository holds. This returns the image → tag structure with each tag's
+    push time, size and component id (the handle needed to delete it).
+    """
+    nexus = await _nexus(request)
+    try:
+        return await images.list_images(nexus, name)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Failed to list images for %s: %s", name, exc)
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, f"Failed to list images: {exc}")
+
+
+class ComponentDelete(BaseModel):
+    """Component ids to delete, as returned by ``GET /{name}/images``."""
+
+    component_ids: list[str] = Field(..., min_length=1, max_length=500)
+    compact: bool = Field(
+        default=False,
+        description="Also trigger the Nexus 'Compact blob store' task so the disk space is "
+                    "reclaimed. Without it the tags disappear but the blobs stay on disk.",
+    )
+
+
+@router.post("/{name}/images/delete", dependencies=[Depends(RequirePermission("repositories:write"))])
+async def delete_repository_images(
+    request: Request, name: str, body: ComponentDelete,
+) -> dict[str, Any]:
+    """Delete specific image tags, reporting the outcome of each one.
+
+    Returns ``deleted`` and ``failed`` (each failure carrying its reason) rather
+    than a single status code, so deleting one of four tags cannot look like a
+    success when Nexus rejected it.
+    """
+    nexus = await _nexus(request)
+    result = await images.delete_components(nexus, body.component_ids)
+    if body.compact and result["deleted_count"]:
+        result["compact"] = await images.trigger_compact(nexus)
+    if result["deleted_count"]:
+        # The repo list cache carries sizes/counts; drop it so the UI is honest.
+        cache = app_state(request).cache
+        if cache is not None:
+            await cache.delete(_REPOS_CACHE_KEY, "nexus:all-repos")
+    return result
 
 
 @router.get("/{name}/assets", dependencies=[Depends(RequirePermission("repositories:read"))])
@@ -145,11 +197,8 @@ async def download_asset(
 
 
 # ---------------------------------------------------------------------------
-# Repository create / delete (Feature F) — real Nexus REST API
+# Repository create / delete — real Nexus REST API
 # ---------------------------------------------------------------------------
-from pydantic import BaseModel, Field  # noqa: E402
-
-
 class RepoCreate(BaseModel):
     """Create a repository.
 

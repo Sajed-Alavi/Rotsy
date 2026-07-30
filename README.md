@@ -1,123 +1,634 @@
-# Nexus Repository Manager — Advanced Web Wrapper
+# Sharpy
 
-A fast, modern, lightweight web UI and management wrapper around
-**Sonatype Nexus Repository Manager**. Built as two standalone projects:
+A management dashboard and API around **Sonatype Nexus Repository Manager**, with
+**static container-image vulnerability scanning** (Trivy + Grype) as its
+centrepiece.
 
-- **`backend/`** — Python / FastAPI management API.
-- **`frontend/`** — React + Vite + Tailwind single-page app.
+Two deployable projects, one compose stack:
 
-> ⚠️ **Security model.** There are **no hardcoded defaults** anywhere in the
-> codebase. Every URL, credential, port, and tuning value is read from
-> environment variables. The application fails fast at startup if anything
-> required is missing. Never commit a real `.env` file.
+| Path        | What it is                                                |
+| ----------- | --------------------------------------------------------- |
+| `backend/`  | FastAPI service, Alembic migrations, Trivy + Grype binaries |
+| `frontend/` | React + Vite + Tailwind single-page app served by nginx     |
 
-## Features
+Three design rules run through the whole system. They are not aspirations; each
+is enforced in code and pointed at below.
 
-| | Feature | Status |
-|---|---|---|
-| **A** | Deep Storage Analyzer — bypasses multi-arch manifests, reports physical layer sizes and wasted/orphaned disk space | ✅ Implemented |
-| **B** | Advanced Retention & Cleanup Automation (dry-run + execute) | 🚧 Scaffolded |
-| **C** | Blobstore Management | 🚧 Scaffolded |
-| **D** | System Update & Host Script Triggering | 🚧 Scaffolded |
-| **E** | Open-Source Vulnerability Scanning (Trivy/Grype) | 🚧 Scaffolded |
-| **F** | Advanced Repository & Proxy Management | 🚧 Scaffolded |
-| **G** | CI/CD Tokens & Webhooks | 🚧 Scaffolded |
-| **H** | Observability & Analytics | 🚧 Scaffolded |
+1. **Static analysis only.** No container is ever started, run, or spun up.
+   Images are read over the Docker Registry v2 API and analysed as data.
+2. **Zero client-side registry configuration.** Docker connector hosts and ports
+   are discovered from Nexus. Nothing to type, nothing to keep in sync.
+3. **Event-driven scanning.** An image is scanned when it is pushed, or when an
+   operator asks. Never on startup, never on a schedule, never twice by accident.
 
-Scaffolded features expose empty route placeholders and a consistent
-"coming soon" UI panel so the architecture is in place.
+---
 
-## Quick start (Docker Compose)
+## Contents
 
-```bash
-cp .env.example .env
-# edit .env: set NEXUS_URL, NEXUS_USERNAME, NEXUS_PASSWORD,
-#            NEXUS_UI_API_KEY, VITE_API_KEY (make them match)
-docker compose up --build
-```
+- [Architecture](#architecture)
+- [Browsing images](#browsing-images)
+- [Deleting images](#deleting-images)
+- [How scanning is triggered](#how-scanning-is-triggered)
+- [Zero-configuration registry discovery](#zero-configuration-registry-discovery)
+- [Static-only guarantee](#static-only-guarantee)
+- [Vulnerability databases](#vulnerability-databases)
+- [Setup](#setup)
+- [Manual steps you must perform](#manual-steps-you-must-perform)
+- [Operations](#operations)
+- [Troubleshooting scan failures](#troubleshooting-scan-failures)
+- [API reference](#api-reference)
+- [Configuration reference](#configuration-reference)
+- [Project layout](#project-layout)
 
-Then open <http://localhost:8080>.
+---
 
 ## Architecture
 
 ```
-browser ──HTTP──► nginx (frontend container)
-                     │  /api/*  ──proxy──►  FastAPI (backend container)
-                     │                            │
-                     │                            ├──► Nexus REST + Docker APIs
-                     │                            └──► Redis (cache)
-                     └── serves React SPA
+                    ┌──────────────────────────── Docker host ───────────────────────────┐
+                    │                                                                    │
+  browser ──HTTP──► │  nginx (frontend)                    Nexus Repository Manager      │
+                    │    │  /api/* ──proxy──► FastAPI (backend)   :8081  REST API         │
+                    │    └─ React SPA              │  │           :15987 docker "team-a"  │
+                    │                              │  │           :15988 docker "team-b"  │
+                    │                              │  │              ⋮   (discovered)     │
+                    │                              │  │                                  │
+                    │        Postgres ◄────────────┤  ├──REST───────► repository config,  │
+                    │        (state)               │  │               components, assets  │
+                    │                              │  │                                  │
+                    │        Redis ◄───────────────┤  └──registry v2─► manifests + layers │
+                    │        (cache + job queue)   │        (Trivy / Grype, read-only)    │
+                    │                              │                                     │
+                    │                              └◄── webhook on push ──────────────────┤
+                    └────────────────────────────────────────────────────────────────────┘
 ```
 
-- **Caching:** Redis with TTL. Analyzer results, repo/blobstore lists, and
-  health are cached so the dashboard is faster than the native Nexus UI.
-- **Real-time:** the Deep Storage Analyzer streams progress over
-  **Server-Sent Events (SSE)** — long-running scans update the UI live.
+**Backend layers.** `routers/` handle HTTP only; `services/` hold the logic and
+are framework-agnostic; `core/` holds infrastructure (Nexus client, cache, job
+queue, security); `models/` are the SQLAlchemy tables.
 
-## Local development (without Docker)
+Long-running work goes through a Redis-backed job queue (`core/jobs.py`) with
+live progress over SSE, so a scan or a database download never blocks a request.
+Four background loops run in the app lifespan, each with a single job:
 
-### Backend
+| Loop                   | Responsibility                                           |
+| ---------------------- | -------------------------------------------------------- |
+| `_metric_loop`         | Snapshot repository metrics, evaluate alert rules          |
+| `_retention_scheduler` | Daily retention sweep at `RETENTION_RUN_AT`               |
+| `_scanner_db_loop`     | Keep the vulnerability databases usable                   |
+| `_push_watch_loop`     | Notice newly pushed images (fallback trigger, see below)   |
+
+**None of them scan on startup.**
+
+### Scanning modules
+
+| Module                        | Responsibility                                             |
+| ----------------------------- | ---------------------------------------------------------- |
+| `services/registry.py`        | Discover each Docker repository's registry endpoint         |
+| `services/scan_events.py`     | Decide *whether* to scan (webhook, watcher, manual)         |
+| `services/scanners.py`        | Run Trivy/Grype and persist reports                         |
+| `services/scanner_db.py`      | Vulnerability database status, update, offline import        |
+| `models/scans.py`             | Targets, image ledger, reports, findings                    |
+| `services/images.py`          | Image/tag inventory, deletion, blob compaction              |
+
+Each of those has exactly one owner. That is a change: database handling used to
+be spread across four places that could disagree, and scan triggering across two
+loops plus an endpoint.
+
+---
+
+## Browsing images
+
+**Browse** has two views, selectable per repository.
+
+**Images** (the default) shows what a repository actually holds: each image as a
+folder, expanding to its tags, with the push time, size and a delete action per
+tag. This is the view you want for a Docker repository — its raw asset listing is
+mostly layer blobs (`v2/myapp/blobs/sha256:6f2a…`), which says nothing about
+which images exist. For non-Docker formats the same view lists components and
+versions.
+
+**Files** shows the raw assets as an expandable **directory tree** built from
+their paths, rather than one flat list, with a download button per file.
+Downloads are proxied through the backend, so the browser never handles Nexus
+credentials.
+
+Timestamps come from the asset metadata Nexus already returns. For a Docker tag
+the "created" time is when its **manifest** was written — that is the push time.
+Layer blobs are shared between tags and are often much older, so dating a tag by
+its layers would be misleading.
+
+---
+
+## Deleting images
+
+Delete from **Browse → Images**: `delete` on a tag row, `delete all` on an image
+row, or tick several tags and use **Delete N selected**.
+
+Every delete reports its outcome **per tag** — `deleted` and `failed`, with a
+reason on each failure. This matters more than it sounds: deletion used to be
+reachable only through a retention policy, which reduced every failure to a
+boolean, so "4 images, none deleted" gave no clue whether Nexus had rejected the
+request, the ids were stale, or the policy had simply matched nothing. Common
+reasons now surfaced verbatim:
+
+| Reason | Meaning |
+| ------ | ------- |
+| `component not found` | Stale id — the list was loaded before something else changed it. Refresh. |
+| `Nexus refused the delete (HTTP 403)` | The service account lacks delete privileges on that repository. |
+| `this repository does not allow deletion` | The repository's write policy is *Disable redeploy* or *Read-only*. Change it in Nexus. |
+
+**Space is not freed by the delete itself.** Nexus removes the tag immediately
+but leaves the blobs on disk until its **Compact blob store** task runs. Sharpy
+triggers that task after a successful delete — and if no such task exists, says
+so instead of leaving you wondering why disk usage did not move. Nexus does not
+create one by default; add it under **Administration → System → Tasks**.
+
+### Retention policies
+
+For bulk cleanup, **Retention** applies rules on a schedule. `keep last N`
+counts versions **within each image**, not across the repository — counted
+repository-wide, `keep_last_n=3` deletes whole images merely because other images
+were pushed more recently, which is how a "keep 3" rule ends up removing an
+image's only tag. Components whose age Nexus does not report are never deleted by
+an age rule; the run reports them as skipped rather than guessing.
+
+---
+
+## How scanning is triggered
+
+An image is scanned for **exactly two reasons**.
+
+### a) It was pushed
+
+**Primary path — Nexus webhook.** Nexus posts to
+`POST /api/scan/events/nexus` the moment a component is created or updated. The
+request is authenticated by the HMAC signature in `X-Nexus-Webhook-Signature`,
+not by a user session. Reaction time: seconds. Requires the one-time Nexus
+capability described in [Manual steps](#manual-steps-you-must-perform).
+
+**Fallback path — new-image watcher.** For deployments without webhooks,
+`_push_watch_loop` lists each enabled repository's components every
+`SCAN_PUSH_POLL_SECONDS` and queues a scan **only** for images the ledger has
+never seen. This compares metadata; it does not scan anything already known. Set
+`SCAN_PUSH_POLL_SECONDS=0` to turn it off and rely purely on webhooks.
+
+### b) An operator asked
+
+`POST /api/scan/image`, behind the **Scan** button on each row of the Images
+table. This is the only path that may re-scan an image that has already been
+scanned or baselined.
+
+### The baseline: why history is never scanned
+
+The first time a repository is observed, everything already in it is written to
+the ledger as `baseline` — history, deliberately unscanned — and
+`scan_targets.baseline_at` is stamped. Enabling scanning on a repository holding
+a thousand images therefore triggers **zero** scans, and scaling from 7 projects
+to 12 adds five baselines, not five repositories' worth of work. Baselined images
+can still be scanned individually with the Scan button.
+
+### The ledger
+
+`scan_image_ledger` is the durable record of every image the system knows about:
+
+| State      | Meaning                                                              |
+| ---------- | -------------------------------------------------------------------- |
+| `baseline` | Present before scanning was enabled. Never auto-scanned.              |
+| `queued`   | A scan job is in flight.                                              |
+| `scanned`  | Scanned successfully. Will not be re-scanned implicitly.               |
+| `failed`   | The last attempt failed; the report carries the reason.                |
+
+Because it lives in Postgres, a restart, a cache flush or a redeploy cannot
+resurrect work. Deduplication previously lived in Redis with a 24-hour TTL, which
+silently re-scanned every image in every enabled repository once a day and
+re-scanned everything whenever Redis restarted. A tag re-pushed with new content
+*is* a new push: the manifest digest changes, and the ledger compares digests.
+
+There is intentionally **no "scan all" endpoint**. The one that existed
+(`POST /scan/scan-all`) fanned a job out per image per repository.
+
+---
+
+## Zero-configuration registry discovery
+
+Nexus does not serve the Docker Registry v2 API on its main port. Every Docker
+repository gets its own connector port, part of that repository's configuration:
+
+```
+nexus REST API           http://nexus-host:8081
+docker repo "team-a"     http://nexus-host:15987/v2/...
+docker repo "team-b"     http://nexus-host:15988/v2/...
+```
+
+Nexus is the authority on those ports, so `services/registry.py` asks it:
+
+1. `GET /service/rest/v1/repositorySettings` — one call, full configuration for
+   every repository including the `docker` connector block.
+2. `GET /service/rest/v1/repositories/docker/{type}/{name}` — per-repository
+   fallback when (1) is unavailable.
+
+The **host** is derived from the live Nexus base URL (connectors listen on the
+same interface). The **scheme** comes from the connector the repository declares:
+an `httpsPort` means TLS, an `httpPort` means plaintext. Results are cached for
+120 seconds, and a scan targeting an unknown repository forces one immediate
+re-probe, so a repository created seconds ago is scannable at once.
+
+There is **no** `DOCKER_REGISTRY_URL` env var and no registry field in the UI. The
+Settings page shows a read-only table of what was discovered, with a reachability
+check per endpoint, plus an explicit list of any Docker repository that could not
+be resolved and why.
+
+> **Requirement:** the Nexus service account needs repository-admin *read*
+> privileges for discovery to see connector ports. Without it, discovery reports
+> each repository under `unresolved` with that exact reason. `nx-admin` covers it.
+
+---
+
+## Static-only guarantee
+
+Nothing in this system starts a container. Four independent enforcement points:
+
+| Enforcement                                          | Where                            |
+| ---------------------------------------------------- | -------------------------------- |
+| Trivy runs with `--image-src remote`                 | `services/scanners.py`           |
+| Grype gets an explicit `registry:` reference and `GRYPE_DEFAULT_IMAGE_PULL_SOURCE=registry` | `services/scanners.py` |
+| `_assert_static_ref()` rejects `docker:`, `podman:`, `containerd:`, `dir:`, … | `services/scanners.py` |
+| No Docker socket is mounted, and the image has no Docker client | `docker-compose.yml`, `backend/Dockerfile` |
+
+The Grype default matters: left alone, Grype tries the local docker, podman and
+containerd daemons *before* the registry. The explicit `registry:` scheme is what
+keeps it off them.
+
+---
+
+## Vulnerability databases
+
+Scans need a local database. `services/scanner_db.py` is its only owner, and
+scans never update it themselves — both tools would otherwise try to refresh
+mid-scan and fail the scan when the download fails.
+
+| Path                              | When                                                    |
+| --------------------------------- | ------------------------------------------------------- |
+| Online (`POST /api/scan/db-update`) | Normal networks. Trivy via `oras` (falling back to Trivy's own downloader), Grype via `grype db update`. |
+| Offline (`POST /api/scan/db-import`) | Restricted or air-gapped networks. Extracts pre-downloaded archives; nothing touches the network. |
+
+**Startup behaviour:** the app fetches a database only if one is *missing*. A
+present database is left to `SCANNER_DB_UPDATE_AT` /
+`SCANNER_DB_UPDATE_INTERVAL_HOURS`. An update that is already current is skipped
+(both projects publish at most one build per day). Databases live on the
+`scanner-cache` named volume and survive `docker compose up --build`.
+
+Air-gapped flow:
+
 ```bash
-cd backend
-python -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
-# export the vars from .env (or use a tool like direnv)
-uvicorn app.main:app --reload --port 8000
+# on a machine with internet
+./scripts/fetch-offline-db.sh
+# copy the archives to the restricted host's ./offline-db/, then import:
+#   dashboard → Vulnerability Scanning → "Import offline DBs"
 ```
 
-### Frontend
+Recognised filenames in `./offline-db/`:
+
+| Scanner    | Filename                                                      |
+| ---------- | ------------------------------------------------------------- |
+| Trivy      | `db.tar.gz` or `trivy-db.tar.gz`                              |
+| Trivy Java | `javadb.tar.gz` or `trivy-java-db.tar.gz` (optional)          |
+| Grype      | `grype-db.tar.{gz,zst}` or `vulnerability-*.tar.{gz,zst}`     |
+
+Set `SCANNER_DB_OFFLINE_MODE=true` to make the *scheduled* refresh import rather
+than download. The on-demand import always works regardless.
+
+---
+
+## Setup
+
+### Prerequisites
+
+- Docker + Docker Compose
+- A reachable Nexus Repository Manager with at least one **Docker** repository
+- A Nexus account with repository-admin read privileges (for discovery)
+
+### 1. Configure
+
 ```bash
-cd frontend
-npm install
-npm run dev     # http://localhost:5173  (Vite proxies /api -> :8000)
+cp .env.example .env
 ```
 
-## Configuration
+Edit `.env`. The minimum is `JWT_SECRET`, the `BOOTSTRAP_ADMIN_*` values and the
+Postgres credentials. `NEXUS_*` are optional bootstrap defaults — leave them
+blank and configure the connection from the UI on first login.
 
-See [`.env.example`](./.env.example) for the full, documented list of
-environment variables. Key points:
+Use `host.docker.internal` (mapped via `extra_hosts`), **not** `localhost`, when
+Nexus runs on the Docker host: inside a container `localhost` is the container.
 
-- `NEXUS_URL` / `NEXUS_USERNAME` / `NEXUS_PASSWORD` — Nexus connection.
-- `NEXUS_UI_API_KEY` — secret the frontend sends as `X-API-Key` to the
-  backend. Must equal the build-time `VITE_API_KEY`.
-- `NEXUS_VERIFY_SSL` — keep `true` in production.
-- `REDIS_URL`, `CACHE_TTL_SECONDS` — cache.
-- `ANALYZER_MAX_CONCURRENCY`, `ANALYZER_REQUEST_TIMEOUT` — analyzer tuning.
+### 2. Start
+
+```bash
+docker compose up --build
+```
+
+Then open <http://localhost:8080> and sign in with `BOOTSTRAP_ADMIN_USERNAME` /
+`BOOTSTRAP_ADMIN_PASSWORD`. Change that password immediately.
+
+Migrations and the idempotent seed (permissions, system roles, bootstrap admin)
+run automatically from `backend/entrypoint.sh`.
+
+### 3. Point it at Nexus
+
+**Settings → Nexus connection.** Enter the URL, username and password, click
+**Test**, then **Save**. Applied live; no restart. The password is encrypted at
+rest with a key derived from `NEXUS_CONFIG_ENCRYPTION_KEY` (or `JWT_SECRET`).
+
+`Verify SSL` applies to the **REST** connection only. How scanners reach a Docker
+connector is derived from that connector, not from this checkbox.
+
+### 4. Confirm discovery
+
+**Settings → Docker registries.** Every Docker repository should appear with an
+endpoint and `reachable: yes`. Anything under *Not scannable* states its own
+reason. Resolve those before enabling scanning.
+
+### 5. Install the vulnerability databases
+
+**Vulnerability Scanning → Refresh vuln DBs** (or *Import offline DBs* on a
+restricted network). Wait until both cards show **ready**. Scans fail until they
+do, and say so.
+
+### 6. Enable scanning per repository
+
+**Vulnerability Scanning → Enable repo.** Pick the repository, optionally
+override the scanners, leave *scan images pushed from now on* ticked. Existing
+images are baselined, not scanned.
+
+### 7. Wire up push events
+
+See below — this is the one step that must be done inside Nexus.
+
+---
+
+## Manual steps you must perform
+
+Creating a Nexus capability is an administrative action in Nexus's own
+configuration. This system will not attempt it. Do this once per repository you
+want scanned on push.
+
+**Get the secret first:** Settings → *Scan-on-push webhook* → **show**
+(or `GET /api/scan/webhook`). It is generated on first use; you do not invent it.
+
+1. In Nexus, open **Administration → System → Capabilities**.
+2. Click **Create capability**.
+3. Select type **Webhook: Repository**.
+4. **Repository** — choose the Docker repository to watch. Repeat this whole
+   procedure for each repository.
+5. **Event Types** — tick **component**.
+6. **URL** — the backend's webhook endpoint, as reachable *from the Nexus host*:
+   ```
+   http://localhost:8000/api/scan/events/nexus
+   ```
+   Use `BACKEND_PORT` from `.env` if you changed it. This works because the
+   backend publishes that port and Nexus runs on the host network; if your Nexus
+   is elsewhere, use an address that resolves from Nexus to this backend.
+7. **Secret Key** — paste the secret from Settings.
+8. **Save**, and confirm the capability shows as *active*.
+
+**Verify it, without a test scan:** push an image to that repository and watch
+the backend log:
+
+```bash
+docker compose logs -f backend | grep -i "scan queued"
+```
+
+You should see `Scan queued for <repo>/<image> (webhook trigger)` within seconds.
+The image then appears in the Images table. If nothing arrives, check
+`docker compose logs backend | grep -i webhook` — a signature mismatch is logged
+explicitly.
+
+If you rotate the secret (Settings → **Rotate secret**), update every Nexus
+capability to match; deliveries fail closed until you do.
+
+---
+
+## Operations
+
+### Scanning an image on demand
+
+**Vulnerability Scanning → Images → Scan.** Queues a job; live progress under
+Background Jobs. The button reads *rescan* once an image has been scanned before.
+
+### Reading a report
+
+Click any row in **Recent reports**. Successful reports list findings ordered by
+severity then CVSS. Failed reports show the reason plus the scanner's command
+line (password redacted), exit code and output tail.
+
+### Clearing reports
+
+`DELETE /api/scan/reports` (dashboard: *clear all*) removes reports and findings.
+Pass `?reset_ledger=true` to also forget which images were scanned. That does
+**not** trigger any scan: affected images return to `baseline` and are only
+scanned on their next push or on request.
+
+### Keeping databases current
+
+Scheduled by `_scanner_db_loop`. Force one now with
+`POST /api/scan/db-update?force=true`. `GET /api/scan/db-status` reports build
+date, size, readiness and staleness. A Grype database older than five days is
+reported stale; scans still run (Grype's own age check is disabled — a slightly
+stale database beats no scan) but it wants attention.
+
+### Adding repositories at scale
+
+Nothing to do. Create the Docker repository in Nexus with a connector port,
+enable it as a scan target, add its webhook capability. Discovery picks the port
+up within its 120-second cache window, or immediately on the first scan.
+
+---
+
+## Troubleshooting scan failures
+
+A failed report always carries a reason. Start with the report detail
+(`GET /api/scan/reports/{id}` or clicking the row), then match it below.
+
+| Symptom | Cause | Fix |
+| ------- | ----- | --- |
+| `no <scanner> vulnerability database on disk` | Preflight found no database | Run a DB update or offline import; wait for both cards to read **ready** |
+| Repository listed under `unresolved` in `GET /api/scan/registry` | No connector port on the repository, or the service account cannot read repository config | Set an HTTP/HTTPS connector port in Nexus; grant repository-admin read |
+| `probe.reachable: false` on a discovered endpoint | Connector port not reachable from the backend container | Confirm Nexus is listening on that port; check `extra_hosts` maps `host.docker.internal` |
+| `unauthorized` / `denied` from a scanner | Docker connector rejected the Nexus credentials | Confirm the account can pull from that repository; if the repository has *Force basic authentication* off, it still requires a valid account for private content |
+| `no such host` | Registry host does not resolve inside the container | Use `host.docker.internal` (not `localhost`/`127.0.0.1`) in the Nexus URL — the registry host is derived from it |
+| `x509` / certificate errors | HTTPS connector with a certificate the container does not trust | Prefer a plaintext connector on a trusted network, or install the CA in the image |
+| Both scanners fail on one image, others fine | Manifest list without a `linux/amd64` entry | Expected: the scanners default to `linux/amd64` |
+
+### What was actually wrong before
+
+The `FAILED` reports this refactor set out to fix had five root causes, all now
+addressed in code:
+
+1. **The scanners were pointed at an endpoint that does not exist.** The image
+   reference was built from a hand-configured registry URL and, when that was
+   blank, fell back to `{nexus-host}:8081/{repo}/{image}` — Nexus does not serve
+   the v2 API there, so every scan 404'd. *Fixed by discovery.*
+2. **TLS handling was taken from the wrong setting.** Plaintext-vs-TLS was driven
+   by `NEXUS_VERIFY_SSL`, which describes the REST connection, so a plaintext
+   connector behind an HTTPS Nexus was probed over TLS. *Fixed by deriving the
+   scheme per connector.*
+3. **The scanners tried to update their databases mid-scan.** Both do by default,
+   and Grype outright refuses a database older than five days. On a restricted
+   network that download fails and takes the scan with it. *Fixed with
+   `--skip-db-update` / `GRYPE_DB_AUTO_UPDATE=false`, plus a preflight that
+   reports a missing database as such.*
+4. **Grype was resolving images through container runtimes.** With no scheme it
+   tries docker, podman and containerd first — none of which exist in the
+   container, and none of which it should touch. *Fixed with `registry:`.*
+5. **Failures were undiagnosable.** The reason was truncated to 500 characters
+   and buried in a JSON blob. *Fixed: the reason, command, exit code and output
+   tail are persisted and shown.*
+
+One more, unrelated to failures but to coverage: component listing was
+unpaginated, so only the first page of any repository was ever considered. It now
+pages properly.
+
+---
+
+## API reference
+
+Interactive docs at `/docs` and `/redoc`. All endpoints require a session
+(cookie JWT) plus the listed permission, except `POST /api/auth/login`,
+`POST /api/auth/refresh` and the HMAC-authenticated webhook.
+
+### Scanning
+
+| Method | Path | Permission | Purpose |
+| ------ | ---- | ---------- | ------- |
+| `GET` | `/api/scan/summary` | `scan:read` | Totals + ledger breakdown |
+| `GET` | `/api/scan/images` | `scan:read` | Known images with latest results |
+| `POST` | `/api/scan/image` | `scan:execute` | **Trigger (b):** scan one image |
+| `POST` | `/api/scan/events/nexus` | HMAC | **Trigger (a):** Nexus push webhook |
+| `GET` | `/api/scan/webhook` | `system:execute` | Webhook secret + setup steps |
+| `POST` | `/api/scan/webhook/rotate` | `system:execute` | Issue a new webhook secret |
+| `GET` | `/api/scan/registry` | `scan:read` | Discovered endpoints (`?check=true` probes them) |
+| `GET`/`POST`/`PATCH`/`DELETE` | `/api/scan/targets` | `scan:read` / `scan:execute` | Per-repository opt-in |
+| `GET` | `/api/scan/reports` | `scan:read` | Recent reports |
+| `GET` | `/api/scan/reports/{id}` | `scan:read` | One report incl. failure diagnostics |
+| `GET` | `/api/scan/reports/{id}/vulnerabilities` | `scan:read` | Findings for a report |
+| `GET` | `/api/scan/vulnerabilities` | `scan:read` | Findings across reports |
+| `DELETE` | `/api/scan/reports[/{id}]` | `scan:execute` | Delete reports |
+| `GET` | `/api/scan/db-status` | `scan:read` | Database state + readiness |
+| `POST` | `/api/scan/db-update` | `scan:execute` | Refresh databases (`?force=true`) |
+| `POST` | `/api/scan/db-import` | `scan:execute` | Install from offline archives |
+| `GET` | `/api/scan/db-offline` | `scan:read` | Archives detected offline |
+
+### Repositories and images
+
+| Method | Path | Permission | Purpose |
+| ------ | ---- | ---------- | ------- |
+| `GET` | `/api/repositories` | `repositories:read` | List repositories |
+| `GET` | `/api/repositories/{repo}/images` | `repositories:read` | Images → tags, with push time and size |
+| `POST` | `/api/repositories/{repo}/images/delete` | `repositories:write` | Delete tags; per-tag outcome, optional compaction |
+| `GET` | `/api/repositories/{repo}/assets` | `repositories:read` | Raw asset listing (paginated) |
+| `GET` | `/api/repositories/{repo}/assets/download` | `repositories:read` | Proxied download |
+
+### Other areas
+
+`auth`, `users`, `roles`, `settings`, `storage` (deep storage analyzer, which
+reports each image's size **and** creation time), `retention`, `metrics`,
+`alerts`, `jobs` (queue + SSE progress), `audit`, `system`, `blobstores`,
+`access`, `analytics`. Prometheus metrics are exported at `/metrics/export`.
+
+---
+
+## Configuration reference
+
+Every value is read from the environment; the app fails fast on a missing
+required one. Full annotated list in [`.env.example`](.env.example).
+
+### Required
+
+| Variable | Purpose |
+| -------- | ------- |
+| `DATABASE_URL` | Postgres DSN (`postgresql+asyncpg://…`) |
+| `JWT_SECRET`, `JWT_ALGORITHM`, `JWT_ACCESS_TTL_SECONDS`, `JWT_REFRESH_TTL_SECONDS` | Session tokens |
+| `SESSION_IDLE_TIMEOUT_SECONDS` | Idle logout |
+| `COOKIE_SECURE` | Must be `true` behind TLS |
+| `FRONTEND_ORIGIN` | CORS + cookie scoping |
+| `BOOTSTRAP_ADMIN_USERNAME`/`_PASSWORD`/`_EMAIL` | First admin |
+| `REDIS_URL`, `CACHE_TTL_SECONDS` | Cache + job queue |
+| `ANALYZER_MAX_CONCURRENCY`, `ANALYZER_REQUEST_TIMEOUT` | Storage analyzer |
+| `METRIC_COLLECTION_INTERVAL_SECONDS`, `METRIC_RETENTION_DAYS` | Monitoring |
+| `RETENTION_RUN_AT` | Daily retention sweep (`HH:MM`) |
+| `SCANNERS_ENABLED` | `trivy`, `grype`, in run order |
+| `SCANNER_DB_UPDATE_INTERVAL_HOURS` | Database refresh interval |
+| `BACKEND_HOST`, `BACKEND_PORT`, `LOG_LEVEL` | Server runtime |
+
+### Optional
+
+| Variable | Default | Purpose |
+| -------- | ------- | ------- |
+| `NEXUS_URL`, `NEXUS_USERNAME`, `NEXUS_PASSWORD`, `NEXUS_VERIFY_SSL` | empty / `true` | Bootstrap connection; the dashboard value wins once saved |
+| `NEXUS_CONFIG_ENCRYPTION_KEY` | derived from `JWT_SECRET` | Key for the stored Nexus password |
+| `NEXUS_WEBHOOK_SECRET` | generated | Seeds the webhook secret on first use |
+| `SCAN_PUSH_POLL_SECONDS` | `60` | New-image watcher interval; `0` = webhooks only |
+| `SCANNER_DB_UPDATE_AT` | empty | Fixed daily time (`HH:MM`) instead of the interval |
+| `SCANNER_DB_OFFLINE_MODE` | `false` | Scheduled refresh imports instead of downloading |
+| `SCANNER_OFFLINE_DIR` | `/app/offline-db` | Offline archive directory in the container |
+| `SCANNER_PROXY` | empty | Proxy for database downloads (also settable in the UI) |
+
+There is **no** registry URL or port setting, by design — see
+[discovery](#zero-configuration-registry-discovery).
+
+---
 
 ## Project layout
 
 ```
-nexus-project/
-├── .env.example
-├── docker-compose.yml
-├── README.md
+.
 ├── backend/
-│   ├── Dockerfile
-│   ├── requirements.txt
-│   └── app/
-│       ├── main.py            # FastAPI app, lifespan, CORS, router wiring
-│       ├── config.py          # pydantic-settings (no defaults)
-│       ├── dependencies.py    # settings, cache, nexus client, API-key guard
-│       ├── core/              # nexus_client, cache, sse helpers
-│       ├── routers/           # health, storage, retention, ... (A full, B–H stubs)
-│       └── services/
-│           └── storage_analyzer.py   # Feature A — refactored CLI script
-└── frontend/
-    ├── Dockerfile             # multi-stage node -> nginx
-    ├── nginx.conf             # SPA + /api proxy (envsubst)
-    ├── package.json
-    └── src/
-        ├── api/  utils/  components/  pages/
+│   ├── alembic/versions/        # schema migrations, in order
+│   ├── app/
+│   │   ├── core/               # nexus client, cache, jobs, security, config store
+│   │   ├── db/                 # session factory, base, idempotent seed
+│   │   ├── models/             # SQLAlchemy tables
+│   │   ├── routers/            # HTTP layer, one module per area
+│   │   ├── schemas/            # pydantic request/response models
+│   │   ├── services/           # domain logic (see the scanning table above)
+│   │   ├── config.py           # typed settings
+│   │   └── main.py             # app factory + lifespan + background loops
+│   ├── Dockerfile              # app + Trivy + Grype + oras, no Docker client
+│   └── entrypoint.sh           # wait for DB → migrate → seed → uvicorn
+├── frontend/
+│   ├── src/components/         # shared UI primitives
+│   ├── src/features/           # one directory per page
+│   ├── src/lib/                # api client, formatters, nav
+│   └── Dockerfile, nginx.conf
+├── docker-compose.yml          # postgres, redis, backend, frontend
+├── docker-compose-nexus/       # local Nexus for development (gitignored: its
+│                               # blob store and logs are runtime data)
+├── offline-db/                 # drop offline DB archives here (gitignored)
+├── scripts/fetch-offline-db.sh # download DB archives on a connected machine
+├── .env.example                # annotated configuration reference
+└── README.md                   # this file — the only documentation
 ```
 
-## Security checklist
+### Development
 
-- [x] No hardcoded secrets/URLs/ports — every value is an env var.
-- [x] Management API protected by `X-API-Key`, independent of Nexus creds.
-- [x] Non-root users in both Docker images.
-- [x] `.env` git-ignored; only `.env.example` tracked.
-- [ ] Per-user auth / OIDC — future work for multi-tenant hosting.
+```bash
+# backend
+cd backend && pip install -r requirements.txt
+alembic upgrade head
+uvicorn app.main:app --reload
 
-## License
+# frontend
+cd frontend && npm install && npm run dev
+```
 
-MIT (see `LICENSE` when added before public release).
+### Security notes
+
+- No credential is ever baked into an image; everything comes from the
+  environment or the encrypted config store.
+- Scanner credentials are passed via environment variables, never on the command
+  line, so they stay out of the process table.
+- The backend runs as a non-root user and mounts no Docker socket.
+- Webhook deliveries are HMAC-verified and fail closed on a mismatch.
+- Offline archives are extracted with tar's `data` filter, which rejects absolute
+  paths, `..` traversal, symlinks and device files.

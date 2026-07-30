@@ -33,6 +33,10 @@ class Settings(BaseSettings):
     NEXUS_USERNAME: str = ""
     NEXUS_PASSWORD: str = ""
     NEXUS_VERIFY_SSL: bool = True
+    # NOTE: there is deliberately no Docker registry URL or port setting. Each
+    # Docker repository's connector endpoint is discovered from Nexus at scan
+    # time (app/services/registry.py), so adding repositories or moving a
+    # connector port needs no configuration change here or in the UI.
 
     # --- Database (v2 persistence: users/roles/permissions) --------------
     DATABASE_URL: str
@@ -94,6 +98,17 @@ class Settings(BaseSettings):
     # Optional HTTP/HTTPS proxy for scanner DB downloads. Leave empty for
     # direct. Mirrors HTTP_PROXY/HTTPS_PROXY behaviour for the subprocess env.
     SCANNER_PROXY: str = ""
+
+    # --- Scan triggers (event-driven only) --------------------------------
+    # Optional bootstrap value for the Nexus webhook secret. Leave empty and the
+    # backend generates one on first use; read it from GET /api/scan/webhook and
+    # paste it into the Nexus webhook capability.
+    NEXUS_WEBHOOK_SECRET: str = ""
+    # Fallback watcher for deployments without webhooks: how often (seconds) to
+    # check enabled repositories for images the ledger has never seen. This
+    # compares metadata only and scans nothing that is already known. Set to 0
+    # to disable it entirely and rely purely on webhooks.
+    SCAN_PUSH_POLL_SECONDS: int = 60
 
     # --- Backend server runtime ------------------------------------------
     BACKEND_HOST: str

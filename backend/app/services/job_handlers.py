@@ -10,6 +10,7 @@ Registered job types (see :func:`app.main.lifespan` for the registration):
   * ``analyze_repo``       — deep storage analysis of one repository
   * ``run_retention``      — execute retention policies (dry-run capable)
   * ``backup``             — trigger a Nexus backup task
+  * ``backup_archive``     — real byte-level backup (full or selective) to the backup volume
   * ``sync``               — copy components to another Nexus
   * ``scan_image``         — statically scan one image with Trivy/Grype
   * ``scanner_db_update``  — refresh the vulnerability databases (network)
@@ -28,7 +29,8 @@ from . import registry as registry_discovery
 from . import scan_events, scanner_db
 from .alerting import evaluate_alerts
 from .backup import trigger_backup
-from .metrics_collector import collect_once, latest_snapshot
+from .backup_archive import create_archive
+from .metrics_collector import collect_blobstore_metrics, collect_once, latest_blobstore_snapshot, latest_snapshot
 from .retention import run_all_enabled, run_policy
 from .scanners import Credentials, scan_image
 from .sync import sync_repository
@@ -66,10 +68,12 @@ async def handle_collect_metrics(job: Job, progress: ProgressCallback) -> dict:
         summary = await collect_once(
             nexus, session, on_progress=progress, retention_days=state.retention_days
         )
-        # Re-read the latest snapshot so alerting sees fresh values.
+        blobstore_summary = await collect_blobstore_metrics(nexus, session)
+        # Re-read the latest snapshots so alerting sees fresh values.
         snapshot = await latest_snapshot(session)
-        fired = await evaluate_alerts(session, snapshot)
-    return {**summary, "alerts_fired": fired}
+        blobstore_snapshot = await latest_blobstore_snapshot(session)
+        fired = await evaluate_alerts(session, snapshot, blobstore_snapshot)
+    return {**summary, **blobstore_summary, "alerts_fired": fired}
 
 
 async def handle_analyze_repo(job: Job, progress: ProgressCallback) -> dict:
@@ -132,31 +136,119 @@ async def handle_backup(job: Job, progress: ProgressCallback) -> dict:
     return result
 
 
+async def handle_backup_archive(job: Job, progress: ProgressCallback) -> dict:
+    """Real byte-level backup archive (full or selective) to the backup volume.
+
+    Distinct from ``handle_backup`` (Nexus scheduler-task trigger, unchanged) —
+    this one actually downloads and persists asset bytes, tracked in a
+    :class:`~app.models.BackupRun` row so the archive has a durable history
+    beyond the job's own 7-day Redis TTL.
+    """
+    import json
+    from datetime import datetime, timezone
+    from pathlib import Path
+
+    from ..models import BackupRun
+
+    state = _shared_state()
+    nexus = state.nexus
+    if nexus is None:
+        raise RuntimeError("Nexus client not available")
+
+    settings = _lifespan_state.get("settings")
+    output_dir = Path(getattr(settings, "BACKUP_OUTPUT_DIR", "/app/backups") if settings else "/app/backups")
+    min_free_bytes = getattr(settings, "BACKUP_MIN_FREE_BYTES", 512 * 1024 * 1024) if settings else 512 * 1024 * 1024
+
+    mode = job.payload.get("mode", "full")
+    repos = job.payload.get("repos") or None
+    triggered_by = job.payload.get("triggered_by", "")
+
+    factory = get_session_factory()
+    async with factory() as session:
+        run = BackupRun(mode=mode, repos=json.dumps(repos or []), status="running", triggered_by=triggered_by)
+        session.add(run)
+        await session.commit()
+        await session.refresh(run)
+        run_id = run.id
+
+    async def on_progress(pct: int, message: str) -> None:
+        await progress(pct, message)
+
+    try:
+        result = await create_archive(
+            nexus, output_dir=output_dir, mode=mode, repos=repos,
+            min_free_bytes=min_free_bytes, on_progress=on_progress,
+        )
+    except Exception as exc:  # noqa: BLE001
+        async with factory() as session:
+            run = await session.get(BackupRun, run_id)
+            if run is not None:
+                run.status = "failed"
+                run.error = str(exc)
+                run.finished_at = datetime.now(timezone.utc)
+                await session.commit()
+        raise
+
+    async with factory() as session:
+        run = await session.get(BackupRun, run_id)
+        if run is not None:
+            run.status = "success"
+            run.repos = json.dumps(result["repos"])
+            run.output_path = result["output_path"]
+            run.total_bytes = result["total_bytes"]
+            run.asset_count = result["asset_count"]
+            run.finished_at = datetime.now(timezone.utc)
+            await session.commit()
+
+    return result
+
+
 async def handle_sync(job: Job, progress: ProgressCallback) -> dict:
-    """Sync a source repo to a target Nexus repository."""
+    """Sync one or more source repos to a target Nexus instance.
+
+    ``job.payload["repos"]`` is a list of ``{"source_repo", "target_repo"}``
+    pairs (selective — the operator picks exactly which repos to sync);
+    each pair still goes through the unchanged single-repo
+    :func:`sync_repository` primitive, run one after another with progress
+    scaled across the whole batch.
+    """
     state = _shared_state()
     source = state.nexus
     if source is None:
         raise RuntimeError("Source Nexus client not available")
     p = job.payload
-    required = ("target_base_url", "target_username", "target_password", "target_repo", "source_repo")
+    required = ("target_base_url", "target_username", "target_password", "repos")
     missing = [k for k in required if not p.get(k)]
     if missing:
         raise ValueError(f"Missing payload fields: {missing}")
+    mappings = p["repos"]
+    if not mappings:
+        raise ValueError("payload.repos must be a non-empty list")
 
-    async def on_progress(percent: int, message: str) -> None:
-        await progress(percent, message)
+    total = len(mappings)
+    results = []
+    for i, mapping in enumerate(mappings):
+        source_repo = mapping["source_repo"]
+        target_repo = mapping["target_repo"]
 
-    return await sync_repository(
-        source,
-        p["source_repo"],
-        target_base_url=p["target_base_url"],
-        target_username=p["target_username"],
-        target_password=p["target_password"],
-        target_repo=p["target_repo"],
-        verify_ssl=bool(p.get("verify_ssl", True)),
-        on_progress=on_progress,
-    )
+        async def on_progress(percent: int, message: str, i=i) -> None:
+            # Scale this repo's own 0-100 progress into its slice of the batch.
+            scaled = int((i + percent / 100) / total * 100)
+            await progress(scaled, f"[{source_repo} -> {target_repo}] {message}")
+
+        result = await sync_repository(
+            source,
+            source_repo,
+            target_base_url=p["target_base_url"],
+            target_username=p["target_username"],
+            target_password=p["target_password"],
+            target_repo=target_repo,
+            verify_ssl=bool(p.get("verify_ssl", True)),
+            on_progress=on_progress,
+        )
+        results.append(result)
+
+    return {"repos_synced": total, "results": results}
 
 
 async def handle_scan_image(job: Job, progress: ProgressCallback) -> dict:

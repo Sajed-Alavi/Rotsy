@@ -58,7 +58,9 @@ from .routers import (
     users,
 )
 from .services.alerting import evaluate_alerts
-from .services.metrics_collector import collect_once, latest_snapshot
+from .services.metrics_collector import (
+    collect_blobstore_metrics, collect_once, latest_blobstore_snapshot, latest_snapshot,
+)
 from .state import lifespan_handles
 
 
@@ -93,8 +95,10 @@ async def _metric_loop(settings: Settings, stop: asyncio.Event) -> None:
         try:
             async with factory() as session:
                 await collect_once(nexus, session, retention_days=settings.METRIC_RETENTION_DAYS)
+                await collect_blobstore_metrics(nexus, session)
                 snapshot = await latest_snapshot(session)
-                await evaluate_alerts(session, snapshot)
+                blobstore_snapshot = await latest_blobstore_snapshot(session)
+                await evaluate_alerts(session, snapshot, blobstore_snapshot)
         except Exception:  # noqa: BLE001
             logger.exception("metric collection cycle failed")
 
@@ -355,6 +359,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     runner.register("analyze_repo", job_handlers.handle_analyze_repo)
     runner.register("run_retention", job_handlers.handle_run_retention)
     runner.register("backup", job_handlers.handle_backup)
+    runner.register("backup_archive", job_handlers.handle_backup_archive)
     runner.register("sync", job_handlers.handle_sync)
     runner.register("scan_image", job_handlers.handle_scan_image)
     runner.register("scanner_db_update", job_handlers.handle_scanner_db_update)

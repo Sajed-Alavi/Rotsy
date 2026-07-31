@@ -9,6 +9,10 @@ is missing. Responsibilities:
      permissions defined in :data:`SYSTEM_ROLE_PERMISSIONS`.
   3. Ensure the bootstrap admin user exists (created from env vars) and has
      the ``admin`` role.
+  4. Ensure the default alert rules exist (see :func:`_seed_default_alert_rules`)
+     — inserted only if missing **by name**, never overwritten/recreated, so a
+     user who deletes or edits one keeps it that way across restarts (unlike
+     the system roles above, which are intentionally re-synced every boot).
 
 All relationship access uses eager loading (``selectinload``) so we never
 trigger a lazy load inside the async context (which would raise
@@ -30,9 +34,17 @@ from ..core.permissions import (
     SYSTEM_ROLE_PERMISSIONS,
 )
 from ..core.security import hash_password
-from ..models import Permission, Role, User
+from ..models import AlertRule, Permission, Role, User
 
 logger = logging.getLogger(__name__)
+
+# (name, metric, condition, threshold) — install-agnostic defaults only.
+# No storage.total default is seeded: there's no sensible byte threshold that
+# holds across installs, so a fabricated one would be worse than none.
+_DEFAULT_ALERT_RULES: list[tuple[str, str, str, float]] = [
+    ("Blobstore disk usage above 85%", "blobstore.used_pct", ">", 85.0),
+    ("Blobstore disk usage above 95% (critical)", "blobstore.used_pct", ">", 95.0),
+]
 
 
 async def _seed_permissions(session: AsyncSession) -> dict[str, Permission]:
@@ -117,11 +129,32 @@ async def _seed_bootstrap_admin(
     logger.info("Created bootstrap admin user '%s'.", settings.BOOTSTRAP_ADMIN_USERNAME)
 
 
+async def _seed_default_alert_rules(session: AsyncSession) -> None:
+    """Insert the default alert rules if missing by name — never re-created.
+
+    Unlike system roles (always re-synced), these are meant to be user-tunable
+    once seeded: deleting or editing one is a real decision that must survive
+    a restart, so this only ever inserts, keyed on ``name``.
+    """
+    result = await session.execute(select(AlertRule.name).where(AlertRule.is_default.is_(True)))
+    existing_names = {row[0] for row in result.all()}
+
+    for name, metric, condition, threshold in _DEFAULT_ALERT_RULES:
+        if name in existing_names:
+            continue
+        session.add(AlertRule(
+            name=name, metric=metric, condition=condition, threshold=threshold,
+            repo_filter=None, webhook_url=None, enabled=True, is_default=True,
+        ))
+    await session.flush()
+
+
 async def run_seed(session: AsyncSession, settings: Settings) -> None:
     """Run the full idempotent seed. Called from the backend entrypoint."""
     perms_by_key = await _seed_permissions(session)
     roles_by_name = await _seed_roles(session, perms_by_key)
     await _seed_bootstrap_admin(session, settings, roles_by_name)
+    await _seed_default_alert_rules(session)
     await session.commit()
     logger.info(
         "Seed complete: %d permissions, %d roles.",

@@ -15,6 +15,18 @@ from functools import lru_cache
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+# Values that ship as copy-paste-ready placeholders in .env.example. A secret
+# equal to one of these means the operator deployed the example file
+# unedited — fail startup loudly rather than run with a guessable JWT signing
+# key or a published admin password.
+_PLACEHOLDER_SECRETS = {
+    "change-me", "changeme", "password", "admin", "secret",
+    "generate-a-32-byte-hex-secret", "replace-me", "replace_me",
+    "replace-with-a-strong-password", "replace_with_a_strong_password",
+    "replace-with-openssl-rand-hex-32", "replace_with_openssl_rand_hex_32",
+    "your-secret-here", "example",
+}
+
 
 class Settings(BaseSettings):
     """Strongly-typed application settings."""
@@ -110,6 +122,14 @@ class Settings(BaseSettings):
     # to disable it entirely and rely purely on webhooks.
     SCAN_PUSH_POLL_SECONDS: int = 60
 
+    # --- Backup archive (byte-level full/selective backup) ---------------
+    # Directory the backend writes archive runs to — the dedicated backup
+    # volume is mounted here in docker-compose.yml.
+    BACKUP_OUTPUT_DIR: str = "/app/backups"
+    # Abort a run (rather than fill the volume to zero) if free space under
+    # BACKUP_OUTPUT_DIR drops below this many bytes. Default 512MB.
+    BACKUP_MIN_FREE_BYTES: int = 536_870_912
+
     # --- Backend server runtime ------------------------------------------
     BACKEND_HOST: str
     BACKEND_PORT: int
@@ -123,6 +143,46 @@ class Settings(BaseSettings):
     def _strip_trailing_slash(cls, value: str) -> str:
         """Normalise URLs so joining never produces ``//``."""
         return value.rstrip("/")
+
+    @field_validator("JWT_SECRET")
+    @classmethod
+    def _reject_placeholder_jwt_secret(cls, value: str) -> str:
+        """Refuse to boot with the .env.example placeholder or a weak secret.
+
+        JWT_SECRET signs every access/refresh token. A fixed, guessable value
+        (or the literal placeholder shipped in .env.example) lets anyone forge
+        a valid session for any user, including admin — this must fail fast at
+        startup, not just log a warning that's easy to miss.
+        """
+        if value.strip().lower() in _PLACEHOLDER_SECRETS:
+            raise ValueError(
+                "JWT_SECRET is still set to the .env.example placeholder. "
+                "Generate a real one: `openssl rand -hex 32`."
+            )
+        if len(value) < 32:
+            raise ValueError(
+                "JWT_SECRET must be at least 32 characters. Generate one with "
+                "`openssl rand -hex 32`."
+            )
+        return value
+
+    @field_validator("BOOTSTRAP_ADMIN_PASSWORD")
+    @classmethod
+    def _reject_placeholder_admin_password(cls, value: str) -> str:
+        """Refuse to boot with the .env.example placeholder admin password.
+
+        seed.py creates this account with full admin rights on first startup.
+        Shipping a deployment with the well-known "change-me" password is a
+        public credential, not a secret — fail fast rather than seed it.
+        """
+        if value.strip().lower() in _PLACEHOLDER_SECRETS:
+            raise ValueError(
+                "BOOTSTRAP_ADMIN_PASSWORD is still set to the .env.example "
+                "placeholder. Set a strong, unique password before first startup."
+            )
+        if len(value) < 12:
+            raise ValueError("BOOTSTRAP_ADMIN_PASSWORD must be at least 12 characters.")
+        return value
 
     @property
     def cors_origins(self) -> list[str]:

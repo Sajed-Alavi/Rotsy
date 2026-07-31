@@ -57,6 +57,15 @@ class Role(Base):
     name: Mapped[str] = mapped_column(String(64), unique=True, index=True, nullable=False)
     description: Mapped[str] = mapped_column(String(255), default="", nullable=False)
     is_system: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    # Image-scope union semantics (see app.core.image_scope): a role with no
+    # RoleImageScope rows for a repo is normally treated as unrestricted there,
+    # and a user's effective access is the union across held roles — so any
+    # second role without scope rows silently reopens access an explicitly
+    # scoped role was meant to restrict. Defaults to True so existing roles
+    # (admin/operator/viewer) keep today's behavior; an admin can flip a
+    # specific role to False to make it always defer to scope rows instead of
+    # granting blanket access, closing that bypass where it matters.
+    image_scope_unrestricted: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     users: Mapped[list[User]] = relationship(secondary=user_roles, back_populates="roles", lazy="selectin")

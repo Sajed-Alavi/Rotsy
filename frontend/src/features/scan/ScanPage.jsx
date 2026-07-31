@@ -23,23 +23,20 @@ export default function ScanPage() {
   const [targets, setTargets] = useState([]);
   const [images, setImages] = useState([]);
   const [reports, setReports] = useState([]);
-  const [vulns, setVulns] = useState([]);
   const [dbStatus, setDbStatus] = useState(null);
   const [offlineStatus, setOfflineStatus] = useState(null);
   const [dbUpdating, setDbUpdating] = useState(false);
-  const [sevFilter, setSevFilter] = useState('');
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState(null);
   const [msg, setMsg] = useState('');
 
   const load = async () => {
     try {
-      const [s, t, i, r, v, d, o] = await Promise.all([
+      const [s, t, i, r, d, o] = await Promise.all([
         api.get('/scan/summary').catch(() => null),
         api.get('/scan/targets').catch(() => []),
         api.get('/scan/images?limit=200').catch(() => []),
         api.get('/scan/reports?limit=50').catch(() => []),
-        api.get('/scan/vulnerabilities?limit=200').catch(() => []),
         api.get('/scan/db-status').catch(() => null),
         api.get('/scan/db-offline').catch(() => null),
       ]);
@@ -47,7 +44,6 @@ export default function ScanPage() {
       setTargets(t);
       setImages(i);
       setReports(r);
-      setVulns(v);
       setDbStatus(d);
       setOfflineStatus(o);
     } finally {
@@ -133,7 +129,6 @@ export default function ScanPage() {
 
   const totals = summary?.totals || { critical: 0, high: 0, medium: 0, low: 0, unknown: 0, scanned_images: 0, failed: 0 };
   const ledger = summary?.ledger;
-  const sevTone = { CRITICAL: 'bad', HIGH: 'warn', MEDIUM: 'info', LOW: 'neutral', UNKNOWN: 'neutral' };
   const stateTone = { scanned: 'ok', queued: 'info', failed: 'bad', baseline: 'neutral' };
 
   return (
@@ -342,44 +337,8 @@ export default function ScanPage() {
 
       {/* Vulnerabilities */}
       <div>
-        <div className="mb-2 flex items-center justify-between">
-          <h2 className="font-mono text-[10px] uppercase tracking-wider text-slate-500">Findings · {formatNumber(vulns.length)}</h2>
-          <select value={sevFilter} onChange={(e) => { setSevFilter(e.target.value); api.get(`/scan/vulnerabilities?limit=200${e.target.value ? `&severity=${e.target.value}` : ''}`).then(setVulns); }} className="border border-slate-300 bg-white px-2 py-1 font-mono text-xs text-slate-900 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-200">
-            <option value="">all severities</option>
-            <option value="CRITICAL">critical</option>
-            <option value="HIGH">high</option>
-            <option value="MEDIUM">medium</option>
-            <option value="LOW">low</option>
-          </select>
-        </div>
-        <div className="max-h-96 overflow-y-auto border border-slate-200 dark:border-slate-800">
-          <table className="w-full border-collapse text-sm">
-            <thead className="sticky top-0">
-              <tr className="border-b border-slate-200 bg-slate-50 dark:border-slate-800 dark:bg-slate-900/60">
-                <th className="px-3 py-2 text-left font-mono text-[10px] uppercase tracking-wider text-slate-500">CVE</th>
-                <th className="px-3 py-2 text-left font-mono text-[10px] uppercase tracking-wider text-slate-500">Sev</th>
-                <th className="px-3 py-2 text-left font-mono text-[10px] uppercase tracking-wider text-slate-500">Package</th>
-                <th className="px-3 py-2 text-left font-mono text-[10px] uppercase tracking-wider text-slate-500">Installed</th>
-                <th className="px-3 py-2 text-left font-mono text-[10px] uppercase tracking-wider text-slate-500">Fixed</th>
-                <th className="px-3 py-2 text-right font-mono text-[10px] uppercase tracking-wider text-slate-500">CVSS</th>
-              </tr>
-            </thead>
-            <tbody>
-              {vulns.length === 0 ? (
-                <tr><td colSpan={6} className="px-3 py-8 text-center font-mono text-xs text-slate-400 dark:text-slate-600">no findings</td></tr>
-              ) : vulns.map((v) => (
-                <tr key={v.id} className="border-b border-slate-100 last:border-0 dark:border-slate-800/60">
-                  <td className="px-3 py-1.5 font-mono text-xs text-slate-800 dark:text-slate-200">{v.cve}</td>
-                  <td className="px-3 py-1.5"><Badge tone={sevTone[v.severity] || 'neutral'}>{v.severity}</Badge></td>
-                  <td className="px-3 py-1.5 font-mono text-xs text-slate-700 dark:text-slate-300">{v.package}</td>
-                  <td className="px-3 py-1.5 font-mono text-xs text-slate-500 dark:text-slate-400">{v.installed_version || '—'}</td>
-                  <td className="px-3 py-1.5 font-mono text-xs text-emerald-600 dark:text-emerald-400">{v.fixed_version || '—'}</td>
-                  <td className="px-3 py-1.5 text-right font-mono tabular-nums text-xs text-slate-500 dark:text-slate-400">{v.cvss ? v.cvss.toFixed(1) : '—'}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <h2 className="mb-2 font-mono text-[10px] uppercase tracking-wider text-slate-500">Findings</h2>
+        <VulnerabilityTable endpoint="/scan/vulnerabilities" />
       </div>
 
       {editing && <TargetModal initial={editing.target} onClose={() => setEditing(null)} onSaved={() => { setEditing(null); load(); }} />}
@@ -453,6 +412,141 @@ function Field({ label, children }) {
   return (<div><div className="mb-1 font-mono text-[10px] uppercase tracking-wider text-slate-500">{label}</div>{children}</div>);
 }
 
+const SEV_TONE = { CRITICAL: 'bad', HIGH: 'warn', MEDIUM: 'info', LOW: 'neutral', UNKNOWN: 'neutral' };
+const SEVERITIES = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'UNKNOWN'];
+const PAGE_SIZE = 50;
+
+/**
+ * Paginated, filterable, sortable CVE findings table. Shared by the
+ * page-level Findings section (`endpoint="/scan/vulnerabilities"`, spans all
+ * repos/reports) and `ReportDetailModal` (`endpoint="/scan/reports/{id}/vulnerabilities"`,
+ * one report) — a single scan can legitimately return thousands of rows, so
+ * filtering/sorting/paging all happen server-side rather than over a full
+ * client-side array.
+ */
+function VulnerabilityTable({ endpoint }) {
+  const [items, setItems] = useState([]);
+  const [total, setTotal] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const [severities, setSeverities] = useState([]);
+  const [qInput, setQInput] = useState('');
+  const [q, setQ] = useState('');
+  const [sort, setSort] = useState('severity');
+  const [order, setOrder] = useState('desc');
+  const [page, setPage] = useState(0);
+
+  useEffect(() => {
+    const t = setTimeout(() => { setQ(qInput); setPage(0); }, 300);
+    return () => clearTimeout(t);
+  }, [qInput]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    const params = new URLSearchParams({ limit: String(PAGE_SIZE), offset: String(page * PAGE_SIZE), sort, order });
+    if (severities.length) params.set('severity', severities.join(','));
+    if (q) params.set('q', q);
+    api.get(`${endpoint}?${params.toString()}`)
+      .then((res) => { if (!cancelled) { setItems(res.items); setTotal(res.total); } })
+      .catch(() => { if (!cancelled) { setItems([]); setTotal(0); } })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [endpoint, severities, q, sort, order, page]);
+
+  const toggleSeverity = (s) => {
+    setPage(0);
+    setSeverities((cur) => (cur.includes(s) ? cur.filter((x) => x !== s) : [...cur, s]));
+  };
+
+  const toggleSort = (col) => {
+    setPage(0);
+    if (sort === col) setOrder((o) => (o === 'asc' ? 'desc' : 'asc'));
+    else { setSort(col); setOrder('desc'); }
+  };
+
+  const sortHeader = (label, col, align = 'left') => (
+    <th onClick={() => toggleSort(col)}
+      className={`cursor-pointer select-none px-3 py-2 ${align === 'right' ? 'text-right' : 'text-left'} font-mono text-[10px] uppercase tracking-wider text-slate-500 hover:text-slate-700 dark:hover:text-slate-300`}>
+      <span className={`inline-flex items-center gap-1 ${align === 'right' ? 'justify-end' : ''}`}>
+        {label}
+        {sort === col && <Icon name="chevron" size={10} className={order === 'asc' ? '-rotate-90' : 'rotate-90'} />}
+      </span>
+    </th>
+  );
+
+  const from = total === 0 ? 0 : page * PAGE_SIZE + 1;
+  const to = Math.min(total, (page + 1) * PAGE_SIZE);
+
+  return (
+    <div>
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+        <div className="flex flex-wrap items-center gap-1.5">
+          {SEVERITIES.map((s) => (
+            <button key={s} onClick={() => toggleSeverity(s)}
+              className={`border px-2 py-1 font-mono text-[10px] uppercase tracking-wider ${
+                severities.includes(s)
+                  ? 'border-sky-400 bg-sky-50 text-sky-700 dark:border-sky-600 dark:bg-sky-950/40 dark:text-sky-300'
+                  : 'border-slate-200 text-slate-500 hover:bg-slate-100 dark:border-slate-700 dark:text-slate-400 dark:hover:bg-slate-800'
+              }`}>
+              {s.toLowerCase()}
+            </button>
+          ))}
+        </div>
+        <div className="relative">
+          <Icon name="search" size={12} className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-slate-400" />
+          <input value={qInput} onChange={(e) => setQInput(e.target.value)} placeholder="cve, package, title…"
+            className="w-56 border border-slate-300 bg-white py-1 pl-7 pr-2 font-mono text-xs text-slate-900 outline-none focus:border-sky-500 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100" />
+        </div>
+      </div>
+
+      <div className="max-h-96 overflow-y-auto border border-slate-200 dark:border-slate-800">
+        <table className="w-full border-collapse text-sm">
+          <thead className="sticky top-0">
+            <tr className="border-b border-slate-200 bg-slate-50 dark:border-slate-800 dark:bg-slate-900/60">
+              {sortHeader('CVE', 'cve')}
+              {sortHeader('Sev', 'severity')}
+              {sortHeader('Package', 'package')}
+              <th className="px-3 py-2 text-left font-mono text-[10px] uppercase tracking-wider text-slate-500">Installed</th>
+              <th className="px-3 py-2 text-left font-mono text-[10px] uppercase tracking-wider text-slate-500">Fixed</th>
+              <th className="px-3 py-2 text-left font-mono text-[10px] uppercase tracking-wider text-slate-500">Scanner</th>
+              <th className="px-3 py-2 text-left font-mono text-[10px] uppercase tracking-wider text-slate-500">Repo</th>
+              {sortHeader('CVSS', 'cvss', 'right')}
+            </tr>
+          </thead>
+          <tbody>
+            {loading ? (
+              <tr><td colSpan={8} className="px-3 py-8 text-center font-mono text-xs text-slate-400 dark:text-slate-600">loading…</td></tr>
+            ) : items.length === 0 ? (
+              <tr><td colSpan={8} className="px-3 py-8 text-center font-mono text-xs text-slate-400 dark:text-slate-600">no findings</td></tr>
+            ) : items.map((v) => (
+              <tr key={v.id} className="border-b border-slate-100 last:border-0 dark:border-slate-800/60">
+                <td className="px-3 py-1.5 font-mono text-xs text-slate-800 dark:text-slate-200">{v.cve}</td>
+                <td className="px-3 py-1.5"><Badge tone={SEV_TONE[v.severity] || 'neutral'}>{v.severity}</Badge></td>
+                <td className="px-3 py-1.5 font-mono text-xs text-slate-700 dark:text-slate-300">{v.package}</td>
+                <td className="px-3 py-1.5 font-mono text-xs text-slate-500 dark:text-slate-400">{v.installed_version || '—'}</td>
+                <td className="px-3 py-1.5 font-mono text-xs text-emerald-600 dark:text-emerald-400">{v.fixed_version || '—'}</td>
+                <td className="px-3 py-1.5 font-mono text-xs text-slate-500 dark:text-slate-400">{v.scanner}</td>
+                <td className="px-3 py-1.5 font-mono text-xs text-slate-500 dark:text-slate-400">{v.repo}</td>
+                <td className="px-3 py-1.5 text-right font-mono tabular-nums text-xs text-slate-500 dark:text-slate-400">{v.cvss ? v.cvss.toFixed(1) : '—'}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      <div className="mt-2 flex items-center justify-between font-mono text-[11px] text-slate-500 dark:text-slate-500">
+        <span>{total === 0 ? 'no findings' : `${formatNumber(from)}–${formatNumber(to)} of ${formatNumber(total)}`}</span>
+        <div className="flex items-center gap-1">
+          <button onClick={() => setPage((p) => Math.max(0, p - 1))} disabled={page === 0}
+            className="border border-slate-300 px-2 py-1 font-mono text-[10px] uppercase text-slate-600 hover:bg-slate-100 disabled:opacity-40 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800">prev</button>
+          <button onClick={() => setPage((p) => (to < total ? p + 1 : p))} disabled={to >= total}
+            className="border border-slate-300 px-2 py-1 font-mono text-[10px] uppercase text-slate-600 hover:bg-slate-100 disabled:opacity-40 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800">next</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /**
  * Scanner DB status card. Shows version, the date the DB is "for", its size,
  * and a freshness hint. While updating, shows a pulse + the active job state.
@@ -519,24 +613,15 @@ function DbCard({ name, info, updating }) {
  * a dead end.
  */
 function ReportDetailModal({ reportId, onClose }) {
-  const [vulns, setVulns] = useState([]);
   const [report, setReport] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [sevFilter, setSevFilter] = useState('');
 
   useEffect(() => {
-    Promise.all([
-      api.get(`/scan/reports/${reportId}/vulnerabilities`).catch(() => []),
-      api.get(`/scan/reports/${reportId}`).catch(() => null),
-    ]).then(([v, r]) => {
-      setVulns(v);
+    api.get(`/scan/reports/${reportId}`).catch(() => null).then((r) => {
       setReport(r);
       setLoading(false);
     });
   }, [reportId]);
-
-  const filtered = sevFilter ? vulns.filter((v) => v.severity === sevFilter) : vulns;
-  const sevTone = { CRITICAL: 'bad', HIGH: 'warn', MEDIUM: 'info', LOW: 'neutral', UNKNOWN: 'neutral' };
 
   return (
     <Modal open onClose={onClose} wide title={report ? `${report.image} (${report.scanner})` : 'Scan detail'}
@@ -568,44 +653,7 @@ function ReportDetailModal({ reportId, onClose }) {
               <div className="border border-slate-200 p-2 text-center dark:border-slate-800"><div className="text-slate-500">Low</div><div className="text-lg text-slate-500">{report.low}</div></div>
             </div>
           )}
-          <div className="flex items-center justify-between">
-            <span className="font-mono text-[10px] uppercase text-slate-500">{filtered.length} findings</span>
-            <select value={sevFilter} onChange={(e) => setSevFilter(e.target.value)} className="border border-slate-300 bg-white px-2 py-1 font-mono text-xs text-slate-900 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-200">
-              <option value="">all</option>
-              <option value="CRITICAL">critical</option>
-              <option value="HIGH">high</option>
-              <option value="MEDIUM">medium</option>
-              <option value="LOW">low</option>
-            </select>
-          </div>
-          <div className="max-h-96 overflow-y-auto border border-slate-200 dark:border-slate-800">
-            <table className="w-full border-collapse text-sm">
-              <thead className="sticky top-0">
-                <tr className="border-b border-slate-200 bg-slate-50 dark:border-slate-800 dark:bg-slate-900/60">
-                  <th className="px-3 py-1.5 text-left font-mono text-[10px] uppercase text-slate-500">CVE</th>
-                  <th className="px-3 py-1.5 text-left font-mono text-[10px] uppercase text-slate-500">Sev</th>
-                  <th className="px-3 py-1.5 text-left font-mono text-[10px] uppercase text-slate-500">Package</th>
-                  <th className="px-3 py-1.5 text-left font-mono text-[10px] uppercase text-slate-500">Installed</th>
-                  <th className="px-3 py-1.5 text-left font-mono text-[10px] uppercase text-slate-500">Fixed</th>
-                  <th className="px-3 py-1.5 text-right font-mono text-[10px] uppercase text-slate-500">CVSS</th>
-                </tr>
-              </thead>
-              <tbody>
-                {filtered.length === 0 ? (
-                  <tr><td colSpan={6} className="px-3 py-8 text-center font-mono text-xs text-slate-400">no findings</td></tr>
-                ) : filtered.map((v) => (
-                  <tr key={v.id} className="border-b border-slate-100 last:border-0 dark:border-slate-800/60">
-                    <td className="px-3 py-1.5 font-mono text-xs text-slate-800 dark:text-slate-200">{v.cve}</td>
-                    <td className="px-3 py-1.5"><Badge tone={sevTone[v.severity] || 'neutral'}>{v.severity}</Badge></td>
-                    <td className="px-3 py-1.5 font-mono text-xs text-slate-700 dark:text-slate-300">{v.package}</td>
-                    <td className="px-3 py-1.5 font-mono text-xs text-slate-500 dark:text-slate-400">{v.installed_version || '—'}</td>
-                    <td className="px-3 py-1.5 font-mono text-xs text-emerald-600 dark:text-emerald-400">{v.fixed_version || '—'}</td>
-                    <td className="px-3 py-1.5 text-right font-mono tabular-nums text-xs text-slate-500">{v.cvss ? v.cvss.toFixed(1) : '—'}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <VulnerabilityTable endpoint={`/scan/reports/${reportId}/vulnerabilities`} />
         </div>
       )}
     </Modal>

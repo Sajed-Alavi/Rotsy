@@ -24,6 +24,10 @@ from ..models import Metric
 logger = logging.getLogger(__name__)
 
 METRIC_TYPE_STORAGE = "storage"
+# Blobstore usage samples reuse the ``Metric`` table's ``repo`` column to hold
+# the blobstore name rather than a repository name — same shape, different
+# resource — so no schema change was needed to add this dimension.
+METRIC_TYPE_BLOBSTORE = "blobstore"
 
 
 async def collect_once(
@@ -99,6 +103,92 @@ async def collect_once(
     await emit(100, f"collected {len(samples)} samples")
     logger.info("Metric collection complete: %d repos, %.2f MB total", len(samples), grand_total_bytes / 1e6)
     return {"repos": len(samples), "total_bytes": grand_total_bytes}
+
+
+async def collect_blobstore_metrics(nexus: NexusClient, session: AsyncSession) -> dict:
+    """Snapshot every blobstore's disk usage and persist it.
+
+    Same shape/store as :func:`collect_once`'s storage samples, just a
+    different ``metric_type`` — this is what lets an alert rule reference
+    ``blobstore.used_pct`` (see :mod:`app.services.alerting`).
+    """
+    try:
+        resp = await nexus.client.get("/service/rest/v1/blobstores")
+        resp.raise_for_status()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("blobstore metric collection failed: %s", exc)
+        return {"blobstores": 0}
+
+    now = datetime.now(timezone.utc)
+    samples: list[Metric] = []
+    for b in resp.json() or []:
+        name = b.get("name")
+        if not name:
+            continue
+        total = int(b.get("totalSizeInBytes") or 0)
+        free = int(b.get("availableSpaceInBytes") or 0)
+        capacity = total + free
+        samples.append(
+            Metric(
+                timestamp=now,
+                repo=name,
+                metric_type=METRIC_TYPE_BLOBSTORE,
+                value_json=json.dumps({
+                    "used_bytes": total,
+                    "free_bytes": free,
+                    "capacity_bytes": capacity,
+                    "used_pct": round(total / capacity * 100, 1) if capacity else 0.0,
+                }),
+            )
+        )
+    if samples:
+        session.add_all(samples)
+        await session.commit()
+    return {"blobstores": len(samples)}
+
+
+async def latest_blobstore_snapshot(session: AsyncSession) -> list[dict]:
+    """Most recent blobstore-usage sample per blobstore."""
+    sub = (
+        select(Metric.repo, func.max(Metric.timestamp).label("ts"))
+        .where(Metric.metric_type == METRIC_TYPE_BLOBSTORE)
+        .group_by(Metric.repo)
+        .subquery()
+    )
+    stmt = (
+        select(Metric)
+        .join(sub, (Metric.repo == sub.c.repo) & (Metric.timestamp == sub.c.ts))
+        .order_by(Metric.repo)
+    )
+    rows = (await session.execute(stmt)).scalars().all()
+    out = []
+    for r in rows:
+        try:
+            value = json.loads(r.value_json)
+        except (json.JSONDecodeError, TypeError):
+            value = {}
+        out.append({"repo": r.repo, "timestamp": r.timestamp.isoformat(), **value})
+    return out
+
+
+async def blobstore_timeseries(session: AsyncSession, name: str, hours: int = 24) -> list[dict]:
+    """Blobstore-usage samples for ``name`` within the last ``hours``."""
+    from datetime import timedelta
+    since = datetime.now(timezone.utc) - timedelta(hours=hours)
+    stmt = (
+        select(Metric)
+        .where(Metric.repo == name, Metric.metric_type == METRIC_TYPE_BLOBSTORE, Metric.timestamp >= since)
+        .order_by(Metric.timestamp)
+    )
+    rows = (await session.execute(stmt)).scalars().all()
+    out = []
+    for r in rows:
+        try:
+            value = json.loads(r.value_json)
+        except (json.JSONDecodeError, TypeError):
+            value = {}
+        out.append({"timestamp": r.timestamp.isoformat(), **value})
+    return out
 
 
 async def _trim_old_metrics(session: AsyncSession, retention_days: int) -> None:

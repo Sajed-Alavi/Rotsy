@@ -38,7 +38,13 @@ class AlertRule(Base):
 
     Example: metric="storage.wasted", condition=">", threshold=5368709120
     → posts to webhook_url when wasted space in any matching repo exceeds 5GB.
-    ``repo_filter`` is a SQL LIKE pattern (``%`` matches any repo when null).
+    ``repo_filter`` is a SQL LIKE pattern (``%`` matches any repo when null;
+    for ``blobstore.*`` metrics it matches blobstore names instead).
+    ``webhook_url`` is optional — a rule with none configured still evaluates
+    and updates ``last_triggered_at``, it just skips delivery.
+    ``is_default`` marks rows created by the startup seed (see
+    ``db/seed.py::_seed_default_alert_rules``) so a user-deleted default isn't
+    silently recreated on the next restart.
     """
 
     __tablename__ = "alert_rules"
@@ -49,8 +55,9 @@ class AlertRule(Base):
     condition: Mapped[str] = mapped_column(String(2), nullable=False)  # ">", "<", "=="
     threshold: Mapped[float] = mapped_column(Float, nullable=False)
     repo_filter: Mapped[str | None] = mapped_column(String(255), nullable=True)  # LIKE pattern; NULL = all
-    webhook_url: Mapped[str] = mapped_column(String(512), nullable=False)
+    webhook_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    is_default: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     # Last trigger tracking to avoid webhook spam.

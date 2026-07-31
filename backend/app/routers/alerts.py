@@ -19,7 +19,7 @@ from ..models import AlertRule
 
 router = APIRouter(prefix="/alerts", tags=["alerts"])
 
-_VALID_METRICS = {"storage.total", "storage.asset_count"}
+_VALID_METRICS = {"storage.total", "storage.asset_count", "blobstore.used_pct"}
 _VALID_CONDITIONS = {">", "<", "=="}
 
 
@@ -29,7 +29,7 @@ class AlertCreate(BaseModel):
     condition: Literal[">", "<", "=="]
     threshold: float
     repo_filter: str | None = Field(default=None, max_length=255)  # SQL LIKE pattern; null = all
-    webhook_url: str = Field(..., min_length=8, max_length=512)
+    webhook_url: str | None = Field(default=None, min_length=8, max_length=512, description="Optional — the rule still evaluates without one, just skips delivery")
     enabled: bool = True
 
 
@@ -52,8 +52,9 @@ class AlertOut(BaseModel):
     condition: str
     threshold: float
     repo_filter: str | None
-    webhook_url: str
+    webhook_url: str | None
     enabled: bool
+    is_default: bool
     created_at: datetime
     last_triggered_at: datetime | None
 

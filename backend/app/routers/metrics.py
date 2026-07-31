@@ -10,12 +10,12 @@ from __future__ import annotations
 import logging
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..dependencies import RequirePermission, get_session
 from ..state import app_state
-from ..services.metrics_collector import latest_snapshot, timeseries
+from ..services.metrics_collector import blobstore_timeseries, latest_snapshot, timeseries
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/metrics", tags=["metrics"])
@@ -33,6 +33,16 @@ async def repo_timeseries(
     hours: Annotated[int, Query(ge=1, le=24 * 30)] = 24,
 ) -> list[dict[str, Any]]:
     return await timeseries(session, repo, hours)
+
+
+@router.get("/blobstore/{name}/timeseries", dependencies=[Depends(RequirePermission("metrics:read"))])
+async def blobstore_timeseries_endpoint(
+    name: str,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    hours: Annotated[int, Query(ge=1, le=24 * 30)] = 24,
+) -> list[dict[str, Any]]:
+    """Disk-usage history for one blobstore — feeds a sparkline/chart."""
+    return await blobstore_timeseries(session, name, hours)
 
 
 @router.get("/realtime", dependencies=[Depends(RequirePermission("metrics:read"))])
@@ -136,6 +146,31 @@ async def blobstore_stats(request: Request) -> list[dict[str, Any]]:
             "used_pct": round(used / capacity * 100, 1) if capacity else 0.0,
         })
     return out
+
+
+@router.get("/host", dependencies=[Depends(RequirePermission("metrics:read"))])
+async def host_metrics() -> dict[str, Any]:
+    """Live host/process resource snapshot for the dashboard's CPU/memory/disk
+    tiles — a point-in-time probe, not persisted, matching ``/metrics/realtime``'s
+    "live probe" pattern rather than growing the ``Metric`` table.
+
+    ``cpu_percent`` uses psutil's non-blocking mode (compares to the previous
+    call in this process rather than sampling over a blocking interval) — the
+    first call after a worker starts reads 0.0, which is expected and
+    self-corrects on the next poll.
+    """
+    import psutil
+
+    memory = psutil.virtual_memory()
+    disk = psutil.disk_usage("/")
+    return {
+        "cpu_percent": psutil.cpu_percent(interval=None),
+        "memory_percent": memory.percent,
+        "memory_used_bytes": memory.used,
+        "memory_total_bytes": memory.total,
+        "disk_used_bytes": disk.used,
+        "disk_total_bytes": disk.total,
+    }
 
 
 @router.get("/system", dependencies=[Depends(RequirePermission("metrics:read"))])

@@ -62,6 +62,8 @@ services:
       # Air-gapped scanner DB import: operator drops db archives into ./offline-db
       # on the host; the container reads them from /app/offline-db.
       - SCANNER_OFFLINE_DIR=/app/offline-db
+      # Where full/selective backup archive runs are written.
+      - BACKUP_OUTPUT_DIR=/app/backups
     volumes:
       # Pre-downloaded Trivy/Grype DB archives for offline import (restricted
       # networks). Create ./offline-db and drop db.tar.gz / grype-db.tar.gz in.
@@ -70,6 +72,10 @@ services:
       # (large: trivy ~1.2GB, grype ~1.9GB) databases are NOT wiped and
       # re-downloaded every `docker compose up --build`.
       - scanner-cache:/app/.cache
+      # Dedicated volume for backup/archive runs (full or selective) — survives
+      # rebuilds/recreates like scanner-cache, since these are operator-facing
+      # archives, not disposable cache.
+      - backup-data:/app/backups
     # Lets the container reach services on the Docker host: the Nexus REST API
     # (:8081) and every Docker connector port discovery finds, whatever they are.
     extra_hosts:
@@ -112,3 +118,4 @@ volumes:
   pg-data:
   redis-data:
   scanner-cache:
+  backup-data:

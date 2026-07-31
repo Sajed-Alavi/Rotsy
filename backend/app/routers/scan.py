@@ -20,14 +20,15 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import case, desc, func, select
+from sqlalchemy import asc, case, desc, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..core.config_store import get_or_create_webhook_secret, rotate_webhook_secret
+from ..core.image_scope import allowed_image_patterns, image_visible
 from ..core.jobs import JobQueue
 from ..config import Settings
-from ..dependencies import RequirePermission, get_session, get_settings
-from ..models import ScannedImage, ScanReport, ScanTarget, Vulnerability
+from ..dependencies import RequirePermission, get_current_user, get_session, get_settings
+from ..models import ScannedImage, ScanReport, ScanTarget, User, Vulnerability
 from ..services import registry as registry_discovery
 from ..services import scan_events, scanner_db
 from ..state import app_state
@@ -164,6 +165,7 @@ async def _latest_reports(
 @router.get("/images", dependencies=[Depends(RequirePermission("scan:read"))])
 async def list_known_images(
     session: Annotated[AsyncSession, Depends(get_session)],
+    user: Annotated[User, Depends(get_current_user)],
     repo: Annotated[str | None, Query(description="Filter to one repository")] = None,
     state: Annotated[str | None, Query(description="baseline | queued | scanned | failed")] = None,
     limit: Annotated[int, Query(ge=1, le=500)] = 200,
@@ -177,6 +179,9 @@ async def list_known_images(
       * ``queued``   — a scan is in flight.
       * ``scanned``  — scanned successfully; will not be re-scanned implicitly.
       * ``failed``   — the last attempt failed; see the report for the reason.
+
+    Entries outside the caller's image-scope patterns for their repo (if any
+    of their roles are scoped there) are omitted.
     """
     stmt = select(ScannedImage).order_by(desc(ScannedImage.first_seen_at)).limit(limit)
     if repo:
@@ -184,6 +189,16 @@ async def list_known_images(
     if state:
         stmt = stmt.where(ScannedImage.state == state)
     entries = (await session.execute(stmt)).scalars().all()
+
+    # Patterns per distinct repo, computed once rather than per-row.
+    patterns_by_repo: dict[str, list[str] | None] = {}
+    visible_entries = []
+    for entry in entries:
+        if entry.repo not in patterns_by_repo:
+            patterns_by_repo[entry.repo] = await allowed_image_patterns(session, user, entry.repo)
+        if image_visible(patterns_by_repo[entry.repo], entry.image):
+            visible_entries.append(entry)
+    entries = visible_entries
 
     reports = await _latest_reports(session, [(e.repo, e.image) for e in entries])
     out: list[dict[str, Any]] = []
@@ -226,12 +241,17 @@ async def scan_one_image(
     body: ScanRequest,
     session: Annotated[AsyncSession, Depends(get_session)],
     settings: Annotated[Settings, Depends(get_settings)],
+    user: Annotated[User, Depends(get_current_user)],
 ) -> dict[str, Any]:
     """Trigger (b): scan one image because an operator asked.
 
     The only path that may re-scan an image that is already scanned or
     baselined — an explicit request is always honoured.
     """
+    patterns = await allowed_image_patterns(session, user, body.repo)
+    if not image_visible(patterns, body.image):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, f"'{body.image}' is outside your image scope for '{body.repo}'.")
+
     _, cache = _require_backend(request)
     return await scan_events.request_manual_scan(
         session, cache, body.repo, body.image,
@@ -493,42 +513,101 @@ _SEVERITY_RANK = case(
     else_=4,
 )
 
+_SORT_COLUMNS = {
+    "severity": None,  # handled specially — falls back to the rank case below
+    "cvss": Vulnerability.cvss,
+    "cve": Vulnerability.cve,
+    "package": Vulnerability.package,
+}
 
-def _ordered_findings(stmt):
-    """Most serious first: severity rank, then CVSS descending."""
-    return stmt.order_by(_SEVERITY_RANK, desc(Vulnerability.cvss))
+
+def _ordered_findings(stmt, sort: str = "severity", order: str = "desc"):
+    """Most serious first by default: severity rank, then CVSS descending.
+
+    ``sort``/``order`` let the caller pick a different column; ``severity``
+    (the default) always orders by rank first, CVSS descending as a tiebreak,
+    regardless of ``order`` — the other three columns honor ``order`` directly.
+    """
+    if sort not in _SORT_COLUMNS or sort == "severity":
+        return stmt.order_by(_SEVERITY_RANK, desc(Vulnerability.cvss))
+    column = _SORT_COLUMNS[sort]
+    direction = asc if order == "asc" else desc
+    return stmt.order_by(direction(column), _SEVERITY_RANK)
 
 
-@router.get("/vulnerabilities", response_model=list[VulnerabilityOut],
+def _apply_finding_filters(
+    stmt, *, repo: str | None = None, severity: str | None = None,
+    scanner: str | None = None, q: str | None = None,
+):
+    if repo:
+        stmt = stmt.where(Vulnerability.repo == repo)
+    if severity:
+        values = [s.strip().upper() for s in severity.split(",") if s.strip()]
+        if values:
+            stmt = stmt.where(Vulnerability.severity.in_(values))
+    if scanner:
+        stmt = stmt.where(Vulnerability.scanner == scanner)
+    if q:
+        like = f"%{q}%"
+        stmt = stmt.where(or_(
+            Vulnerability.cve.ilike(like),
+            Vulnerability.package.ilike(like),
+            Vulnerability.title.ilike(like),
+        ))
+    return stmt
+
+
+class VulnerabilityPage(BaseModel):
+    items: list[VulnerabilityOut]
+    total: int
+
+
+@router.get("/vulnerabilities", response_model=VulnerabilityPage,
             dependencies=[Depends(RequirePermission("scan:read"))])
 async def list_vulnerabilities(
     session: Annotated[AsyncSession, Depends(get_session)],
     repo: Annotated[str | None, Query()] = None,
-    severity: Annotated[str | None, Query()] = None,
+    severity: Annotated[str | None, Query(description="Comma-separated, e.g. CRITICAL,HIGH")] = None,
+    scanner: Annotated[str | None, Query()] = None,
+    q: Annotated[str | None, Query(description="Free-text match against CVE id, package, title")] = None,
+    sort: Annotated[str, Query(description="severity | cvss | cve | package")] = "severity",
+    order: Annotated[str, Query(description="asc | desc")] = "desc",
     limit: Annotated[int, Query(ge=1, le=500)] = 200,
-):
-    stmt = select(Vulnerability)
-    if repo:
-        stmt = stmt.where(Vulnerability.repo == repo)
-    if severity:
-        stmt = stmt.where(Vulnerability.severity == severity.upper())
-    return list((await session.execute(_ordered_findings(stmt).limit(limit))).scalars().all())
+    offset: Annotated[int, Query(ge=0)] = 0,
+) -> VulnerabilityPage:
+    stmt = _apply_finding_filters(select(Vulnerability), repo=repo, severity=severity, scanner=scanner, q=q)
+    total = (await session.execute(select(func.count()).select_from(stmt.subquery()))).scalar_one()
+    rows = (await session.execute(
+        _ordered_findings(stmt, sort, order).limit(limit).offset(offset)
+    )).scalars().all()
+    return VulnerabilityPage(items=list(rows), total=total)
 
 
-@router.get("/reports/{report_id}/vulnerabilities", response_model=list[VulnerabilityOut],
+@router.get("/reports/{report_id}/vulnerabilities", response_model=VulnerabilityPage,
             dependencies=[Depends(RequirePermission("scan:read"))])
 async def report_vulnerabilities(
     report_id: int,
     session: Annotated[AsyncSession, Depends(get_session)],
-    severity: Annotated[str | None, Query()] = None,
-):
+    severity: Annotated[str | None, Query(description="Comma-separated, e.g. CRITICAL,HIGH")] = None,
+    scanner: Annotated[str | None, Query()] = None,
+    q: Annotated[str | None, Query(description="Free-text match against CVE id, package, title")] = None,
+    sort: Annotated[str, Query(description="severity | cvss | cve | package")] = "severity",
+    order: Annotated[str, Query(description="asc | desc")] = "desc",
+    limit: Annotated[int, Query(ge=1, le=500)] = 200,
+    offset: Annotated[int, Query(ge=0)] = 0,
+) -> VulnerabilityPage:
     """Every finding for one report."""
     if await session.get(ScanReport, report_id) is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Report not found")
-    stmt = select(Vulnerability).where(Vulnerability.report_id == report_id)
-    if severity:
-        stmt = stmt.where(Vulnerability.severity == severity.upper())
-    return list((await session.execute(_ordered_findings(stmt))).scalars().all())
+    stmt = _apply_finding_filters(
+        select(Vulnerability).where(Vulnerability.report_id == report_id),
+        severity=severity, scanner=scanner, q=q,
+    )
+    total = (await session.execute(select(func.count()).select_from(stmt.subquery()))).scalar_one()
+    rows = (await session.execute(
+        _ordered_findings(stmt, sort, order).limit(limit).offset(offset)
+    )).scalars().all()
+    return VulnerabilityPage(items=list(rows), total=total)
 
 
 @router.get("/summary", dependencies=[Depends(RequirePermission("scan:read"))])

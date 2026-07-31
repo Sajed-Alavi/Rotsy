@@ -2,24 +2,49 @@ import { useEffect, useState } from 'react';
 import { api } from '../../lib/api.js';
 import Stat from '../../components/Stat.jsx';
 import Badge from '../../components/Badge.jsx';
-import { formatNumber } from '../../lib/format.js';
+import RankedBarList from '../../components/RankedBarList.jsx';
+import { formatBytes, formatNumber, relativeTime } from '../../lib/format.js';
 
-/** Dashboard: compact status overview. Pulls /health and /repositories. */
+const HOST_POLL_MS = 5000;
+const HOST_HISTORY_LEN = 20;
+
+/** Dashboard: status overview + activity, storage, vulnerability and host-resource glance. */
 export default function DashboardPage() {
   const [health, setHealth] = useState(null);
   const [repos, setRepos] = useState([]);
+  const [scanSummary, setScanSummary] = useState(null);
+  const [blobstores, setBlobstores] = useState([]);
+  const [overview, setOverview] = useState([]);
+  const [jobs, setJobs] = useState([]);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
+
+  const [cpuHistory, setCpuHistory] = useState([]);
+  const [memHistory, setMemHistory] = useState([]);
+  const [diskHistory, setDiskHistory] = useState([]);
+  const [host, setHost] = useState(null);
 
   useEffect(() => {
     let active = true;
     (async () => {
       try {
-        const [h, r] = await Promise.allSettled([api.get('/health'), api.get('/repositories')]);
+        const results = await Promise.allSettled([
+          api.get('/health'),
+          api.get('/repositories'),
+          api.get('/scan/summary'),
+          api.get('/metrics/blobstores'),
+          api.get('/metrics/overview'),
+          api.get('/jobs?limit=10'),
+        ]);
         if (!active) return;
+        const [h, r, s, b, o, j] = results;
         if (h.status === 'fulfilled') setHealth(h.value);
         else setError(h.reason.message);
         if (r.status === 'fulfilled') setRepos(r.value ?? []);
+        if (s.status === 'fulfilled') setScanSummary(s.value);
+        if (b.status === 'fulfilled') setBlobstores(b.value ?? []);
+        if (o.status === 'fulfilled') setOverview(o.value ?? []);
+        if (j.status === 'fulfilled') setJobs(j.value ?? []);
       } finally {
         if (active) setLoading(false);
       }
@@ -27,8 +52,37 @@ export default function DashboardPage() {
     return () => { active = false; };
   }, []);
 
+  // Host resource sparklines: poll while this page is mounted, keep a
+  // bounded rolling window client-side (no backend history for this — a
+  // live probe, same idea as /metrics/realtime).
+  useEffect(() => {
+    const push = (setter, value) => setter((prev) => [...prev.slice(-(HOST_HISTORY_LEN - 1)), value]);
+    const poll = async () => {
+      try {
+        const h = await api.get('/metrics/host');
+        setHost(h);
+        push(setCpuHistory, h.cpu_percent);
+        push(setMemHistory, h.memory_percent);
+        push(setDiskHistory, (h.disk_used_bytes / (h.disk_total_bytes || 1)) * 100);
+      } catch { /* best-effort — host metrics are a nice-to-have */ }
+    };
+    poll();
+    const interval = setInterval(poll, HOST_POLL_MS);
+    return () => clearInterval(interval);
+  }, []);
+
   const nexusTone = health?.nexus_reachable ? 'ok' : 'bad';
   const redisTone = health?.redis_reachable ? 'ok' : 'warn';
+
+  const totals = scanSummary?.totals || { critical: 0, high: 0 };
+  const totalStorage = overview.reduce((s, r) => s + (r.total_bytes || 0), 0);
+  const worstDiskPct = blobstores.reduce((max, b) => Math.max(max, b.used_pct || 0), 0);
+
+  const formatCounts = {};
+  for (const r of repos) formatCounts[r.format] = (formatCounts[r.format] || 0) + 1;
+  const formatItems = Object.entries(formatCounts).map(([label, value]) => ({ label, value }));
+
+  const jobStatusTone = (s) => (s === 'done' ? 'ok' : s === 'failed' ? 'bad' : s === 'cancelled' ? 'neutral' : 'info');
 
   return (
     <div className="p-6">
@@ -39,12 +93,60 @@ export default function DashboardPage() {
         </span>
       </div>
 
-      <div className="mb-6 grid grid-cols-2 gap-px border border-slate-200 bg-slate-200 sm:grid-cols-4 dark:border-slate-800 dark:bg-slate-800">
-        <Stat label="Nexus" value={loading ? '···' : health?.nexus_reachable ? 'reachable' : 'unreachable'} sub={health ? 'status /check' : ''} tone={nexusTone} />
+      {error && <div className="mb-4 border border-rose-200 bg-rose-50 px-3 py-2 font-mono text-xs text-rose-600 dark:border-rose-900 dark:bg-rose-950/30 dark:text-rose-400">{error}</div>}
+
+      {/* Status + key repository metrics */}
+      <div className="mb-6 grid grid-cols-2 gap-px border border-slate-200 bg-slate-200 sm:grid-cols-4 lg:grid-cols-7 dark:border-slate-800 dark:bg-slate-800">
+        <Stat label="Nexus" value={loading ? '···' : health?.nexus_reachable ? 'reachable' : 'unreachable'} tone={nexusTone} />
         <Stat label="Redis Cache" value={loading ? '···' : health?.redis_reachable ? 'connected' : 'degraded'} tone={redisTone} />
         <Stat label="Repositories" count={repos.length} sub="all formats" />
-        <Stat label="Wrapper API" value={error ? 'error' : 'ok'} tone={error ? 'bad' : 'ok'} sub={error || 'responding'} />
+        <Stat label="Total Storage" bytes={totalStorage} sub={`${overview.length} repos tracked`} />
+        <Stat label="Disk Used" value={`${worstDiskPct.toFixed(0)}%`} sub="worst blobstore" tone={worstDiskPct > 85 ? 'warn' : 'info'} />
+        <Stat label="Critical CVEs" count={totals.critical} tone={totals.critical ? 'bad' : 'ok'} />
+        <Stat label="High CVEs" count={totals.high} tone={totals.high ? 'warn' : 'ok'} />
       </div>
+
+      <div className="mb-6 grid grid-cols-1 gap-4 lg:grid-cols-2">
+        {/* Repository formats */}
+        <section>
+          <h2 className="mb-2 font-mono text-[10px] uppercase tracking-wider text-slate-500">Repository formats</h2>
+          <div className="border border-slate-200 p-3 dark:border-slate-800">
+            <RankedBarList items={formatItems} formatValue={formatNumber} limit={6} />
+          </div>
+        </section>
+
+        {/* Recent activity */}
+        <section>
+          <h2 className="mb-2 font-mono text-[10px] uppercase tracking-wider text-slate-500">Recent activity</h2>
+          <div className="max-h-64 overflow-y-auto border border-slate-200 dark:border-slate-800">
+            {jobs.length === 0 ? (
+              <div className="py-6 text-center font-mono text-xs text-slate-400 dark:text-slate-600">no background jobs yet</div>
+            ) : (
+              <table className="w-full border-collapse text-sm">
+                <tbody>
+                  {jobs.map((j) => (
+                    <tr key={j.id} className="border-b border-slate-100 last:border-0 dark:border-slate-800/60">
+                      <td className="px-3 py-1.5 font-mono text-xs text-slate-700 dark:text-slate-300">{j.type}</td>
+                      <td className="px-3 py-1.5"><Badge tone={jobStatusTone(j.status)}>{j.status}</Badge></td>
+                      <td className="px-3 py-1.5 text-right font-mono text-[11px] text-slate-400 dark:text-slate-600">{relativeTime(j.updated_at)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        </section>
+      </div>
+
+      {/* Host resources */}
+      <section className="mb-6">
+        <h2 className="mb-2 font-mono text-[10px] uppercase tracking-wider text-slate-500">Host resources</h2>
+        <div className="grid grid-cols-1 gap-px border border-slate-200 bg-slate-200 sm:grid-cols-3 dark:border-slate-800 dark:bg-slate-800">
+          <Stat label="CPU" value={host ? `${host.cpu_percent.toFixed(0)}%` : '···'} series={cpuHistory} tone={host && host.cpu_percent > 85 ? 'warn' : 'neutral'} />
+          <Stat label="Memory" value={host ? `${host.memory_percent.toFixed(0)}%` : '···'} sub={host ? formatBytes(host.memory_used_bytes) : ''} series={memHistory} tone={host && host.memory_percent > 85 ? 'warn' : 'neutral'} />
+          <Stat label="Disk" value={host ? `${((host.disk_used_bytes / (host.disk_total_bytes || 1)) * 100).toFixed(0)}%` : '···'} sub={host ? formatBytes(host.disk_used_bytes) : ''} series={diskHistory} tone={host && host.disk_used_bytes / (host.disk_total_bytes || 1) > 0.85 ? 'warn' : 'neutral'} />
+        </div>
+      </section>
 
       <div className="mb-3 flex items-center justify-between">
         <h2 className="font-mono text-[10px] uppercase tracking-wider text-slate-500">Repositories</h2>

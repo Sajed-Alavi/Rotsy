@@ -12,16 +12,21 @@ Implements:
 from __future__ import annotations
 
 import logging
+import posixpath
 from typing import Annotated, Any
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..core.image_scope import allowed_image_patterns, image_visible
 from ..core.nexus_client import NexusClient
-from ..dependencies import RequirePermission
-from ..services import images
+from ..dependencies import RequirePermission, get_current_user, get_session
+from ..models import User
+from ..services import images, nexus_security
+from ..services.storage_analyzer import parse_asset_path
 from ..state import app_state
 
 logger = logging.getLogger(__name__)
@@ -69,20 +74,33 @@ async def list_repositories(
 
 
 @router.get("/{name}/images", dependencies=[Depends(RequirePermission("repositories:read"))])
-async def list_repository_images(request: Request, name: str) -> list[dict[str, Any]]:
+async def list_repository_images(
+    request: Request,
+    name: str,
+    user: Annotated[User, Depends(get_current_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> list[dict[str, Any]]:
     """List a repository's contents as images and tags rather than raw blobs.
 
     A Docker repository's asset listing is mostly layer blobs
     (``v2/myapp/blobs/sha256:…``), which is not a useful view of what the
     repository holds. This returns the image → tag structure with each tag's
     push time, size and component id (the handle needed to delete it).
+
+    Images outside the caller's image-scope patterns for this repo (if any
+    of their roles are scoped here) are omitted entirely.
     """
     nexus = await _nexus(request)
     try:
-        return await images.list_images(nexus, name)
+        result = await images.list_images(nexus, name)
     except Exception as exc:  # noqa: BLE001
         logger.warning("Failed to list images for %s: %s", name, exc)
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, f"Failed to list images: {exc}")
+
+    patterns = await allowed_image_patterns(session, user, name)
+    if patterns is None:
+        return result
+    return [img for img in result if image_visible(patterns, img["name"])]
 
 
 class ComponentDelete(BaseModel):
@@ -98,15 +116,42 @@ class ComponentDelete(BaseModel):
 
 @router.post("/{name}/images/delete", dependencies=[Depends(RequirePermission("repositories:write"))])
 async def delete_repository_images(
-    request: Request, name: str, body: ComponentDelete,
+    request: Request,
+    name: str,
+    body: ComponentDelete,
+    user: Annotated[User, Depends(get_current_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
 ) -> dict[str, Any]:
     """Delete specific image tags, reporting the outcome of each one.
 
     Returns ``deleted`` and ``failed`` (each failure carrying its reason) rather
     than a single status code, so deleting one of four tags cannot look like a
     success when Nexus rejected it.
+
+    Each component id's owning image is resolved server-side (never trust a
+    client-supplied image name for a security check) and checked against the
+    caller's image-scope patterns for this repo before anything is deleted.
     """
     nexus = await _nexus(request)
+
+    patterns = await allowed_image_patterns(session, user, name)
+    if patterns is not None:
+        current_images = await images.list_images(nexus, name)
+        owner_by_component_id = {
+            tag["component_id"]: img["name"]
+            for img in current_images
+            for tag in img["tags"]
+        }
+        denied = [
+            cid for cid in body.component_ids
+            if cid not in owner_by_component_id or not image_visible(patterns, owner_by_component_id[cid])
+        ]
+        if denied:
+            raise HTTPException(
+                status.HTTP_403_FORBIDDEN,
+                f"Not permitted to delete {len(denied)} of the requested component(s) — outside your image scope for '{name}'.",
+            )
+
     result = await images.delete_components(nexus, body.component_ids)
     if body.compact and result["deleted_count"]:
         result["compact"] = await images.trigger_compact(nexus)
@@ -122,6 +167,8 @@ async def delete_repository_images(
 async def list_assets(
     request: Request,
     name: str,
+    user: Annotated[User, Depends(get_current_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
     continuation_token: Annotated[str | None, Query(alias="continuationToken")] = None,
 ) -> dict[str, Any]:
     """Paginated asset list for a repository.
@@ -129,6 +176,9 @@ async def list_assets(
     Returns Nexus' shape (``items`` + ``continuationToken``) enriched with the
     fields the UI needs: path, downloadUrl, fileSize, contentType, uploader,
     timestamps, checksums. The frontend uses ``continuationToken`` to load more.
+
+    Items outside the caller's image-scope patterns for this repo (if any of
+    their roles are scoped here) are omitted, same as ``GET /{name}/images``.
     """
     nexus = await _nexus(request)
     params: dict[str, Any] = {"repository": name}
@@ -140,7 +190,59 @@ async def list_assets(
     except Exception as exc:  # noqa: BLE001
         logger.warning("Failed to list assets for %s: %s", name, exc)
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, "Failed to list assets")
-    return resp.json()
+    result = resp.json()
+
+    patterns = await allowed_image_patterns(session, user, name)
+    if patterns is not None:
+        try:
+            fmt_resp = await nexus.client.get(f"/service/rest/v1/repositories/{name}")
+            fmt_resp.raise_for_status()
+            fmt = (fmt_resp.json() or {}).get("format", "")
+        except Exception:  # noqa: BLE001
+            fmt = ""
+        items = result.get("items") or []
+        result["items"] = [
+            item for item in items
+            if image_visible(patterns, _image_name_from_asset_path(item.get("path", ""), fmt))
+        ]
+    return result
+
+
+def _image_name_from_asset_path(path: str, fmt: str) -> str:
+    """Best-effort image-name extraction from a raw asset path, for scoping.
+
+    Docker paths look like ``v2/<image>/manifests/<tag>`` or
+    ``v2/<image>/blobs/sha256:…``; everything else reuses the same heuristic
+    :func:`storage_analyzer.parse_asset_path` already uses for the storage
+    analyzer's generic-format grouping. This is inherently best-effort — raw
+    asset paths don't cleanly expose "which image" the way the
+    components/images API does (see the RBAC plan's documented boundary).
+    """
+    stripped = path.strip("/")
+    if fmt == "docker" and stripped.startswith("v2/"):
+        rest = stripped[len("v2/"):]
+        for marker in ("/manifests/", "/blobs/"):
+            if marker in rest:
+                return rest.split(marker, 1)[0]
+        return rest
+    return parse_asset_path(path, fmt)[0]
+
+
+def _validated_repository_path(name: str, path: str) -> str:
+    """Resolve ``/repository/{name}{path}`` and reject any escape from that prefix.
+
+    ``path`` is caller-supplied. httpx normalizes ``..`` segments when merging a
+    relative URL against the client's ``base_url``, so an unvalidated path can
+    reach arbitrary Nexus REST endpoints (e.g. ``/service/rest/v1/security/users``)
+    under the backend's privileged service account rather than the intended
+    repository. Normalizing here and checking containment closes that off before
+    any request reaches Nexus.
+    """
+    prefix = f"/repository/{name}/"
+    normalized = posixpath.normpath(f"/repository/{name}{path}")
+    if not (normalized + "/").startswith(prefix):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Invalid asset path.")
+    return normalized
 
 
 @router.get(
@@ -150,6 +252,8 @@ async def list_assets(
 async def download_asset(
     request: Request,
     name: str,
+    user: Annotated[User, Depends(get_current_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
     path: Annotated[str, Query(description="Asset path within the repository, e.g. '/foo/bar.jar'")] = "",
 ) -> StreamingResponse:
     """Stream an asset from Nexus to the browser (authenticated proxy).
@@ -160,10 +264,24 @@ async def download_asset(
     """
     if not path:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Query parameter 'path' is required.")
+    # Validate before any Nexus call is made with this repo/path pair.
+    validated_url = _validated_repository_path(name, path)
     nexus = await _nexus(request)
-    # Nexus serves assets at /repository/{repo}{path}. The path is already
-    # absolute (starts with /), so we just join.
-    url = f"/repository/{name}{path}"
+
+    patterns = await allowed_image_patterns(session, user, name)
+    if patterns is not None:
+        try:
+            fmt_resp = await nexus.client.get(f"/service/rest/v1/repositories/{name}")
+            fmt_resp.raise_for_status()
+            fmt = (fmt_resp.json() or {}).get("format", "")
+        except Exception:  # noqa: BLE001
+            fmt = ""
+        image_name = _image_name_from_asset_path(path, fmt)
+        if not image_visible(patterns, image_name):
+            raise HTTPException(status.HTTP_403_FORBIDDEN, f"'{image_name}' is outside your image scope for '{name}'.")
+    # Nexus serves assets at /repository/{repo}{path}. Validated above so the
+    # normalized path cannot escape this repository's prefix.
+    url = validated_url
     # httpx async streaming: forward to the client chunk-by-chunk.
     upstream = await nexus.client.send(
         nexus.client.build_request("GET", url),
@@ -212,6 +330,7 @@ class RepoCreate(BaseModel):
     type: str = Field(..., description="hosted | proxy | group")
     blob_store: str = Field(default="default", max_length=255)
     online: bool = True
+    anonymous_access: bool = Field(default=False, description="Grant repository-view (browse+read) to nx-anonymous role")
 
     # hosted
     write_policy: str = Field(default="ALLOW", description="ALLOW | ALLOW_ONCE | DENY (hosted)")
@@ -283,7 +402,14 @@ async def create_repository(request: Request, body: RepoCreate) -> dict[str, Any
         cache = app_state(request).cache
         if cache is not None:
             await cache.delete(_REPOS_CACHE_KEY)
-        return {"ok": True, "name": body.name, "format": body.format, "type": body.type}
+        result: dict[str, Any] = {"ok": True, "name": body.name, "format": body.format, "type": body.type}
+        if body.anonymous_access:
+            try:
+                await nexus_security.grant_anonymous_access(nexus, body.name, body.format)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("anonymous-access grant failed for %s: %s", body.name, exc)
+                result["warning"] = f"repository created, but anonymous access grant failed: {exc}"
+        return result
     if resp.status_code == 400:
         try:
             errs = resp.json()

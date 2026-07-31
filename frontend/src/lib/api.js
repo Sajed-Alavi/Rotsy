@@ -38,9 +38,7 @@ async function rawRequest(path, { method = 'GET', body, signal } = {}) {
   const payload = text ? safeJson(text) : null;
 
   if (!response.ok) {
-    const message =
-      (payload && (payload.detail || payload.message)) ||
-      `Request failed (${response.status})`;
+    const message = extractErrorMessage(payload, response.status);
     throw new ApiError(message, { status: response.status, payload });
   }
   return payload;
@@ -52,6 +50,31 @@ function safeJson(text) {
   } catch {
     return text;
   }
+}
+
+/**
+ * Normalize a FastAPI error payload's `detail` (or `message`) into a
+ * human-readable string. FastAPI validation errors shape `detail` as an
+ * array of `{msg, loc, type}` objects rather than a plain string.
+ */
+function extractErrorMessage(payload, status) {
+  const detail = payload && (payload.detail ?? payload.message);
+  if (typeof detail === 'string' && detail.trim()) return detail;
+  if (Array.isArray(detail) && detail.length) {
+    return detail
+      .map((e) => {
+        if (typeof e === 'string') return e;
+        if (e && typeof e === 'object') {
+          const field = Array.isArray(e.loc) ? e.loc.filter((p) => p !== 'body').join('.') : null;
+          const msg = e.msg || e.message || JSON.stringify(e);
+          return field ? `${field}: ${msg}` : msg;
+        }
+        return String(e);
+      })
+      .join('; ');
+  }
+  if (detail && typeof detail === 'object') return detail.msg || detail.message || JSON.stringify(detail);
+  return `Request failed (${status})`;
 }
 
 /** Attempt a token refresh once; returns true on success. */

@@ -20,10 +20,13 @@ from typing import Annotated, Any, AsyncIterator
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sse_starlette.sse import EventSourceResponse
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import Settings, get_settings
+from ..core.image_scope import allowed_image_patterns, image_visible
 from ..core.sse import event
-from ..dependencies import RequirePermission
+from ..dependencies import RequirePermission, get_current_user, get_session
+from ..models import User
 from ..state import app_state
 from ..services.storage_analyzer import StorageAnalyzer
 
@@ -41,12 +44,105 @@ def _result_cache_key(repo: str) -> str:
     return f"analysis:{repo}"
 
 
+def _scope_result(result: dict[str, Any], patterns: list[str] | None) -> dict[str, Any]:
+    """Apply image-scope filtering to an analyzer result.
+
+    The analyzer cache is shared/unfiltered per repo across every user, so
+    this is applied as a post-processing step at every response point rather
+    than baked into the cache itself. Stats are recomputed from the filtered
+    items so a scoped user's aggregate totals can't leak hidden images'
+    sizes. ``active_bytes``/``wasted_bytes`` don't decompose cleanly per-image
+    (shared-layer dedup can span visible and hidden images), so a filtered
+    view reports ``active_bytes == total_bytes`` and ``wasted_bytes == 0``
+    rather than a misleading, precise-looking number.
+    """
+    if patterns is None:
+        return result
+    items = [it for it in result.get("items", []) if image_visible(patterns, it.get("name", ""))]
+    total_bytes = sum(it.get("total_bytes", 0) for it in items)
+    scoped = dict(result)
+    scoped["items"] = items
+    scoped["stats"] = {
+        **result.get("stats", {}),
+        "total_bytes": total_bytes,
+        "active_bytes": total_bytes,
+        "wasted_bytes": 0,
+        "item_count": len(items),
+    }
+    return scoped
+
+
 def _analyzer(request: Request, settings: Settings) -> StorageAnalyzer:
     """Build a StorageAnalyzer bound to this request's Nexus client + settings."""
     nexus = app_state(request).nexus
     if nexus is None:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Nexus client not initialised")
     return StorageAnalyzer(nexus, max_concurrency=settings.ANALYZER_MAX_CONCURRENCY)
+
+
+class _InFlight:
+    """One shared analysis run for a repo, with its fanned-out subscribers."""
+
+    def __init__(self) -> None:
+        self.subscribers: list[asyncio.Queue[dict[str, Any]]] = []
+        # asyncio only holds a weak reference to a task; without keeping this
+        # one alive here, it could be garbage-collected mid-run.
+        self.task: asyncio.Task[None] | None = None
+
+
+# Process-local: two requests for the same uncached repo (two tabs, or a
+# request landing right after the cache TTL expires) attach to the same run
+# instead of each re-running the full analysis against Nexus independently.
+_inflight: dict[str, _InFlight] = {}
+
+
+def _join_or_start(
+    repo: str, analyzer: StorageAnalyzer, fmt_hint: str | None, cache: Any,
+) -> tuple[_InFlight, "asyncio.Queue[dict[str, Any]]"]:
+    entry = _inflight.get(repo)
+    my_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+
+    if entry is None:
+        entry = _InFlight()
+        _inflight[repo] = entry
+
+        async def broadcast(ev: dict[str, Any]) -> None:
+            for q in list(entry.subscribers):
+                await q.put(dict(ev))
+
+        async def run() -> None:
+            try:
+                result = await analyzer.analyze_repo(repo, on_progress=broadcast, fmt_hint=fmt_hint)
+                # Cache once here, regardless of how many subscribers are still
+                # attached — a disconnect must not discard a completed run.
+                await cache.set_json(_result_cache_key(repo), result)
+                for q in list(entry.subscribers):
+                    await q.put({"__result__": result})
+            except Exception as exc:  # noqa: BLE001
+                for q in list(entry.subscribers):
+                    await q.put({"__error__": exc})
+            finally:
+                for q in list(entry.subscribers):
+                    await q.put({"__done__": True})
+                _inflight.pop(repo, None)
+
+        entry.task = asyncio.create_task(run())
+
+    entry.subscribers.append(my_queue)
+    return entry, my_queue
+
+
+async def _await_result(queue: "asyncio.Queue[dict[str, Any]]") -> dict[str, Any]:
+    """Drain a subscriber queue (no progress events expected before this call
+    is used) until the shared run finishes; return its result or raise."""
+    while True:
+        ev = await queue.get()
+        if "__result__" in ev:
+            return ev["__result__"]
+        if "__error__" in ev:
+            raise ev["__error__"]
+        if "__done__" in ev:
+            raise RuntimeError("Analysis ended without a result")
 
 
 @router.get("/repos", dependencies=[Depends(RequirePermission("storage:read"))])
@@ -99,13 +195,16 @@ async def list_all_repos(
 async def get_cached_result(
     request: Request,
     repo: str,
+    user: Annotated[User, Depends(get_current_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
 ) -> dict[str, Any]:
     """Return the cached analysis result for ``repo``, or 404 if none yet."""
     cache = app_state(request).cache
     cached = await cache.get_json(_result_cache_key(repo))
     if cached is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, f"No cached analysis for '{repo}'.")
-    return cached
+    patterns = await allowed_image_patterns(session, user, repo)
+    return _scope_result(cached, patterns)
 
 
 @router.get("/{repo}/analyze", dependencies=[Depends(RequirePermission("storage:analyze"))])
@@ -113,25 +212,28 @@ async def analyze(
     request: Request,
     repo: str,
     settings: Annotated[Settings, Depends(get_settings)],
+    user: Annotated[User, Depends(get_current_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
     use_cache: Annotated[bool, Query(description="Return cached result if available")] = True,
+    format: Annotated[str | None, Query(description="Known repo format — skips an extra lookup")] = None,
 ) -> dict[str, Any]:
     """Run the analysis (non-streaming), cache it, and return the JSON result."""
     cache = app_state(request).cache
+    patterns = await allowed_image_patterns(session, user, repo)
 
     if use_cache:
         cached = await cache.get_json(_result_cache_key(repo))
         if cached is not None:
-            return cached
+            return _scope_result(cached, patterns)
 
     analyzer = _analyzer(request, settings)
+    _, queue = _join_or_start(repo, analyzer, format, cache)
     try:
-        result = await analyzer.analyze_repo(repo)
+        result = await _await_result(queue)
     except Exception as exc:  # noqa: BLE001
         logger.exception("Analysis failed for %s", repo)
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, f"Analysis failed: {exc}") from exc
-
-    await cache.set_json(_result_cache_key(repo), result)
-    return result
+    return _scope_result(result, patterns)
 
 
 @router.get("/{repo}/analyze/stream", dependencies=[Depends(RequirePermission("storage:analyze"))])
@@ -139,40 +241,32 @@ async def analyze_stream(
     request: Request,
     repo: str,
     settings: Annotated[Settings, Depends(get_settings)],
+    user: Annotated[User, Depends(get_current_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
     use_cache: Annotated[bool, Query(description="Emit a 'cache' event and return cached result if available")] = True,
+    format: Annotated[str | None, Query(description="Known repo format — skips an extra lookup")] = None,
 ) -> EventSourceResponse:
     """Stream analysis progress as Server-Sent Events.
 
     Event types (see ``core/sse.py``): ``phase``, ``progress``, ``cache``,
-    ``result``, ``error``.
+    ``result``, ``error``. If another request is already analyzing this repo,
+    this stream attaches to that run and receives the same events rather than
+    starting a second, independent analysis.
     """
     cache = app_state(request).cache
+    patterns = await allowed_image_patterns(session, user, repo)
 
     async def event_generator() -> AsyncIterator[dict[str, Any]]:
         if use_cache:
             cached = await cache.get_json(_result_cache_key(repo))
             if cached is not None:
-                yield event("cache", {"message": "Returning cached result", "result": cached})
+                yield event("cache", {"message": "Returning cached result", "result": _scope_result(cached, patterns)})
                 return
 
-        queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
-        final_result: dict[str, Any] | None = None
+        analyzer = _analyzer(request, settings)
+        entry, queue = _join_or_start(repo, analyzer, format, cache)
         analyzer_error: Exception | None = None
 
-        async def on_progress(ev: dict[str, Any]) -> None:
-            await queue.put(ev)
-
-        async def run() -> None:
-            nonlocal final_result, analyzer_error
-            analyzer = _analyzer(request, settings)
-            try:
-                final_result = await analyzer.analyze_repo(repo, on_progress=on_progress)
-            except Exception as exc:  # noqa: BLE001
-                analyzer_error = exc
-            finally:
-                await queue.put({"__done__": True})
-
-        task = asyncio.create_task(run())
         try:
             while True:
                 if await request.is_disconnected():
@@ -184,26 +278,29 @@ async def analyze_stream(
                     yield event("progress", {"message": "working"})
                     continue
 
-                if ev.get("__done__"):
+                if "__done__" in ev:
                     break
+                if "__result__" in ev:
+                    # Caching already happened once inside the shared run.
+                    continue
+                if "__error__" in ev:
+                    analyzer_error = ev["__error__"]
+                    continue
                 # Translate the analyzer's internal payload (``{"type": ...,
                 # ...rest}``) into an SSE frame. JSON-encode the data so the
                 # browser gets valid JSON (sse-starlette writes str(dict)
                 # otherwise, which JSON.parse rejects).
                 ev_type = ev.pop("type", "progress")
+                if ev_type == "result" and "result" in ev:
+                    ev["result"] = _scope_result(ev["result"], patterns)
                 yield event(ev_type, ev)
 
             if analyzer_error is not None:
                 logger.exception("Analysis failed for %s", repo, exc_info=analyzer_error)
                 yield event("error", {"message": f"Analysis failed: {analyzer_error}"})
-            elif final_result is not None:
-                await cache.set_json(_result_cache_key(repo), final_result)
         finally:
-            if not task.done():
-                task.cancel()
-            try:
-                await task
-            except (asyncio.CancelledError, Exception):
-                pass
+            # Detach without cancelling — other subscribers (or a request that
+            # started after us) may still be waiting on this same run.
+            entry.subscribers[:] = [q for q in entry.subscribers if q is not queue]
 
     return EventSourceResponse(event_generator(), media_type="text/event-stream")

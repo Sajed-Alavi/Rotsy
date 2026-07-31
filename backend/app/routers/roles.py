@@ -10,8 +10,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..core.permissions import PERMISSIONS
 from ..dependencies import RequirePermission, get_session
-from ..models import Permission, Role
-from ..schemas.role import PermissionOut, RoleCreate, RoleOut, RoleUpdate
+from ..models import Permission, Role, RoleImageScope
+from ..schemas.role import (
+    ImageScopeCreate, ImageScopeOut, PermissionOut, RoleCreate, RoleOut, RoleUpdate,
+)
 
 router = APIRouter(
     prefix="/roles",
@@ -53,7 +55,10 @@ async def create_role(
     if existing is not None:
         raise HTTPException(status.HTTP_409_CONFLICT, "Role name already exists.")
 
-    role = Role(name=body.name, description=body.description, is_system=False)
+    role = Role(
+        name=body.name, description=body.description, is_system=False,
+        image_scope_unrestricted=body.image_scope_unrestricted,
+    )
     role.permissions = await _resolve_permissions(session, body.permission_keys)
     session.add(role)
     await session.commit()
@@ -80,6 +85,8 @@ async def update_role(
         role.description = body.description
     if body.permission_keys is not None:
         role.permissions = await _resolve_permissions(session, body.permission_keys)
+    if body.image_scope_unrestricted is not None:
+        role.image_scope_unrestricted = body.image_scope_unrestricted
 
     await session.commit()
     await session.refresh(role)
@@ -97,4 +104,59 @@ async def delete_role(
     if role.is_system:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "System roles cannot be deleted.")
     await session.delete(role)
+    await session.commit()
+
+
+# ---------------------------------------------------------------------------
+# Image-level access scopes (wildcard RBAC) — see app.core.image_scope
+# ---------------------------------------------------------------------------
+async def _get_role_or_404(session: AsyncSession, role_id: int) -> Role:
+    role = await session.get(Role, role_id)
+    if role is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Role not found.")
+    return role
+
+
+@router.get("/{role_id}/image-scopes", response_model=list[ImageScopeOut])
+async def list_image_scopes(role_id: int, session: Annotated[AsyncSession, Depends(get_session)]):
+    await _get_role_or_404(session, role_id)
+    result = await session.execute(
+        select(RoleImageScope).where(RoleImageScope.role_id == role_id).order_by(RoleImageScope.repo, RoleImageScope.pattern)
+    )
+    return list(result.scalars().all())
+
+
+@router.post("/{role_id}/image-scopes", response_model=ImageScopeOut, status_code=status.HTTP_201_CREATED)
+async def create_image_scope(
+    role_id: int,
+    body: ImageScopeCreate,
+    session: Annotated[AsyncSession, Depends(get_session)],
+):
+    await _get_role_or_404(session, role_id)
+    existing = await session.scalar(
+        select(RoleImageScope).where(
+            RoleImageScope.role_id == role_id,
+            RoleImageScope.repo == body.repo,
+            RoleImageScope.pattern == body.pattern,
+        )
+    )
+    if existing is not None:
+        raise HTTPException(status.HTTP_409_CONFLICT, "This scope already exists for the role.")
+    scope = RoleImageScope(role_id=role_id, repo=body.repo, pattern=body.pattern)
+    session.add(scope)
+    await session.commit()
+    await session.refresh(scope)
+    return scope
+
+
+@router.delete("/{role_id}/image-scopes/{scope_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_image_scope(
+    role_id: int,
+    scope_id: int,
+    session: Annotated[AsyncSession, Depends(get_session)],
+):
+    scope = await session.get(RoleImageScope, scope_id)
+    if scope is None or scope.role_id != role_id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Image scope not found.")
+    await session.delete(scope)
     await session.commit()

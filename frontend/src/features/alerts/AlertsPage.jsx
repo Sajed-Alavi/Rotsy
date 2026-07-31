@@ -4,7 +4,7 @@ import DataTable from '../../components/DataTable.jsx';
 import Modal from '../../components/Modal.jsx';
 import Badge from '../../components/Badge.jsx';
 import Icon from '../../components/Icon.jsx';
-import { formatBytes } from '../../lib/format.js';
+import { formatBytes, relativeTime } from '../../lib/format.js';
 
 /** Alert rule management. */
 export default function AlertsPage() {
@@ -31,6 +31,14 @@ export default function AlertsPage() {
     },
     { key: 'repo_filter', header: 'Repo filter', render: (v) => <span className="font-mono text-xs text-slate-400 dark:text-slate-600">{v || '%'}</span> },
     { key: 'enabled', header: 'State', render: (e) => <Badge tone={e ? 'ok' : 'neutral'}>{e ? 'on' : 'off'}</Badge> },
+    {
+      key: 'last_triggered_at', header: 'Last fired',
+      render: (v) => <span className="font-mono text-xs text-slate-400 dark:text-slate-600">{v ? relativeTime(v) : 'never'}</span>,
+    },
+    {
+      key: 'is_default', header: 'Type',
+      render: (d) => <Badge tone={d ? 'info' : 'neutral'}>{d ? 'default' : 'custom'}</Badge>,
+    },
   ];
 
   return (
@@ -72,7 +80,7 @@ function AlertModal({ initial, onClose, onSaved }) {
     setBusy(true);
     setError('');
     try {
-      const body = { ...form, repo_filter: form.repo_filter || null };
+      const body = { ...form, repo_filter: form.repo_filter || null, webhook_url: form.webhook_url || null };
       if (isEdit) await api.patch(`/alerts/${initial.id}`, body);
       else await api.post('/alerts', body);
       onSaved();
@@ -93,6 +101,7 @@ function AlertModal({ initial, onClose, onSaved }) {
             <select value={form.metric} onChange={(e) => setForm({ ...form, metric: e.target.value })} className={INPUT}>
               <option value="storage.total">storage.total (bytes)</option>
               <option value="storage.asset_count">storage.asset_count</option>
+              <option value="blobstore.used_pct">blobstore.used_pct (%)</option>
             </select>
           </Field>
           <Field label="Condition">
@@ -103,9 +112,9 @@ function AlertModal({ initial, onClose, onSaved }) {
             </select>
           </Field>
         </div>
-        <Field label="Threshold (bytes or count)"><input type="number" value={form.threshold} onChange={(e) => setForm({ ...form, threshold: Number(e.target.value) })} className={INPUT} /></Field>
-        <Field label="Repo filter (SQL LIKE pattern, empty = all)"><input value={form.repo_filter} onChange={(e) => setForm({ ...form, repo_filter: e.target.value })} placeholder="%" className={INPUT} /></Field>
-        <Field label="Webhook URL"><input value={form.webhook_url} onChange={(e) => setForm({ ...form, webhook_url: e.target.value })} placeholder="https://hooks.slack.com/..." className={INPUT} /></Field>
+        <Field label="Threshold (bytes, count, or % depending on metric)"><input type="number" value={form.threshold} onChange={(e) => setForm({ ...form, threshold: Number(e.target.value) })} className={INPUT} /></Field>
+        <Field label={`${form.metric.startsWith('blobstore.') ? 'Blobstore' : 'Repo'} filter (SQL LIKE pattern, empty = all)`}><input value={form.repo_filter} onChange={(e) => setForm({ ...form, repo_filter: e.target.value })} placeholder="%" className={INPUT} /></Field>
+        <Field label="Webhook URL (optional — the rule still evaluates without one)"><input value={form.webhook_url} onChange={(e) => setForm({ ...form, webhook_url: e.target.value })} placeholder="https://hooks.slack.com/..." className={INPUT} /></Field>
         <label className="flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300">
           <input type="checkbox" checked={form.enabled} onChange={(e) => setForm({ ...form, enabled: e.target.checked })} className="accent-sky-500" />
           <span className="font-mono text-xs">enabled</span>

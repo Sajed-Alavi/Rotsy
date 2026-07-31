@@ -10,7 +10,8 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
 
-from jose import JWTError, jwt
+import jwt
+from jwt import PyJWTError
 from passlib.context import CryptContext
 
 from ..config import Settings
@@ -76,7 +77,7 @@ def decode_token(settings: Settings, token: str, expected_type: TokenType) -> di
     """
     try:
         payload = jwt.decode(token, settings.JWT_SECRET, algorithms=[settings.JWT_ALGORITHM])
-    except JWTError as exc:
+    except PyJWTError as exc:
         raise TokenError(str(exc)) from exc
 
     if payload.get("type") != expected_type:

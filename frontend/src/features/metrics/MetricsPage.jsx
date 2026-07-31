@@ -5,6 +5,7 @@ import Badge from '../../components/Badge.jsx';
 import ProgressBar from '../../components/ProgressBar.jsx';
 import HealthTile from '../../components/HealthTile.jsx';
 import TimeSeriesChart from '../../components/TimeSeriesChart.jsx';
+import RankedBarList from '../../components/RankedBarList.jsx';
 import { formatBytes, formatNumber, relativeTime } from '../../lib/format.js';
 
 /**
@@ -25,6 +26,7 @@ export default function MetricsPage() {
   const [hours, setHours] = useState(24);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [diskSeries, setDiskSeries] = useState([]);
 
   const loadRealtime = async () => {
     try {
@@ -66,6 +68,22 @@ export default function MetricsPage() {
     return () => { active = false; };
   }, [selected, hours]);
 
+  // Sparkline for the "Disk Used" tile: the worst (highest used_pct)
+  // blobstore's recent history — the one most worth a glance.
+  useEffect(() => {
+    if (!blobstores.length) return;
+    const worst = [...blobstores].sort((a, b) => (b.used_pct || 0) - (a.used_pct || 0))[0];
+    let active = true;
+    (async () => {
+      try {
+        const data = await api.get(`/metrics/blobstore/${encodeURIComponent(worst.name)}/timeseries?hours=24`);
+        if (active) setDiskSeries(data.map((d) => d.used_pct || 0));
+      } catch (_) {}
+    })();
+    return () => { active = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [blobstores.length]);
+
   const totalStorage = overview.reduce((s, r) => s + (r.total_bytes || 0), 0);
   const totalAssets = overview.reduce((s, r) => s + (r.asset_count || 0), 0);
   const totalDiskUsed = blobstores.reduce((s, b) => s + (b.used_bytes || 0), 0);
@@ -102,7 +120,7 @@ export default function MetricsPage() {
           sub={system?.edition || ''}
           tone={system?.version ? 'ok' : 'bad'}
         />
-        <Stat label="Disk Used" bytes={totalDiskUsed} sub={`of ${formatBytes(totalDiskCapacity)}`} tone={totalDiskUsed / (totalDiskCapacity || 1) > 0.85 ? 'warn' : 'info'} />
+        <Stat label="Disk Used" bytes={totalDiskUsed} sub={`of ${formatBytes(totalDiskCapacity)}`} tone={totalDiskUsed / (totalDiskCapacity || 1) > 0.85 ? 'warn' : 'info'} series={diskSeries} />
         <Stat label="Health" value={loading ? '···' : failingProbes === 0 ? 'all green' : `${failingProbes} failing`} tone={failingProbes === 0 ? 'ok' : 'bad'} sub={`${health?.total ?? 0} probes`} />
         <Stat label="Security" value={system?.warnings?.length ? `${system.warnings.length} warnings` : 'clean'} tone={system?.warnings?.length ? 'warn' : 'ok'} />
       </div>
@@ -161,6 +179,18 @@ export default function MetricsPage() {
               <HealthTile key={p.name} name={p.name} healthy={p.healthy} message={p.message} category={p.category} />
             ))
           )}
+        </div>
+      </section>
+
+      {/* Top repositories by size — at-a-glance, no click-through needed */}
+      <section className="mb-6">
+        <h2 className="mb-2 font-mono text-[10px] uppercase tracking-wider text-slate-500">Top repositories by size</h2>
+        <div className="border border-slate-200 p-3 dark:border-slate-800">
+          <RankedBarList
+            items={overview.map((r) => ({ label: r.repo, value: r.total_bytes || 0, sub: formatNumber(r.asset_count || 0) + ' assets' }))}
+            formatValue={formatBytes}
+            limit={5}
+          />
         </div>
       </section>
 

@@ -1,7 +1,9 @@
 """ORM models."""
 
 from .audit import AuditLog
+from .backup import BackupRun
 from .metrics import AlertRule, Metric
+from .rbac_scope import RoleImageScope
 from .retention import RetentionPolicy
 from .scans import ScannedImage, ScanReport, ScanTarget, Vulnerability
 from .system_config import SystemConfig
@@ -13,4 +15,6 @@ __all__ = [
     "RetentionPolicy",
     "ScanTarget", "ScannedImage", "ScanReport", "Vulnerability",
     "SystemConfig", "AuditLog",
+    "BackupRun",
+    "RoleImageScope",
 ]

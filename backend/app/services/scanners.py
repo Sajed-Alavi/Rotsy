@@ -440,6 +440,17 @@ async def _run_one(
         return ScanOutcome(name, False, error=f"{type(exc).__name__}: {exc}")
 
 
+def _severity_from_cvss(score: float) -> str:
+    """Standard NVD severity bands, used only when a scanner omits severity."""
+    if score >= 9.0:
+        return "CRITICAL"
+    if score >= 7.0:
+        return "HIGH"
+    if score >= 4.0:
+        return "MEDIUM"
+    return "LOW"
+
+
 def _apply_outcome(
     session: AsyncSession, report: ScanReport, outcome: ScanOutcome, repo: str,
 ) -> None:
@@ -450,6 +461,12 @@ def _apply_outcome(
         severity = (finding.get("severity") or "UNKNOWN").upper()
         if severity not in counts:
             severity = "UNKNOWN"
+        cvss = float(finding.get("cvss") or 0.0)
+        if severity == "UNKNOWN" and cvss > 0:
+            # The scanner gave no usable severity but did give a CVSS score —
+            # without this, a real Critical/High finding silently undercounts
+            # into "Unknown" instead of report.critical/report.high.
+            severity = _severity_from_cvss(cvss)
         counts[severity] += 1
         rows.append(Vulnerability(
             report_id=report.id, repo=repo, scanner=outcome.scanner,
@@ -458,7 +475,7 @@ def _apply_outcome(
             installed_version=finding.get("installed_version") or "",
             fixed_version=finding.get("fixed_version") or "",
             title=finding.get("title") or "",
-            cvss=float(finding.get("cvss") or 0.0),
+            cvss=cvss,
         ))
     if rows:
         session.add_all(rows)

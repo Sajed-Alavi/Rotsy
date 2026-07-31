@@ -1,14 +1,22 @@
 """Alert evaluation.
 
 After each metric collection, the collector calls :func:`evaluate_alerts` with
-the fresh snapshot. Any :class:`AlertRule` whose condition matches has its
-webhook fired and its ``last_triggered_at`` updated.
+the fresh per-repo and per-blobstore snapshots. Any :class:`AlertRule` whose
+condition matches has its webhook fired (if configured — see below) and its
+``last_triggered_at`` updated.
 
 Metrics addressed by name (``rule.metric``):
   * ``storage.total`` — repo total bytes
   * ``storage.asset_count`` — asset count
+  * ``blobstore.used_pct`` — blobstore disk usage percentage (evaluated
+    against the blobstore snapshot; ``repo_filter`` matches blobstore names
+    for these rules)
 Conditions: ``>``, ``<``, ``==`` (within 1% tolerance for ``==``).
-``repo_filter`` is a SQL LIKE pattern (NULL/``%`` matches all repos).
+``repo_filter`` is a SQL LIKE pattern (NULL/``%`` matches all repos/blobstores).
+
+``webhook_url`` is optional — a rule with none configured still evaluates and
+updates ``last_triggered_at`` (so firing history is meaningful before a
+destination is set up), it just skips the delivery attempt.
 """
 
 from __future__ import annotations
@@ -24,10 +32,11 @@ from .notifier import send_webhook
 
 logger = logging.getLogger(__name__)
 
-# Map "metric.path" -> key in the snapshot value dict.
+# Map "metric.path" -> (key in the snapshot value dict, which snapshot it's evaluated against).
 _METRIC_PATHS = {
-    "storage.total": "total_bytes",
-    "storage.asset_count": "asset_count",
+    "storage.total": ("total_bytes", "repo"),
+    "storage.asset_count": ("asset_count", "repo"),
+    "blobstore.used_pct": ("used_pct", "blobstore"),
 }
 
 
@@ -44,8 +53,10 @@ def _matches(value: float, condition: str, threshold: float) -> bool:
     return False
 
 
-async def evaluate_alerts(session: AsyncSession, snapshot: list[dict]) -> int:
-    """Run all enabled rules against ``snapshot``; fire webhooks.
+async def evaluate_alerts(
+    session: AsyncSession, snapshot: list[dict], blobstore_snapshot: list[dict] | None = None,
+) -> int:
+    """Run all enabled rules against ``snapshot``/``blobstore_snapshot``; fire webhooks.
 
     Returns the number of alerts that fired.
     """
@@ -53,14 +64,17 @@ async def evaluate_alerts(session: AsyncSession, snapshot: list[dict]) -> int:
     if not rules:
         return 0
 
+    snapshots = {"repo": snapshot, "blobstore": blobstore_snapshot or []}
+
     fired = 0
     for rule in rules:
-        field_key = _METRIC_PATHS.get(rule.metric)
-        if field_key is None:
+        mapping = _METRIC_PATHS.get(rule.metric)
+        if mapping is None:
             continue
-        # Determine which repos this rule applies to.
+        field_key, snapshot_kind = mapping
+        # Determine which repos/blobstores this rule applies to.
         pattern = rule.repo_filter or "%"
-        for entry in snapshot:
+        for entry in snapshots[snapshot_kind]:
             repo = entry.get("repo", "")
             # Translate SQL LIKE to a simple wildcard check.
             if not _like_match(pattern, repo):
@@ -73,19 +87,22 @@ async def evaluate_alerts(session: AsyncSession, snapshot: list[dict]) -> int:
             except (TypeError, ValueError):
                 continue
             if _matches(numeric, rule.condition, rule.threshold):
-                await send_webhook(
-                    rule.webhook_url,
-                    {
-                        "rule_id": rule.id,
-                        "rule_name": rule.name,
-                        "repo": repo,
-                        "metric": rule.metric,
-                        "value": numeric,
-                        "condition": rule.condition,
-                        "threshold": rule.threshold,
-                        "timestamp": datetime.now(timezone.utc).isoformat(),
-                    },
-                )
+                if rule.webhook_url:
+                    await send_webhook(
+                        rule.webhook_url,
+                        {
+                            "rule_id": rule.id,
+                            "rule_name": rule.name,
+                            "repo": repo,
+                            "metric": rule.metric,
+                            "value": numeric,
+                            "condition": rule.condition,
+                            "threshold": rule.threshold,
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                        },
+                    )
+                else:
+                    logger.info("alert '%s' fired (no webhook configured, delivery skipped)", rule.name)
                 rule.last_triggered_at = datetime.now(timezone.utc)
                 fired += 1
                 break  # one fire per rule per evaluation cycle

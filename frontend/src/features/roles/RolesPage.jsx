@@ -78,9 +78,41 @@ function RoleFormModal({ perms, initial, onClose, onSaved }) {
     name: initial?.name ?? '',
     description: initial?.description ?? '',
     permission_keys: initial?.permissions?.map((p) => p.key) ?? [],
+    image_scope_unrestricted: initial?.image_scope_unrestricted ?? true,
   });
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+
+  const [repos, setRepos] = useState([]);
+  const [scopes, setScopes] = useState([]);
+  const [newScope, setNewScope] = useState({ repo: '', pattern: '' });
+  const [scopeError, setScopeError] = useState('');
+
+  useEffect(() => {
+    if (!isEdit) return;
+    api.get('/storage/repos').then(setRepos).catch(() => {});
+    api.get(`/roles/${initial.id}/image-scopes`).then(setScopes).catch(() => {});
+  }, [isEdit, initial]);
+
+  const addScope = async () => {
+    setScopeError('');
+    if (!newScope.repo || !newScope.pattern) {
+      setScopeError('Pick a repository and enter a pattern.');
+      return;
+    }
+    try {
+      const created = await api.post(`/roles/${initial.id}/image-scopes`, newScope);
+      setScopes((s) => [...s, created]);
+      setNewScope({ repo: '', pattern: '' });
+    } catch (err) { setScopeError(err.message); }
+  };
+
+  const removeScope = async (scopeId) => {
+    try {
+      await api.delete(`/roles/${initial.id}/image-scopes/${scopeId}`);
+      setScopes((s) => s.filter((sc) => sc.id !== scopeId));
+    } catch (err) { setScopeError(err.message); }
+  };
 
   const submit = async (e) => {
     e.preventDefault();
@@ -143,6 +175,53 @@ function RoleFormModal({ perms, initial, onClose, onSaved }) {
             ))}
           </div>
         </div>
+
+        {isEdit && (
+          <div className="border-t border-slate-200 pt-3 dark:border-slate-800">
+            <div className="mb-1 font-mono text-[10px] uppercase tracking-wider text-slate-500">
+              Image access scopes (optional)
+            </div>
+            <p className="mb-2 font-mono text-[10px] text-slate-400 dark:text-slate-600">
+              Restricts this role to images matching a pattern within a repository (e.g. <code>abrisham-frontend*</code>). A repository with no scopes stays fully visible to this role.
+            </p>
+            <label className="mb-2 flex items-start gap-2 border border-slate-200 bg-slate-50 px-2 py-1.5 font-mono text-xs text-slate-700 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-300">
+              <input
+                type="checkbox"
+                checked={form.image_scope_unrestricted}
+                onChange={(e) => setForm({ ...form, image_scope_unrestricted: e.target.checked })}
+                className="mt-0.5 accent-sky-500"
+              />
+              <span>
+                Unrestricted where this role has no scopes for a repo (default).
+                <span className="block text-[10px] text-slate-400 dark:text-slate-600">
+                  A user's access is the union of every held role. Uncheck this so a user who also holds
+                  another, unrestricted role (e.g. a baseline "viewer") still gets this role's restrictions
+                  applied instead of full access.
+                </span>
+              </span>
+            </label>
+            {scopes.length > 0 && (
+              <ul className="mb-2 space-y-1">
+                {scopes.map((s) => (
+                  <li key={s.id} className="flex items-center justify-between border border-slate-200 px-2 py-1 font-mono text-xs dark:border-slate-800">
+                    <span className="text-slate-700 dark:text-slate-300">{s.repo} <span className="text-slate-400 dark:text-slate-600">/</span> {s.pattern}</span>
+                    <button type="button" onClick={() => removeScope(s.id)} className="border border-rose-200 px-1.5 py-0.5 text-[10px] uppercase text-rose-600 hover:bg-rose-50 dark:border-rose-800 dark:text-rose-400 dark:hover:bg-rose-950/40">remove</button>
+                  </li>
+                ))}
+              </ul>
+            )}
+            <div className="flex items-center gap-2">
+              <select value={newScope.repo} onChange={(e) => setNewScope({ ...newScope, repo: e.target.value })} className={INPUT}>
+                <option value="">— repository —</option>
+                {repos.map((r) => <option key={r.name} value={r.name}>{r.name}</option>)}
+              </select>
+              <input value={newScope.pattern} onChange={(e) => setNewScope({ ...newScope, pattern: e.target.value })} placeholder="abrisham-frontend*" className={INPUT} />
+              <button type="button" onClick={addScope} className="whitespace-nowrap border border-slate-300 px-2.5 py-1.5 font-mono text-xs uppercase text-slate-600 hover:bg-slate-100 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800">add</button>
+            </div>
+            {scopeError && <div className="mt-1 font-mono text-xs text-rose-600 dark:text-rose-400">{scopeError}</div>}
+          </div>
+        )}
+
         {error && <div className="font-mono text-xs text-rose-600 dark:text-rose-400">{error}</div>}
       </form>
     </Modal>

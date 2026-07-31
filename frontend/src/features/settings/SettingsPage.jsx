@@ -24,7 +24,7 @@ export default function SettingsPage() {
   return (
     <div className="p-6">
       <h1 className="mb-5 text-base font-medium text-slate-900 dark:text-slate-100">Settings</h1>
-      <div className="grid max-w-3xl grid-cols-1 gap-6">
+      <div className="mx-auto grid max-w-3xl grid-cols-1 gap-6">
         {canEditNexus ? <NexusSection /> : (
           <section className="border border-slate-200 p-4 dark:border-slate-800">
             <p className="font-mono text-xs text-slate-500 dark:text-slate-500">Nexus connection management requires admin (system:execute) permission.</p>

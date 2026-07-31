@@ -118,10 +118,14 @@ class StorageAnalyzer:
         repo: str,
         *,
         on_progress: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
+        fmt_hint: str | None = None,
     ) -> dict[str, Any]:
         """Analyze ``repo`` and return a uniform result dict.
 
         Dispatches to docker vs generic mode based on the repo format.
+        ``fmt_hint``, when supplied, skips the extra ``GET /repositories/{repo}``
+        lookup — the caller (the frontend) already knows the format from the
+        repo listing it used to populate the selector.
         """
         async def _noop(_event: dict[str, Any]) -> None:  # pragma: no cover
             return None
@@ -129,7 +133,7 @@ class StorageAnalyzer:
         emit = on_progress or _noop
         await emit({"type": "phase", "phase": "init", "message": f"Starting analysis for '{repo}'"})
 
-        fmt = await self._repo_format(repo)
+        fmt = fmt_hint or await self._repo_format(repo)
         await emit({"type": "phase", "phase": "detect_format", "message": f"Repository format: {fmt}"})
 
         if fmt == "docker":
@@ -158,8 +162,10 @@ class StorageAnalyzer:
         fmt: str,
         emit: Callable[[dict[str, Any]], Awaitable[None]],
     ) -> dict[str, Any]:
-        total_raw_bytes = await self._total_physical_usage(repo, emit)
-        target_tags, timestamps = await self._collect_docker_components(repo, emit)
+        total_raw_bytes, (target_tags, timestamps) = await asyncio.gather(
+            self._total_physical_usage(repo, emit),
+            self._collect_docker_components(repo, emit),
+        )
 
         if not target_tags:
             logger.warning("No image components found in repo '%s'.", repo)
@@ -178,7 +184,7 @@ class StorageAnalyzer:
                 "wasted_bytes": wasted_bytes,
                 "item_count": len(target_tags),
             },
-            "items": _build_item_tree(image_tag_sizes, timestamps),
+            "items": await asyncio.to_thread(_build_item_tree, image_tag_sizes, timestamps),
         }
         await emit({"type": "result", "message": "Analysis complete", "result": result})
         return result
@@ -301,11 +307,11 @@ class StorageAnalyzer:
                     local_size += layer_size
                     blobs.append((layer.get("digest"), layer_size))
         elif "manifests" in data:  # multi-arch manifest list
-            for child in data.get("manifests") or []:
-                child_digest = child.get("digest")
-                if not child_digest:
-                    continue
-                child_size, child_blobs = await self._process_manifest(repo, image, child_digest, depth=depth + 1)
+            child_digests = [d for d in (m.get("digest") for m in data.get("manifests") or []) if d]
+            results = await asyncio.gather(*(
+                self._process_manifest(repo, image, digest, depth=depth + 1) for digest in child_digests
+            ))
+            for child_size, child_blobs in results:
                 local_size += child_size
                 blobs.extend(child_blobs)
         return local_size, blobs
@@ -344,7 +350,7 @@ class StorageAnalyzer:
             # Proxy repositories often return component=None; fall back to the
             # asset path so we still get a meaningful name + version.
             if not name or not version:
-                parsed = _parse_asset_path(asset.get("path", ""), fmt)
+                parsed = parse_asset_path(asset.get("path", ""), fmt)
                 name = name or parsed[0]
                 version = version or parsed[1]
             if size:
@@ -376,7 +382,7 @@ class StorageAnalyzer:
                 "item_count": item_count,
                 "asset_count": asset_count,
             },
-            "items": _build_item_tree(item_version_sizes, timestamps),
+            "items": await asyncio.to_thread(_build_item_tree, item_version_sizes, timestamps),
         }
         await emit({"type": "result", "message": "Analysis complete", "result": result})
         return result
@@ -400,7 +406,7 @@ class StorageAnalyzer:
         }
 
 
-def _parse_asset_path(path: str, fmt: str) -> tuple[str, str]:
+def parse_asset_path(path: str, fmt: str) -> tuple[str, str]:
     """Best-effort ``(name, version)`` from an asset path when Nexus omits the
     component (common for proxy and raw repositories).
 

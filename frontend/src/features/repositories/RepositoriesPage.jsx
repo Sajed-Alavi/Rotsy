@@ -88,7 +88,17 @@ export default function RepositoriesPage() {
         </table>
       </div>
 
-      {creating && <CreateModal repos={repos} onClose={() => setCreating(false)} onSaved={(name) => { setCreating(false); setMsg(`Repository "${name}" created.`); load(); }} />}
+      {creating && <CreateModal repos={repos} onClose={() => setCreating(false)} onSaved={(result) => {
+        setCreating(false);
+        if (result.warning) {
+          setErr(`Repository "${result.name}" created, but: ${result.warning}`);
+          setMsg('');
+        } else {
+          setMsg(`Repository "${result.name}" created.`);
+          setErr('');
+        }
+        load();
+      }} />}
     </div>
   );
 }
@@ -102,10 +112,28 @@ function CreateModal({ repos, onClose, onSaved }) {
     name: '', format: 'docker', type: 'hosted', blob_store: 'default',
     write_policy: 'ALLOW', remote_url: '', members: [],
     docker_http_port: '', docker_https_port: '', docker_force_basic_auth: true,
+    anonymous_access: false,
   });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [blobStores, setBlobStores] = useState([]);
+  const [blobStoresLoading, setBlobStoresLoading] = useState(true);
   const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const stores = await api.get('/blobstores');
+        if (!cancelled) setBlobStores(stores);
+      } catch {
+        // best-effort; dropdown falls back to the current form value
+      } finally {
+        if (!cancelled) setBlobStoresLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
 
   const submit = async (e) => {
     e.preventDefault();
@@ -114,6 +142,7 @@ function CreateModal({ repos, onClose, onSaved }) {
       if (!form.name) throw new Error('name is required');
       const body = {
         name: form.name, format: form.format, type: form.type, blob_store: form.blob_store,
+        anonymous_access: form.anonymous_access,
       };
       if (form.type === 'hosted') body.write_policy = form.write_policy;
       if (form.type === 'proxy') {
@@ -129,8 +158,8 @@ function CreateModal({ repos, onClose, onSaved }) {
         if (form.docker_https_port) body.docker_https_port = Number(form.docker_https_port);
         body.docker_force_basic_auth = form.docker_force_basic_auth;
       }
-      await api.post('/repositories', body);
-      onSaved(form.name);
+      const result = await api.post('/repositories', body);
+      onSaved(result);
     } catch (err) { setError(err.message); }
     setBusy(false);
   };
@@ -156,7 +185,23 @@ function CreateModal({ repos, onClose, onSaved }) {
               {TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
             </select>
           </Field>
-          <Field label="Blob store"><input value={form.blob_store} onChange={(e) => set('blob_store', e.target.value)} className={INPUT} /></Field>
+          <Field label="Blob store">
+            <select value={form.blob_store} onChange={(e) => set('blob_store', e.target.value)} className={INPUT} disabled={blobStoresLoading}>
+              {blobStoresLoading && <option value={form.blob_store}>{form.blob_store} (loading…)</option>}
+              {!blobStoresLoading && blobStores.length === 0 && <option value="default">default</option>}
+              {!blobStoresLoading && blobStores.map((s) => <option key={s.name} value={s.name}>{s.name}</option>)}
+            </select>
+          </Field>
+        </div>
+
+        <div>
+          <label className="flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300">
+            <input type="checkbox" checked={form.anonymous_access} onChange={(e) => set('anonymous_access', e.target.checked)} className="accent-sky-500" />
+            <span className="font-mono text-xs">Anonymous Access (browse + read)</span>
+          </label>
+          <p className="mt-1 font-mono text-[11px] text-slate-500 dark:text-slate-500">
+            Grants a repository-view privilege to Nexus's built-in nx-anonymous role. Requires Nexus's global Anonymous Access to also be enabled, otherwise this has no effect.
+          </p>
         </div>
 
         {form.type === 'hosted' && (

@@ -70,7 +70,11 @@ export default function StorageAnalyzerPage() {
     setExpanded(new Set());
 
     const base = import.meta.env.VITE_API_BASE_URL || '/api';
-    const es = new EventSource(`${base}/storage/${encodeURIComponent(repo)}/analyze/stream`);
+    // We already know the format from the repo list — passing it saves the
+    // backend an extra round trip to Nexus to look it up again.
+    const knownFormat = repos.find((r) => r.name === repo)?.format;
+    const qs = knownFormat ? `?format=${encodeURIComponent(knownFormat)}` : '';
+    const es = new EventSource(`${base}/storage/${encodeURIComponent(repo)}/analyze/stream${qs}`);
     esRef.current = es;
 
     const safeParse = (raw, fallback = {}) => {

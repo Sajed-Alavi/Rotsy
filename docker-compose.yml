@@ -62,6 +62,11 @@ services:
       # Air-gapped scanner DB import: operator drops db archives into ./offline-db
       # on the host; the container reads them from /app/offline-db.
       - SCANNER_OFFLINE_DIR=/app/offline-db
+      # Grype's download deadlines. Its 5m default cannot fetch a ~139 MB
+      # database over a slow link, and it aborts with a misleading
+      # "unexpected EOF". The image sets sane defaults; these let .env win.
+      - GRYPE_DB_UPDATE_DOWNLOAD_TIMEOUT=${GRYPE_DB_UPDATE_DOWNLOAD_TIMEOUT:-45m}
+      - GRYPE_DB_UPDATE_AVAILABLE_TIMEOUT=${GRYPE_DB_UPDATE_AVAILABLE_TIMEOUT:-2m}
       # Where full/selective backup archive runs are written.
       - BACKUP_OUTPUT_DIR=/app/backups
     volumes:

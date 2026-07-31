@@ -95,6 +95,15 @@ ENV HOME=/app
 ENV TRIVY_CACHE_DIR=/app/.cache/trivy
 ENV GRYPE_CACHE_DIR=/app/.cache/grype
 
+# Grype's own download deadlines. Its defaults (5m for the database, 30s for the
+# metadata) assume a fast link: the v6 database is ~139 MB, so a connection doing
+# 150 KB/s needs about fifteen minutes and the default aborts it mid-stream.
+# Grype then reports "unable to download db: unexpected EOF", which reads like a
+# network fault rather than a timeout — the failure mode this pin exists to
+# prevent. Lower them if your link is fast and you would rather fail quickly.
+ENV GRYPE_DB_UPDATE_DOWNLOAD_TIMEOUT=45m
+ENV GRYPE_DB_UPDATE_AVAILABLE_TIMEOUT=2m
+
 # uvicorn port (set via BACKEND_PORT at runtime).
 EXPOSE 8000
 

@@ -339,6 +339,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     except Exception:  # noqa: BLE001 - never block startup on housekeeping
         logger.exception("Could not reap interrupted scan reports")
 
+    # Same for the job queue: a job whose worker died stays "running" forever,
+    # so the UI shows a database update that can never finish.
+    try:
+        if cache is not None:
+            from .core.jobs import JobQueue
+            await JobQueue(cache).reap_stranded()
+    except Exception:  # noqa: BLE001 - never block startup on housekeeping
+        logger.exception("Could not reap stranded jobs")
+
     # Populate the shared bag for job handlers.
     _lifespan_state.clear()
     _lifespan_state["nexus"] = nexus

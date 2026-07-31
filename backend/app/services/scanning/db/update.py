@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import shutil
 import tempfile
@@ -10,8 +11,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import httpx
+
 from .paths import (
+    GRYPE_AVAILABLE_TIMEOUT,
+    GRYPE_DOWNLOAD_TIMEOUT,
     GRYPE_PROGRESS,
+    GRYPE_TMPDIR,
+    GRYPE_V6_BASE,
+    GRYPE_V6_LATEST,
     SI_UNITS,
     TRIVY_CACHE_ROOT,
     TRIVY_DB_IMAGE,
@@ -24,7 +32,7 @@ from .paths import (
     which,
 )
 from .process import extract, oras_pull, proxy_env, prune_trivy, rate, run_streaming
-from .status import as_datetime, grype_status, status
+from .status import as_datetime, dir_size, grype_status, status
 
 logger = logging.getLogger(__name__)
 
@@ -161,44 +169,138 @@ async def _update_trivy(emit: ProgressCallback, env: dict[str, str]) -> dict[str
     }
 
 
+async def _grype_db_size(env: dict[str, str]) -> int:
+    """Expected download size in bytes, or 0 if it cannot be determined.
+
+    Grype reports no total of its own when its output is piped, so this asks the
+    database host directly: resolve ``latest.json`` for the current archive name,
+    then read its ``Content-Length``. Best-effort — a failure here costs an exact
+    progress bar, never the download itself.
+    """
+    try:
+        proxy = env.get("HTTPS_PROXY") or env.get("HTTP_PROXY") or None
+        async with httpx.AsyncClient(timeout=20.0, proxy=proxy, follow_redirects=True) as client:
+            meta = (await client.get(GRYPE_V6_LATEST)).json()
+            path = meta.get("path")
+            if not path:
+                return 0
+            head = await client.head(f"{GRYPE_V6_BASE}/{path}")
+            return int(head.headers.get("content-length") or 0)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("could not determine the Grype database size: %s", exc)
+        return 0
+
+
+async def _watch_download(
+    target: Path, total: int, emit: ProgressCallback, stop: asyncio.Event,
+) -> None:
+    """Emit byte progress by sizing Grype's download directory every two seconds.
+
+    Grype 0.87 prints no incremental progress when piped, so parsing its output
+    yields nothing between "downloading" and the result — which is why the UI sat
+    at "Connecting / 0 B" for the whole transfer. It streams through go-getter
+    into ``$TMPDIR``, so pointing that at a directory of our choosing and sizing
+    it gives real bytes. Same technique already used for the Trivy ``oras`` pull.
+    """
+    prev_bytes, prev_time = 0, time.monotonic()
+    while not stop.is_set():
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=2.0)
+            return
+        except asyncio.TimeoutError:
+            pass
+
+        done = dir_size(target)
+        if done <= 0:
+            continue
+        now = time.monotonic()
+        elapsed = now - prev_time
+        speed_bps = ((done - prev_bytes) / elapsed) if elapsed > 0 else 0.0
+        prev_bytes, prev_time = done, now
+
+        speed_mbps = speed_bps / 1e6
+        remaining_mb = max(0.0, (total - done) / 1e6) if total else 0.0
+        pct = 52 + (int(min(44, done / total * 44)) if total else 0)
+        await emit(
+            pct,
+            f"grype-db: {done / 1e6:.1f}"
+            + (f" / {total / 1e6:.0f} MB{rate(speed_mbps, remaining_mb)}" if total else " MB downloaded"),
+            {"scanner": "grype", "stage": "downloading", "artifact": "grype-db",
+             "done_bytes": done, "total_bytes": total, "estimated": False,
+             "indeterminate": not total,
+             "speed_bps": round(speed_bps),
+             "eta_seconds": round(remaining_mb * 1e6 / speed_bps) if (total and speed_bps > 1e5) else None},
+        )
+
+
 async def _update_grype(emit: ProgressCallback, env: dict[str, str]) -> dict[str, Any]:
     grype = which("grype")
     if grype is None:
         return {"ok": False, "error": "grype binary not installed"}
 
-    await emit(52, "grype: downloading database (grype db update)",
+    await emit(52, "grype: resolving the current database",
                {"scanner": "grype", "stage": "connecting"})
+
+    # Grype's own download timeout defaults to 5 minutes, which a ~139 MB
+    # database on a slow link cannot meet; it then aborts mid-stream and reports
+    # "unexpected EOF", which looks like a network fault rather than a deadline.
+    # TMPDIR is pinned so the transfer can be observed while it happens.
+    GRYPE_TMPDIR.mkdir(parents=True, exist_ok=True)
+    tmp = Path(tempfile.mkdtemp(prefix="dl-", dir=str(GRYPE_TMPDIR)))
+    env = {
+        **env,
+        "TMPDIR": str(tmp),
+        "GRYPE_DB_UPDATE_DOWNLOAD_TIMEOUT": GRYPE_DOWNLOAD_TIMEOUT,
+        "GRYPE_DB_UPDATE_AVAILABLE_TIMEOUT": GRYPE_AVAILABLE_TIMEOUT,
+    }
+
+    total = await _grype_db_size(env)
+    await emit(52, f"grype: downloading database ({total / 1e6:.0f} MB)" if total
+               else "grype: downloading database (size unknown)",
+               {"scanner": "grype", "stage": "downloading", "artifact": "grype-db",
+                "done_bytes": 0, "total_bytes": total, "estimated": False,
+                "indeterminate": not total})
+
     state = {"prev_bytes": 0.0, "prev_time": time.monotonic()}
 
     async def on_line(line: str) -> None:
+        """Fast path for Grype builds that do print progress."""
         match = GRYPE_PROGRESS.search(line)
         if not match:
             return
         done = float(match.group(1)) * SI_UNITS.get(match.group(2).upper(), 1)
-        total = float(match.group(3)) * SI_UNITS.get(match.group(4).upper(), 1)
+        reported = float(match.group(3)) * SI_UNITS.get(match.group(4).upper(), 1)
         now = time.monotonic()
         elapsed = now - state["prev_time"]
         speed_bps = ((done - state["prev_bytes"]) / elapsed) if elapsed > 0 else 0.0
         speed_mbps = speed_bps / 1e6
         state["prev_bytes"], state["prev_time"] = done, now
-        pct = 52 + (int(min(44, done / total * 44)) if total else 0)
-        # Grype prints its own totals, so unlike Trivy these numbers are real:
-        # estimated=False, and the UI can draw an exact bar.
+        pct = 52 + (int(min(44, done / reported * 44)) if reported else 0)
         await emit(
             pct,
-            f"grype-db: {done / 1e6:.1f} / ~{total / 1e6:.0f} MB{rate(speed_mbps, (total - done) / 1e6)}",
+            f"grype-db: {done / 1e6:.1f} / {reported / 1e6:.0f} MB{rate(speed_mbps, (reported - done) / 1e6)}",
             {"scanner": "grype", "stage": "downloading", "artifact": "grype-db",
-             "done_bytes": round(done), "total_bytes": round(total), "estimated": False,
+             "done_bytes": round(done), "total_bytes": round(reported), "estimated": False,
              "speed_bps": round(speed_bps),
-             "eta_seconds": round((total - done) / speed_bps) if speed_bps > 1e5 else None},
+             "eta_seconds": round((reported - done) / speed_bps) if speed_bps > 1e5 else None},
         )
 
+    stop = asyncio.Event()
+    watcher = asyncio.create_task(_watch_download(tmp, total, emit, stop))
     try:
-        rc, lines = await run_streaming([grype, "db", "update", "-v"], timeout=1200, env=env, on_line=on_line)
+        # The subprocess ceiling must exceed Grype's own download timeout, or
+        # this would kill a transfer that was still within its budget.
+        rc, lines = await run_streaming(
+            [grype, "db", "update", "-v"], timeout=3600, env=env, on_line=on_line,
+        )
     except Exception as exc:  # noqa: BLE001
         await emit(100, f"grype: database update failed — {exc}",
                    {"scanner": "grype", "stage": "failed", "error": str(exc)})
         return {"ok": False, "error": str(exc)}
+    finally:
+        stop.set()
+        await watcher
+        shutil.rmtree(tmp, ignore_errors=True)
 
     if rc == 0:
         await emit(100, "grype: database updated", {"scanner": "grype", "stage": "done"})

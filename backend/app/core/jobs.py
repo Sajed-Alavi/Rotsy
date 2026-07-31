@@ -132,6 +132,41 @@ class JobQueue:
                 jobs.append(job)
         return jobs
 
+    async def reap_stranded(self) -> int:
+        """Fail jobs left mid-flight by a previous process.
+
+        A job's ``running`` status is written by the worker that owns it. If that
+        process dies — a restart, a redeploy, a crash — nothing ever writes a
+        terminal status, so the job stays ``running`` forever: the UI shows a
+        progress bar that will never move and a database update that will never
+        finish. Nothing resumes these; the queue entry is gone with the process.
+
+        Runs at startup, before the worker begins consuming, so it cannot race a
+        job this process legitimately owns.
+        """
+        assert self._r is not None
+        reaped = 0
+        for job_id in await self._r.lrange(_INDEX_KEY, 0, _INDEX_MAX - 1):
+            job = await self.get(job_id)
+            if job is None or job.status not in ("running", "pending"):
+                continue
+            await self._r.hset(
+                f"job:{job_id}",
+                mapping={
+                    "status": "failed",
+                    "message": "interrupted — the worker process restarted before this job finished",
+                    "updated_at": str(time.time()),
+                },
+            )
+            await self.push_event(job_id, {
+                "type": "error",
+                "message": "interrupted — the worker process restarted before this job finished",
+            })
+            reaped += 1
+        if reaped:
+            logger.info("Marked %d stranded job(s) as failed", reaped)
+        return reaped
+
     async def push_event(self, job_id: str, event: dict[str, Any]) -> None:
         """Publish a progress event for the SSE stream to consume."""
         assert self._r is not None

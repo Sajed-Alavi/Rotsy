@@ -74,8 +74,32 @@ TRIVY_DB_IMAGE = "registry-1.docker.io/aquasec/trivy-db:2"
 TRIVY_JAVA_DB_IMAGE = "ghcr.io/aquasecurity/trivy-java-db:1"
 
 # Grype's progress line: "Vulnerability DB [30 MB / 208 MB]".
+#
+# Only some Grype builds emit this, and only when stdout is a TTY. Piped into a
+# subprocess — which is how it always runs here — 0.87 prints nothing between
+# "downloading new vulnerability DB" and the result. The regex is kept as a fast
+# path for versions that do report, but progress is really derived by sizing the
+# download directory (see GRYPE_TMPDIR below).
 GRYPE_PROGRESS = re.compile(r"\[\s*([\d.]+)\s*([KMGTP]?B)\s*/\s*([\d.]+)\s*([KMGTP]?B)\s*\]")
 SI_UNITS = {"B": 1, "KB": 1e3, "MB": 1e6, "GB": 1e9, "TB": 1e12}
+
+# Where Grype streams the archive. It uses go-getter, which writes to a
+# temporary directory under $TMPDIR — so pointing TMPDIR at a directory we chose
+# turns an opaque download into an observable one.
+GRYPE_TMPDIR = Path(os.environ.get("GRYPE_DOWNLOAD_TMPDIR") or "/app/.cache/grype/.download")
+
+# Grype's own download timeout. Its default is 5 minutes, which is not enough:
+# the database is ~139 MB and a link doing 150 KB/s needs roughly fifteen. When
+# it expires mid-transfer Grype reports "unable to download db: unexpected EOF",
+# which reads like a network fault rather than a timeout and sends you looking
+# in the wrong place. Overridable per deployment.
+GRYPE_DOWNLOAD_TIMEOUT = os.environ.get("GRYPE_DB_UPDATE_DOWNLOAD_TIMEOUT") or "45m"
+GRYPE_AVAILABLE_TIMEOUT = os.environ.get("GRYPE_DB_UPDATE_AVAILABLE_TIMEOUT") or "2m"
+
+# Where the v6 database and its metadata live. Used only to learn the expected
+# size up front, so the progress bar has a real total instead of a guess.
+GRYPE_V6_BASE = "https://grype.anchore.io/databases/v6"
+GRYPE_V6_LATEST = f"{GRYPE_V6_BASE}/latest.json"
 
 
 def which(binary: str) -> str | None:

@@ -26,7 +26,6 @@ from ..core.nexus_client import NexusClient
 from ..dependencies import RequirePermission, get_current_user, get_session
 from ..models import User
 from ..services import images, nexus_security
-from ..services.storage_analyzer import parse_asset_path
 from ..state import app_state
 
 logger = logging.getLogger(__name__)
@@ -194,38 +193,29 @@ async def list_assets(
 
     patterns = await allowed_image_patterns(session, user, name)
     if patterns is not None:
-        try:
-            fmt_resp = await nexus.client.get(f"/service/rest/v1/repositories/{name}")
-            fmt_resp.raise_for_status()
-            fmt = (fmt_resp.json() or {}).get("format", "")
-        except Exception:  # noqa: BLE001
-            fmt = ""
-        items = result.get("items") or []
-        result["items"] = [
-            item for item in items
-            if image_visible(patterns, _image_name_from_asset_path(item.get("path", ""), fmt))
-        ]
+        # One authoritative lookup covers the whole page — see
+        # _owning_image() for why the raw path is not trusted here.
+        image_map = await images.asset_image_map(nexus, name)
+        visible = []
+        for item in result.get("items") or []:
+            owner = _owning_image(image_map, item.get("path", ""))
+            # Unattributed assets are dropped rather than shown: we cannot
+            # demonstrate they are inside the caller's scope.
+            if owner is not None and image_visible(patterns, owner):
+                visible.append(item)
+        result["items"] = visible
     return result
 
 
-def _image_name_from_asset_path(path: str, fmt: str) -> str:
-    """Best-effort image-name extraction from a raw asset path, for scoping.
+def _owning_image(image_map: dict[str, str], path: str) -> str | None:
+    """Return the image that owns ``path`` per Nexus, or ``None`` if unknown.
 
-    Docker paths look like ``v2/<image>/manifests/<tag>`` or
-    ``v2/<image>/blobs/sha256:…``; everything else reuses the same heuristic
-    :func:`storage_analyzer.parse_asset_path` already uses for the storage
-    analyzer's generic-format grouping. This is inherently best-effort — raw
-    asset paths don't cleanly expose "which image" the way the
-    components/images API does (see the RBAC plan's documented boundary).
+    ``None`` means "no component claims this asset". Callers making an access
+    decision must treat that as *deny*, not as an empty name to match against:
+    an asset Nexus does not attribute to any image cannot be shown to be inside
+    the caller's scope.
     """
-    stripped = path.strip("/")
-    if fmt == "docker" and stripped.startswith("v2/"):
-        rest = stripped[len("v2/"):]
-        for marker in ("/manifests/", "/blobs/"):
-            if marker in rest:
-                return rest.split(marker, 1)[0]
-        return rest
-    return parse_asset_path(path, fmt)[0]
+    return image_map.get(path.strip("/"))
 
 
 def _validated_repository_path(name: str, path: str) -> str:
@@ -270,15 +260,15 @@ async def download_asset(
 
     patterns = await allowed_image_patterns(session, user, name)
     if patterns is not None:
-        try:
-            fmt_resp = await nexus.client.get(f"/service/rest/v1/repositories/{name}")
-            fmt_resp.raise_for_status()
-            fmt = (fmt_resp.json() or {}).get("format", "")
-        except Exception:  # noqa: BLE001
-            fmt = ""
-        image_name = _image_name_from_asset_path(path, fmt)
-        if not image_visible(patterns, image_name):
-            raise HTTPException(status.HTTP_403_FORBIDDEN, f"'{image_name}' is outside your image scope for '{name}'.")
+        # Ask Nexus which image owns this exact asset rather than inferring it
+        # from the path the caller supplied.
+        image_map = await images.asset_image_map(nexus, name)
+        owner = _owning_image(image_map, path)
+        if owner is None or not image_visible(patterns, owner):
+            raise HTTPException(
+                status.HTTP_403_FORBIDDEN,
+                f"'{owner or path}' is outside your image scope for '{name}'.",
+            )
     # Nexus serves assets at /repository/{repo}{path}. Validated above so the
     # normalized path cannot escape this repository's prefix.
     url = validated_url
@@ -344,7 +334,9 @@ class RepoCreate(BaseModel):
     docker_force_basic_auth: bool = True
     docker_v1_enabled: bool = False
 
-    # Escape hatch for any additional Nexus fields (merged into the payload).
+    # Escape hatch for additional Nexus fields not modelled above. Keys that
+    # collide with a field _build_repo_payload already sets are rejected with
+    # a 400 — this cannot be used to override validated values.
     extra: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -378,8 +370,20 @@ def _build_repo_payload(body: RepoCreate) -> dict[str, Any]:
             "httpsPort": body.docker_https_port,
         }
 
-    # Merge caller-supplied extras last so they can override.
+    # Merge caller-supplied extras last — but only for keys this function did
+    # not already set. Previously `payload.update(body.extra)` let `extra`
+    # silently overwrite validated fields, so `extra.storage.blobStoreName`
+    # could repoint the repo at a blob store the caller never named in the
+    # validated `blob_store` field. `extra` stays an escape hatch for genuinely
+    # new Nexus fields; it is not a way around validation.
     if body.extra:
+        collisions = sorted(set(body.extra) & set(payload))
+        if collisions:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                f"extra may not override validated fields: {', '.join(collisions)}. "
+                "Use the dedicated field instead.",
+            )
         payload.update(body.extra)
     return payload
 

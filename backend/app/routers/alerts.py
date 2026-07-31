@@ -10,10 +10,12 @@ from datetime import datetime
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..config import get_settings
+from ..core.outbound import OutboundURLError, validate_outbound_url
 from ..dependencies import RequirePermission, get_session
 from ..models import AlertRule
 
@@ -21,6 +23,21 @@ router = APIRouter(prefix="/alerts", tags=["alerts"])
 
 _VALID_METRICS = {"storage.total", "storage.asset_count", "blobstore.used_pct"}
 _VALID_CONDITIONS = {">", "<", "=="}
+
+
+def _checked_webhook_url(value: str | None) -> str | None:
+    """Reject webhook destinations the backend must not be pointed at.
+
+    ``webhook_url`` is optional, so ``None`` passes through untouched. Anything
+    else has to survive the SSRF guard before it is allowed to persist — see
+    :mod:`app.core.outbound`.
+    """
+    if value is None:
+        return None
+    try:
+        return validate_outbound_url(value, get_settings())
+    except OutboundURLError as exc:
+        raise ValueError(f"webhook_url rejected: {exc}") from exc
 
 
 class AlertCreate(BaseModel):
@@ -32,6 +49,11 @@ class AlertCreate(BaseModel):
     webhook_url: str | None = Field(default=None, min_length=8, max_length=512, description="Optional — the rule still evaluates without one, just skips delivery")
     enabled: bool = True
 
+    @field_validator("webhook_url")
+    @classmethod
+    def _check_webhook_url(cls, value: str | None) -> str | None:
+        return _checked_webhook_url(value)
+
 
 class AlertUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=128)
@@ -41,6 +63,11 @@ class AlertUpdate(BaseModel):
     repo_filter: str | None = Field(default=None, max_length=255)
     webhook_url: str | None = Field(default=None, min_length=8, max_length=512)
     enabled: bool | None = None
+
+    @field_validator("webhook_url")
+    @classmethod
+    def _check_webhook_url(cls, value: str | None) -> str | None:
+        return _checked_webhook_url(value)
 
 
 class AlertOut(BaseModel):

@@ -52,3 +52,22 @@ html.dark select option {
   background: #0f172a; /* slate-900 */
   color: #e2e8f0;
 }
+
+/*
+ * Indeterminate progress: a sliding sliver for downloads whose total is not
+ * knowable. Trivy's databases are pulled with `oras`, which reports no
+ * machine-readable progress, so the only honest bar is one that shows motion
+ * without claiming a percentage.
+ *
+ * `prefers-reduced-motion` parks it at rest rather than looping.
+ */
+@keyframes indeterminate {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(300%); }
+}
+.animate-indeterminate {
+  animation: indeterminate 1.4s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .animate-indeterminate { animation: none; transform: translateX(0); width: 100%; opacity: 0.5; }
+}

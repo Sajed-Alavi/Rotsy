@@ -21,22 +21,41 @@ const FILLS = {
   bad: 'bg-rose-500',
 };
 
-export default function ProgressBar({ used, total, label, tone }) {
+export default function ProgressBar({ used, total, label, tone, indeterminate = false, estimated = false, right }) {
   const pct = total > 0 ? Math.min(100, (used / total) * 100) : 0;
   const t = tone || toneFor(pct);
+
   return (
     <div>
       {label && (
-        <div className="mb-1 flex items-baseline justify-between font-mono text-[11px]">
+        <div className="mb-1 flex items-baseline justify-between gap-2 font-mono text-[11px]">
           <span className="text-slate-700 dark:text-slate-300">{label}</span>
           <span className="tabular-nums text-slate-500 dark:text-slate-400">
-            {formatBytes(used)} <span className="text-slate-400 dark:text-slate-600">/ {formatBytes(total)}</span>
-            <span className="ml-1.5 text-slate-400 dark:text-slate-600">({pct.toFixed(1)}%)</span>
+            {right !== undefined ? right : (
+              <>
+                {formatBytes(used)}
+                {total > 0 && (
+                  <span className="text-slate-400 dark:text-slate-600">
+                    {' / '}{estimated ? '~' : ''}{formatBytes(total)}
+                  </span>
+                )}
+                {/* A percentage is only shown when it means something. Trivy's
+                    total is a hardcoded guess, so quoting "62.4%" off it would
+                    be inventing precision the download never reported. */}
+                {total > 0 && !indeterminate && !estimated && (
+                  <span className="ml-1.5 text-slate-400 dark:text-slate-600">({pct.toFixed(1)}%)</span>
+                )}
+              </>
+            )}
           </span>
         </div>
       )}
       <div className="h-2 w-full overflow-hidden rounded-full bg-slate-200 dark:bg-slate-800">
-        <div className={`h-full rounded-full transition-all duration-500 ${FILLS[t]}`} style={{ width: `${pct}%` }} />
+        {indeterminate ? (
+          <div className={`h-full w-1/3 rounded-full ${FILLS[t]} animate-indeterminate`} />
+        ) : (
+          <div className={`h-full rounded-full transition-all duration-500 ${FILLS[t]}`} style={{ width: `${pct}%` }} />
+        )}
       </div>
     </div>
   );

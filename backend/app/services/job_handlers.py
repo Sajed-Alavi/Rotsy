@@ -22,17 +22,21 @@ from __future__ import annotations
 import logging
 from typing import Awaitable, Callable
 
+from ..config import get_settings
+from ..core import config_store
 from ..core.jobs import Job
+from ..core.outbound import OutboundURLError, validate_outbound_url
 from ..db.session import get_session_factory
 from ..state import lifespan_handles as _lifespan_state  # populated at startup
-from . import registry as registry_discovery
-from . import scan_events, scanner_db
 from .alerting import evaluate_alerts
 from .backup import trigger_backup
 from .backup_archive import create_archive
 from .metrics_collector import collect_blobstore_metrics, collect_once, latest_blobstore_snapshot, latest_snapshot
 from .retention import run_all_enabled, run_policy
-from .scanners import Credentials, scan_image
+from .scanning import Credentials, scan_image
+from .scanning import db as scanner_db
+from .scanning import events as scan_events
+from .scanning import registry as registry_discovery
 from .sync import sync_repository
 
 logger = logging.getLogger(__name__)
@@ -217,10 +221,28 @@ async def handle_sync(job: Job, progress: ProgressCallback) -> dict:
     if source is None:
         raise RuntimeError("Source Nexus client not available")
     p = job.payload
-    required = ("target_base_url", "target_username", "target_password", "repos")
+    required = ("target_base_url", "target_username", "target_password_enc", "repos")
     missing = [k for k in required if not p.get(k)]
     if missing:
         raise ValueError(f"Missing payload fields: {missing}")
+
+    settings = get_settings()
+    # Re-validate the destination at dispatch time, not just at enqueue time:
+    # jobs queued before this guard existed have never been checked, and DNS
+    # can change between the two points (rebinding).
+    try:
+        validate_outbound_url(p["target_base_url"], settings)
+    except OutboundURLError as exc:
+        raise ValueError(f"sync target rejected: {exc}") from exc
+
+    target_password = config_store.decrypt_password(p["target_password_enc"], settings)
+    if not target_password:
+        raise ValueError(
+            "Could not decrypt the sync target password. This job was most "
+            "likely queued under a different NEXUS_CONFIG_ENCRYPTION_KEY — "
+            "re-submit the sync."
+        )
+
     mappings = p["repos"]
     if not mappings:
         raise ValueError("payload.repos must be a non-empty list")
@@ -241,7 +263,7 @@ async def handle_sync(job: Job, progress: ProgressCallback) -> dict:
             source_repo,
             target_base_url=p["target_base_url"],
             target_username=p["target_username"],
-            target_password=p["target_password"],
+            target_password=target_password,
             target_repo=target_repo,
             verify_ssl=bool(p.get("verify_ssl", True)),
             on_progress=on_progress,
@@ -329,12 +351,13 @@ async def handle_scanner_db_update(job: Job, progress: ProgressCallback) -> dict
     """Refresh vulnerability databases for the configured scanners."""
     scanners = _default_scanners()
     proxy = await _scanner_proxy()
-    await progress(2, f"updating databases: {', '.join(scanners)}{' via proxy' if proxy else ''}")
+    await progress(2, f"updating databases: {', '.join(scanners)}{' via proxy' if proxy else ''}",
+                   {"stage": "connecting", "scanners": scanners})
     result = await scanner_db.update(
         scanners, on_progress=progress, proxy=proxy,
         force=bool(job.payload.get("force", False)),
     )
-    await progress(100, "done")
+    await progress(100, "done", {"stage": "done", "results": result})
     return result
 
 
@@ -346,7 +369,8 @@ async def handle_scanner_db_import(job: Job, progress: ProgressCallback) -> dict
     offline directory; this extracts/imports them into the scanner caches.
     """
     scanners = _default_scanners()
-    await progress(2, f"importing offline databases: {', '.join(scanners)}")
+    await progress(2, f"importing offline databases: {', '.join(scanners)}",
+                   {"stage": "importing", "scanners": scanners})
     result = await scanner_db.import_offline(scanners, on_progress=progress)
-    await progress(100, "done")
+    await progress(100, "done", {"stage": "done", "results": result})
     return result

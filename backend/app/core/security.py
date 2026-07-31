@@ -10,13 +10,17 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
 
+import bcrypt
 import jwt
 from jwt import PyJWTError
-from passlib.context import CryptContext
 
 from ..config import Settings
 
-_pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+# bcrypt only consumes the first 72 bytes of a password. passlib (removed here,
+# see LOW-01) truncated silently; the bcrypt library raises instead. Truncate
+# explicitly on both hash and verify so hashes created under passlib keep
+# verifying and behaviour is identical either side of the migration.
+_BCRYPT_MAX_BYTES = 72
 
 TokenType = Literal["access", "refresh"]
 
@@ -28,12 +32,25 @@ class TokenError(Exception):
 # ---------------------------------------------------------------------------
 # Password hashing
 # ---------------------------------------------------------------------------
+def _encode(plain: str) -> bytes:
+    return plain.encode("utf-8")[:_BCRYPT_MAX_BYTES]
+
+
 def hash_password(plain: str) -> str:
-    return _pwd_context.hash(plain)
+    """Hash a password with bcrypt, returning the standard ``$2b$`` string."""
+    return bcrypt.hashpw(_encode(plain), bcrypt.gensalt()).decode("ascii")
 
 
 def verify_password(plain: str, hashed: str) -> bool:
-    return _pwd_context.verify(plain, hashed)
+    """Check a password against a stored bcrypt hash.
+
+    Returns ``False`` rather than raising on a malformed or non-bcrypt hash, so
+    a corrupt row can't turn a failed login into a 500.
+    """
+    try:
+        return bcrypt.checkpw(_encode(plain), hashed.encode("utf-8"))
+    except (ValueError, TypeError):
+        return False
 
 
 # ---------------------------------------------------------------------------

@@ -1,4 +1,15 @@
-/** Sidebar navigation definition. Items filtered by user permissions. */
+/**
+ * Sidebar navigation definition. Items are filtered by user permissions.
+ *
+ * Three item shapes:
+ *   { section: 'Label' }                       a non-clickable group header
+ *   { to, label, icon, perm?, end? }           a leaf link
+ *   { to, label, icon, perm?, children: [] }   a parent that expands when the
+ *                                              user is anywhere inside it
+ *
+ * Children are leaf links only — the sidebar renders one level of nesting, not
+ * an arbitrary tree. A child inherits its parent's `perm` unless it sets its own.
+ */
 export const NAV = [
   { section: 'Overview' },
   { to: '/', label: 'Dashboard', icon: 'grid', end: true },
@@ -16,15 +27,42 @@ export const NAV = [
   { to: '/retention', label: 'Retention & Cleanup', icon: 'trash', perm: 'retention:read' },
 
   { section: 'Security' },
-  { to: '/scan', label: 'Vulnerability Scan', icon: 'bug', perm: 'scan:read' },
+  {
+    to: '/scan',
+    label: 'Vulnerability Scanning',
+    icon: 'bug',
+    perm: 'scan:read',
+    children: [
+      { to: '/scan', label: 'Overview', end: true },
+      { to: '/scan/targets', label: 'Scan Targets' },
+      { to: '/scan/images', label: 'Images' },
+      { to: '/scan/reports', label: 'Reports' },
+      { to: '/scan/findings', label: 'Findings' },
+      { to: '/scan/database', label: 'Database Management' },
+    ],
+  },
   { to: '/system', label: 'System & Scripts', icon: 'server', perm: 'system:read' },
 
   { section: 'Integrations' },
-  { to: '/access', label: 'Access & Webhooks', icon: 'key', perm: 'access:read' },
-  { to: '/analytics', label: 'Analytics', icon: 'chart', perm: 'analytics:read' },
+  {
+    to: '/access',
+    label: 'Access & Webhooks',
+    icon: 'key',
+    perm: 'access:read',
+    children: [
+      { to: '/access', label: 'API Tokens', end: true },
+      { to: '/access/webhooks', label: 'Webhooks' },
+      { to: '/access/anonymous', label: 'Anonymous Access' },
+    ],
+  },
+  { to: '/tasks', label: 'Task Manager', icon: 'play', perm: 'tasks:control' },
 
   { section: 'Administration' },
   { to: '/users', label: 'Users', icon: 'users', perm: 'users:manage' },
   { to: '/roles', label: 'Roles & Permissions', icon: 'shield-check', perm: 'roles:manage' },
+  { to: '/audit', label: 'Audit Log', icon: 'file', perm: 'roles:manage' },
   { to: '/settings', label: 'Settings', icon: 'grid', perm: 'profile:edit' },
+
+  { section: 'Help' },
+  { to: '/docs', label: 'Documentation', icon: 'book' },
 ];

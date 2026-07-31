@@ -23,6 +23,13 @@ is enforced in code and pointed at below.
 
 ---
 
+> **Full documentation ships inside the app**, at **/docs** in the sidebar — 36
+> pages ordered as a learning path, from first login through core concepts,
+> guides, database management, administration, an API and configuration
+> reference, and end-to-end workflows (CI/CD gating, air-gapped install,
+> responding to a new CVE, scaling to many repositories). This README stays the
+> short version for people who have not started it yet.
+
 ## Contents
 
 - [Architecture](#architecture)
@@ -84,10 +91,15 @@ Four background loops run in the app lifespan, each with a single job:
 
 | Module                        | Responsibility                                             |
 | ----------------------------- | ---------------------------------------------------------- |
-| `services/registry.py`        | Discover each Docker repository's registry endpoint         |
-| `services/scan_events.py`     | Decide *whether* to scan (webhook, watcher, manual)         |
-| `services/scanners.py`        | Run Trivy/Grype and persist reports                         |
-| `services/scanner_db.py`      | Vulnerability database status, update, offline import        |
+| `services/scanning/registry.py` | Discover each Docker repository's registry endpoint       |
+| `services/scanning/events.py` | Decide *whether* to scan (webhook, watcher, manual)        |
+| `services/scanning/base.py`   | Shared types, subprocess exec, report parsing, static-ref guard |
+| `services/scanning/trivy.py`  | Trivy adapter + its report parser                          |
+| `services/scanning/grype.py`  | Grype adapter + its report parser                          |
+| `services/scanning/persistence.py` | Runner registry, orchestration, ORM writes            |
+| `services/scanning/db/`       | Vulnerability database status, update, offline import      |
+| `routers/scan/`               | HTTP endpoints, one module per route group                 |
+| `schemas/scan.py`             | Request/response models for those endpoints                |
 | `models/scans.py`             | Targets, image ledger, reports, findings                    |
 | `services/images.py`          | Image/tag inventory, deletion, blob compaction              |
 
@@ -221,7 +233,7 @@ docker repo "team-a"     http://nexus-host:15987/v2/...
 docker repo "team-b"     http://nexus-host:15988/v2/...
 ```
 
-Nexus is the authority on those ports, so `services/registry.py` asks it:
+Nexus is the authority on those ports, so `services/scanning/registry.py` asks it:
 
 1. `GET /service/rest/v1/repositorySettings` — one call, full configuration for
    every repository including the `docker` connector block.
@@ -251,9 +263,9 @@ Nothing in this system starts a container. Four independent enforcement points:
 
 | Enforcement                                          | Where                            |
 | ---------------------------------------------------- | -------------------------------- |
-| Trivy runs with `--image-src remote`                 | `services/scanners.py`           |
-| Grype gets an explicit `registry:` reference and `GRYPE_DEFAULT_IMAGE_PULL_SOURCE=registry` | `services/scanners.py` |
-| `_assert_static_ref()` rejects `docker:`, `podman:`, `containerd:`, `dir:`, … | `services/scanners.py` |
+| Trivy runs with `--image-src remote`                 | `services/scanning/`           |
+| Grype gets an explicit `registry:` reference and `GRYPE_DEFAULT_IMAGE_PULL_SOURCE=registry` | `services/scanning/` |
+| `_assert_static_ref()` rejects `docker:`, `podman:`, `containerd:`, `dir:`, … | `services/scanning/` |
 | No Docker socket is mounted, and the image has no Docker client | `docker-compose.yml`, `backend/Dockerfile` |
 
 The Grype default matters: left alone, Grype tries the local docker, podman and
@@ -264,7 +276,7 @@ keeps it off them.
 
 ## Vulnerability databases
 
-Scans need a local database. `services/scanner_db.py` is its only owner, and
+Scans need a local database. `services/scanning/db/` is its only owner, and
 scans never update it themselves — both tools would otherwise try to refresh
 mid-scan and fail the scan when the download fails.
 
@@ -283,9 +295,9 @@ Air-gapped flow:
 
 ```bash
 # on a machine with internet
-./scripts/fetch-offline-db.sh
+./scripts/scanner/fetch-offline-db.sh
 # copy the archives to the restricted host's ./offline-db/, then import:
-#   dashboard → Vulnerability Scanning → "Import offline DBs"
+#   dashboard → Vulnerability Scanning → Database Management → "Import offline DBs"
 ```
 
 Recognised filenames in `./offline-db/`:
@@ -590,22 +602,28 @@ There is **no** registry URL or port setting, by design — see
 │   │   ├── db/                 # session factory, base, idempotent seed
 │   │   ├── models/             # SQLAlchemy tables
 │   │   ├── routers/            # HTTP layer, one module per area
+│   │   │   └── scan/           # scanning endpoints, one module per route group
 │   │   ├── schemas/            # pydantic request/response models
-│   │   ├── services/           # domain logic (see the scanning table above)
+│   │   ├── services/           # domain logic
+│   │   │   └── scanning/       # the scanning feature (see the table above)
+│   │   │       └── db/         # vulnerability database lifecycle
 │   │   ├── config.py           # typed settings
 │   │   └── main.py             # app factory + lifespan + background loops
+│   ├── tests/                  # pytest; tests/scanning/ covers the scanners
 │   ├── Dockerfile              # app + Trivy + Grype + oras, no Docker client
 │   └── entrypoint.sh           # wait for DB → migrate → seed → uvicorn
 ├── frontend/
 │   ├── src/components/         # shared UI primitives
-│   ├── src/features/           # one directory per page
+│   ├── src/features/           # one directory per page; larger pages split
+│   │                           # into components/ + hooks/ + api.js
 │   ├── src/lib/                # api client, formatters, nav
 │   └── Dockerfile, nginx.conf
+├── security/                   # vulnerability record: findings, reports, CVEs
 ├── docker-compose.yml          # postgres, redis, backend, frontend
 ├── docker-compose-nexus/       # local Nexus for development (gitignored: its
 │                               # blob store and logs are runtime data)
 ├── offline-db/                 # drop offline DB archives here (gitignored)
-├── scripts/fetch-offline-db.sh # download DB archives on a connected machine
+├── scripts/scanner/fetch-offline-db.sh # download DB archives on a connected machine
 ├── .env.example                # annotated configuration reference
 └── README.md                   # this file — the only documentation
 ```

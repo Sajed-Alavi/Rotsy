@@ -1,29 +1,43 @@
 # FastAPI backend dependencies — pinned for reproducible builds.
-fastapi==0.111.0
-uvicorn[standard]==0.30.1
-httpx==0.27.0
-redis==5.0.7
+#
+# Security note: every pin below is at or above the version that fixes the CVEs
+# listed in security/cve/dependency-cve-review.md. Re-run `pip-audit -r
+# requirements.txt` (see requirements-dev.txt) after changing anything here.
+
+fastapi==0.116.1
+# Pinned directly, not left transitive: FastAPI 0.111 capped starlette <0.38,
+# which held it at 0.37.2 — CVE-2024-47874 (multipart DoS, fixed 0.40.0) and
+# CVE-2025-54121 (event loop blocked on large upload, fixed 0.47.2).
+starlette==0.47.2
+# Pinned directly for the same reason: FastAPI only requires >=0.0.7, which
+# leaves CVE-2024-53981 (DoS on malformed multipart, fixed 0.0.18) reachable.
+python-multipart==0.0.20
+uvicorn[standard]==0.34.0
+httpx==0.28.1
+redis==5.2.1
 sse-starlette==2.1.2
-pydantic==2.7.4
-pydantic-settings==2.3.3
-pydantic[email]==2.7.4
-email-validator==2.1.1
+pydantic==2.10.4
+pydantic-settings==2.7.0
+email-validator==2.2.0
 
 # Database + migrations (v2: persistence layer for users/roles/permissions)
-SQLAlchemy[asyncio]==2.0.30
-asyncpg==0.29.0          # async driver for the app runtime
-psycopg[binary]==3.1.19  # sync driver used by alembic + entrypoint DB-wait loop
-alembic==1.13.1
+SQLAlchemy[asyncio]==2.0.36
+asyncpg==0.30.0         # async driver for the app runtime
+psycopg[binary]==3.2.3  # sync driver used by alembic + entrypoint DB-wait loop
+alembic==1.14.0
 
-# Auth: password hashing + JWT
-passlib[bcrypt]==1.7.4
-bcrypt==4.1.2
-PyJWT==2.9.0
+# Auth: password hashing + JWT.
+# bcrypt is called directly by app/core/security.py. passlib was dropped —
+# see security/findings/low/LOW-01-unmaintained-passlib.md: no release since
+# 2020 and no maintainer to respond to future findings. It only ever wrapped a
+# single CryptContext, so the direct calls are a smaller surface, not a bigger.
+bcrypt==4.2.1
+PyJWT==2.10.1
 # Required directly by app/core/config_store.py (Fernet encryption of the
 # dashboard-stored Nexus password) — NOT a PyJWT dependency. Previously came
 # in transitively via python-jose[cryptography]; must stay explicit now that
-# nothing else pulls it in.
-cryptography==43.0.1
+# nothing else pulls it in. >=44.0.1 fixes CVE-2024-12797.
+cryptography==44.0.1
 
 # Host process metrics (dashboard CPU/memory/disk tiles)
-psutil==6.0.0
+psutil==6.1.1

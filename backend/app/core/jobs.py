@@ -54,6 +54,9 @@ class Job:
     result: dict[str, Any] | None
     created_at: float
     updated_at: float
+    # Structured counterpart to ``message`` for the last progress report:
+    # bytes, speed, ETA, stage. Absent for handlers that report prose only.
+    detail: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -66,11 +69,14 @@ class Job:
             "result": self.result,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
+            "detail": self.detail,
         }
 
 
-# A handler takes (job, progress_callback) and returns a result dict.
-ProgressCallback = Callable[[int, str], Awaitable[None]]
+# A handler takes (job, progress_callback) and returns a result dict. The
+# callback accepts (percent, message, detail=None) — see the ``progress``
+# closure in JobRunner._run_one.
+ProgressCallback = Callable[..., Awaitable[None]]
 JobHandler = Callable[[Job, ProgressCallback], Awaitable[dict[str, Any]]]
 
 
@@ -146,7 +152,7 @@ def _unflatten(raw: dict[str, str]) -> Job:
         v = raw.get(k)
         if v is None:
             return default
-        if k in ("payload", "result"):
+        if k in ("payload", "result", "detail"):
             try:
                 return json.loads(v)
             except (json.JSONDecodeError, TypeError):
@@ -163,6 +169,7 @@ def _unflatten(raw: dict[str, str]) -> Job:
         result=load("result", None),
         created_at=float(raw.get("created_at", 0)),
         updated_at=float(raw.get("updated_at", 0)),
+        detail=load("detail", None),
     )
 
 
@@ -250,15 +257,26 @@ class JobRunner:
         if job is None or r is None:
             return
 
-        async def progress(percent: int, message: str) -> None:
-            await r.hset(
-                f"job:{job_id}",
-                mapping={"progress": str(percent), "message": message, "status": "running",
-                         "updated_at": str(time.time())},
-            )
-            await JobQueue(self._cache).push_event(
-                job_id, {"type": "progress", "percent": percent, "message": message}
-            )
+        async def progress(percent: int, message: str, detail: dict | None = None) -> None:
+            """Report progress to both the job hash and the SSE event stream.
+
+            ``detail`` is the structured form of what ``message`` says in prose
+            (bytes, speed, ETA, stage). Handlers that have nothing structured to
+            add omit it and behave exactly as before. It is stored on the hash
+            too, so a client that arrives mid-job — after a page reload, or for a
+            job it did not start — gets the current numbers without having to
+            replay the whole event list.
+            """
+            mapping = {
+                "progress": str(percent), "message": message, "status": "running",
+                "updated_at": str(time.time()),
+            }
+            event: dict[str, Any] = {"type": "progress", "percent": percent, "message": message}
+            if detail:
+                mapping["detail"] = json.dumps(detail, default=str)
+                event["detail"] = detail
+            await r.hset(f"job:{job_id}", mapping=mapping)
+            await JobQueue(self._cache).push_event(job_id, event)
 
         if handler is None:
             await r.hset(f"job:{job_id}", mapping={"status": "failed", "message": f"no handler for {job_type}",

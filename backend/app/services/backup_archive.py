@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import logging
+import secrets
 import shutil
 import time
 from pathlib import Path
@@ -30,13 +31,26 @@ logger = logging.getLogger(__name__)
 
 ProgressCallback = Callable[[int, str], Awaitable[None]]
 
-# How often (in assets) to re-check free disk space during a run, so a long
-# backup aborts cleanly instead of filling the volume to zero.
+# How often to re-check free disk space during a run, so a long backup aborts
+# cleanly instead of filling the volume to zero.
+#
+# Both bounds are needed. The asset count alone leaves a gap: 50 Docker layer
+# blobs can be several GB, enough to run the volume to zero inside a single
+# check window. The byte bound closes that; the asset bound still catches a
+# long tail of small files that individually never trip the byte threshold.
 _DISK_CHECK_EVERY = 50
+_DISK_CHECK_EVERY_BYTES = 256 * 1024 * 1024  # 256 MiB
 
 
 def _new_run_id() -> str:
-    return time.strftime("%Y%m%d-%H%M%S")
+    """Return a unique, chronologically sortable run id.
+
+    The timestamp alone has one-second resolution, so two runs starting in the
+    same second shared a ``run_dir`` and interleaved their writes — producing a
+    backup that reported success but had a corrupt manifest. The random suffix
+    makes the collision effectively impossible while keeping runs sortable.
+    """
+    return time.strftime("%Y%m%d-%H%M%S") + "-" + secrets.token_hex(3)
 
 
 def _safe_relpath(path: str) -> Path:
@@ -132,6 +146,7 @@ async def create_archive(
     manifest: dict[str, Any] = {"run_id": run_id, "mode": mode, "repos": target_repos, "assets": {}}
     total_bytes = 0
     asset_count = 0
+    bytes_since_disk_check = 0
     per_repo: dict[str, dict[str, int]] = {}
 
     await emit(0, f"backing up {len(target_repos)} repositories")
@@ -170,8 +185,13 @@ async def create_archive(
             repo_bytes += size
             repo_assets += 1
             asset_count += 1
-            if asset_count % _DISK_CHECK_EVERY == 0:
+            bytes_since_disk_check += size
+            if (
+                asset_count % _DISK_CHECK_EVERY == 0
+                or bytes_since_disk_check >= _DISK_CHECK_EVERY_BYTES
+            ):
                 _ensure_disk_space(output_dir, min_free_bytes)
+                bytes_since_disk_check = 0
 
         total_bytes += repo_bytes
         per_repo[repo] = {"asset_count": repo_assets, "total_bytes": repo_bytes}

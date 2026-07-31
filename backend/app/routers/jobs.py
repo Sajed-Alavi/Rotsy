@@ -106,8 +106,10 @@ async def stream_job(request: Request, job_id: str) -> EventSourceResponse:
                 except (json.JSONDecodeError, TypeError):
                     continue
             last_idx += max(0, len(raw_events))
-            if job.status in ("done", "failed"):
-                # Emit final status and close.
+            # "cancelled" belongs here too: POST /jobs/{id}/cancel sets it, but
+            # this loop used to wait only for done/failed, so cancelling a job
+            # left every subscribed stream polling until the client gave up.
+            if job.status in ("done", "failed", "cancelled"):
                 yield event("phase", {"status": job.status, "message": job.message})
                 return
             await asyncio.sleep(1)

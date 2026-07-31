@@ -48,6 +48,27 @@ export default function UsersPage() {
     { key: 'created_at', header: 'Created', mono: true, render: (v) => formatDateTime(v) },
   ];
 
+  // DELETE /users/{id} had no caller. Deactivating is usually the better move —
+  // it keeps the audit trail intact and still invalidates every API token the
+  // user issued, since token permissions resolve against the live account.
+  const remove = async (user) => {
+    if (!confirm(`Delete the user "${user.username}"?\n\nDeactivating instead keeps their audit history. Deletion cannot be undone.`)) return;
+    try {
+      await api.delete(`/users/${user.id}`);
+      load();
+    } catch (err) { setError(err.message); }
+  };
+
+  const deleteColumn = {
+    key: '__actions',
+    header: '\u00b7',
+    headClassName: 'text-right',
+    className: 'text-right',
+    render: (_v, row) => (
+      <button onClick={(e) => { e.stopPropagation(); remove(row); }} className="border border-rose-200 px-2 py-0.5 font-mono text-[10px] uppercase text-rose-600 hover:bg-rose-50 disabled:opacity-50 dark:border-rose-800 dark:text-rose-400 dark:hover:bg-rose-950/40">delete</button>
+    ),
+  };
+
   return (
     <div className="p-6">
       <div className="mb-4 flex items-center justify-between">
@@ -65,7 +86,7 @@ export default function UsersPage() {
       {loading ? (
         <div className="border border-slate-200 px-3 py-10 text-center font-mono text-xs text-slate-400 dark:border-slate-800 dark:text-slate-600">loading…</div>
       ) : (
-        <DataTable columns={columns} rows={users} onRowClick={(u) => setEditing({ user: u })} />
+        <DataTable columns={[...columns, deleteColumn]} rows={users} onRowClick={(u) => setEditing({ user: u })} />
       )}
 
       {editing && (

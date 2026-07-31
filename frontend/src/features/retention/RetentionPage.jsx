@@ -39,6 +39,30 @@ export default function RetentionPage() {
     } catch (e) { setMsg(`failed: ${e.message}`); }
   };
 
+  // DELETE /retention/policies/{id} and POST /retention/run-all both existed
+  // server-side with no caller: policies could be created and edited but never
+  // removed, and the only way to run every policy at once was the API.
+  const remove = async (p) => {
+    if (!confirm(`Delete the retention policy "${p.name}"?\n\nAlready-deleted tags are not restored.`)) return;
+    setMsg('');
+    try {
+      await api.delete(`/retention/policies/${p.id}`);
+      setMsg(`Policy "${p.name}" deleted.`);
+      load();
+    } catch (e) { setMsg(`delete failed: ${e.message}`); }
+  };
+
+  const runAll = async (dryRun) => {
+    if (!dryRun && !confirm('Run EVERY enabled retention policy now?\n\nThis deletes tags. Preview first if you are unsure.')) return;
+    setMsg('');
+    try {
+      const r = await api.post(`/retention/run-all?dry_run=${dryRun}`);
+      setMsg(dryRun
+        ? `Dry run queued: job ${String(r.job_id || '').slice(0, 8)} — results in Background Jobs, nothing deleted.`
+        : `All policies running: job ${String(r.job_id || '').slice(0, 8)} — see Background Jobs.`);
+    } catch (e) { setMsg(`run-all failed: ${e.message}`); }
+  };
+
   const columns = [
     { key: 'name', header: 'Name', mono: true, className: 'text-slate-800 dark:text-slate-200' },
     { key: 'repo', header: 'Repo', mono: true },
@@ -62,6 +86,8 @@ export default function RetentionPage() {
             className="border border-slate-200 px-2 py-0.5 font-mono text-[10px] uppercase text-slate-500 hover:bg-slate-100 dark:border-slate-700 dark:text-slate-400 dark:hover:bg-slate-800">preview</button>
           <button onClick={(e) => { e.stopPropagation(); runNow(p.id); }} title="Run now (deletes!)"
             className="border border-rose-200 px-2 py-0.5 font-mono text-[10px] uppercase text-rose-600 hover:bg-rose-50 dark:border-rose-800 dark:text-rose-400 dark:hover:bg-rose-950/40">run</button>
+          <button onClick={(e) => { e.stopPropagation(); remove(p); }} title="Delete this policy"
+            className="border border-rose-200 px-2 py-0.5 font-mono text-[10px] uppercase text-rose-600 hover:bg-rose-50 disabled:opacity-50 dark:border-rose-800 dark:text-rose-400 dark:hover:bg-rose-950/40">delete</button>
         </div>
       ),
     },
@@ -76,10 +102,16 @@ export default function RetentionPage() {
             rule-based deletion · physical blobs are reclaimed via compaction
           </p>
         </div>
+        <div className="flex items-center gap-2">
+        <button onClick={() => runAll(true)} title="Dry run every enabled policy — deletes nothing"
+          className="border border-slate-300 px-3 py-1.5 font-mono text-xs uppercase tracking-wider text-slate-600 hover:bg-slate-100 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800">Preview all</button>
+        <button onClick={() => runAll(false)} title="Run every enabled policy now (deletes!)"
+          className="border border-rose-200 px-3 py-1.5 font-mono text-xs uppercase tracking-wider text-rose-600 hover:bg-rose-50 dark:border-rose-800 dark:text-rose-400 dark:hover:bg-rose-950/40">Run all</button>
         <button onClick={() => setEditing({ policy: null })}
           className="flex items-center gap-1.5 border border-slate-300 px-3 py-1.5 font-mono text-xs uppercase tracking-wider text-slate-600 hover:bg-slate-100 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800">
           <Icon name="plus" size={13} /> New policy
         </button>
+        </div>
       </div>
 
       {msg && <div className="mb-3 border border-slate-200 bg-slate-50 px-3 py-2 font-mono text-xs text-slate-600 dark:border-slate-800 dark:bg-slate-900/40 dark:text-slate-400">{msg}</div>}

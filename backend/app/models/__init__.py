@@ -1,5 +1,6 @@
 """ORM models."""
 
+from .access_token import AccessToken
 from .audit import AuditLog
 from .backup import BackupRun
 from .metrics import AlertRule, Metric
@@ -17,4 +18,5 @@ __all__ = [
     "SystemConfig", "AuditLog",
     "BackupRun",
     "RoleImageScope",
+    "AccessToken",
 ]

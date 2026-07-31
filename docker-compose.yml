@@ -18,7 +18,7 @@
 
 services:
   postgres:
-    image: postgres:16-alpine
+    image: postgres:16.6-alpine
     restart: unless-stopped
     environment:
       POSTGRES_DB: ${POSTGRES_DB}
@@ -35,7 +35,7 @@ services:
       - nexus-net
 
   redis:
-    image: redis:7-alpine
+    image: redis:7.4.1-alpine
     restart: unless-stopped
     command: ["redis-server", "--appendonly", "yes"]
     volumes:

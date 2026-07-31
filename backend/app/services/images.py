@@ -71,6 +71,40 @@ def component_digest(component: dict[str, Any]) -> str:
     return ""
 
 
+def component_display_name(component: dict[str, Any]) -> str:
+    """The image name a component belongs to, as shown in the UI and used for scoping."""
+    name = component.get("name") or ""
+    group = component.get("group") or ""
+    if group and not name.startswith(group):
+        return f"{group}/{name}".lstrip("/")
+    return name
+
+
+async def asset_image_map(nexus: NexusClient, repo: str) -> dict[str, str]:
+    """Map every asset path in ``repo`` to the image that owns it.
+
+    This is the *authoritative* answer to "which image does this asset belong
+    to", straight from the components API — as opposed to inferring it by
+    splitting the raw asset path, which cannot be trusted for an access-control
+    decision (a crafted path can be parsed as one image while Nexus resolves it
+    as another). Costs one pagination pass, which is the trade the RBAC scope
+    checks in ``routers/repositories.py`` make for correctness.
+
+    Keys are normalized with surrounding slashes stripped so callers can look
+    up both ``foo/bar.jar`` and ``/foo/bar.jar``.
+    """
+    mapping: dict[str, str] = {}
+    async for component in nexus.paginate("/service/rest/v1/components", params={"repository": repo}):
+        display = component_display_name(component)
+        if not display:
+            continue
+        for asset in component.get("assets") or []:
+            path = (asset.get("path") or "").strip("/")
+            if path:
+                mapping[path] = display
+    return mapping
+
+
 async def list_images(nexus: NexusClient, repo: str) -> list[dict[str, Any]]:
     """Group a repository's components into images, each with its tags.
 
@@ -85,8 +119,7 @@ async def list_images(nexus: NexusClient, repo: str) -> list[dict[str, Any]]:
         if not name or not version:
             continue
         created, modified = component_timestamps(component)
-        group = component.get("group") or ""
-        display = f"{group}/{name}".lstrip("/") if group and not name.startswith(group) else name
+        display = component_display_name(component)
         grouped.setdefault(display, []).append({
             "component_id": component.get("id"),
             "tag": version,

@@ -1,0 +1,71 @@
+"""Vulnerability-database status, refresh and offline import."""
+
+from __future__ import annotations
+
+from typing import Annotated, Any
+
+from fastapi import APIRouter, Depends, Query, Request, status
+
+from ...dependencies import RequirePermission
+from ...services.scanning import db as scanner_db
+from ...services.scanning.db.tracking import current_db_job, enqueue_db_job
+from ._common import require_backend
+
+router = APIRouter()
+
+
+@router.get("/db-status", dependencies=[Depends(RequirePermission("scan:read"))])
+async def scanner_db_status() -> dict[str, Any]:
+    """Each scanner's database: version, build date, size, install state, readiness."""
+    snapshot = scanner_db.status()
+    ready = scanner_db.readiness(list(snapshot.keys()))
+    for name, info in snapshot.items():
+        check = ready.get(name)
+        info["ready"] = bool(check and check.ready)
+        info["stale"] = bool(check and check.stale)
+        info["reason"] = check.reason if check else ""
+    return snapshot
+
+
+@router.post("/db-update", status_code=status.HTTP_202_ACCEPTED,
+             dependencies=[Depends(RequirePermission("scan:execute"))])
+async def enqueue_db_update(
+    request: Request,
+    force: Annotated[bool, Query(description="Download even if the local database is current")] = False,
+) -> dict[str, str]:
+    """Refresh the vulnerability databases over the network."""
+    _, cache = require_backend(request)
+    return {"job_id": await enqueue_db_job(cache, "scanner_db_update", {"force": force})}
+
+
+@router.post("/db-import", status_code=status.HTTP_202_ACCEPTED,
+             dependencies=[Depends(RequirePermission("scan:execute"))])
+async def enqueue_db_import(request: Request) -> dict[str, str]:
+    """Install the vulnerability databases from offline archives (no network).
+
+    For restricted or air-gapped networks where ``/db-update`` cannot reach
+    Docker Hub / ghcr.io. Drop the archives into the mounted offline directory
+    first — ``GET /scan/db-offline`` lists the expected filenames.
+    """
+    _, cache = require_backend(request)
+    return {"job_id": await enqueue_db_job(cache, "scanner_db_import", {})}
+
+
+@router.get("/db-offline", dependencies=[Depends(RequirePermission("scan:read"))])
+async def scanner_offline_status() -> dict[str, Any]:
+    """Archives detected in the offline import directory."""
+    return scanner_db.offline_status()
+
+
+@router.get("/db-job", dependencies=[Depends(RequirePermission("scan:read"))])
+async def scanner_db_job(request: Request) -> dict[str, Any] | None:
+    """The in-flight database job, or the most recent one.
+
+    Lets the UI attach to an update it did not start — a scheduled refresh, the
+    startup fetch, another operator's click, or its own job after a page reload.
+    ``active`` says whether to open ``GET /jobs/{id}/stream``; ``detail`` carries
+    the current bytes/speed/ETA so the bar is correct on first paint rather than
+    waiting for the next event. Null when no database job has run recently.
+    """
+    _, cache = require_backend(request)
+    return await current_db_job(cache)

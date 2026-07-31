@@ -20,6 +20,8 @@ from app.db.base import Base
 BASE_SETTINGS_KWARGS: dict = dict(
     DATABASE_URL="postgresql+asyncpg://test:test@localhost:5432/test",
     JWT_SECRET="test-only-jwt-secret-0123456789abcdef",
+    # Deliberately different from JWT_SECRET — Settings rejects them being equal.
+    NEXUS_CONFIG_ENCRYPTION_KEY="test-only-at-rest-key-fedcba9876543210",
     JWT_ALGORITHM="HS256",
     JWT_ACCESS_TTL_SECONDS=900,
     JWT_REFRESH_TTL_SECONDS=604800,

@@ -49,7 +49,7 @@ PY
 
 echo "[entrypoint] starting uvicorn..."
 # Vulnerability databases are managed by the application itself
-# (app/services/scanner_db.py, scheduled by _scanner_db_loop): it fetches only
+# (app/services/scanning/db/, scheduled by _scanner_db_loop): it fetches only
 # what is missing at startup and otherwise follows SCANNER_DB_UPDATE_AT /
 # SCANNER_DB_UPDATE_INTERVAL_HOURS. A shell script used to do the same job here
 # in parallel, ignoring the configured proxy and offline mode, so every boot

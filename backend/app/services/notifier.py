@@ -3,6 +3,11 @@
 Posts a JSON payload to a user-provided URL (Slack, Discord, or any generic
 receiver). Best-effort: failures are logged but never bubble up to crash the
 alert evaluator.
+
+The destination is re-checked against :mod:`app.core.outbound` here, not only
+when the rule was created. Two reasons this is not redundant: rules stored
+before the guard existed have never been validated, and DNS can change between
+validation and delivery (rebinding).
 """
 
 from __future__ import annotations
@@ -12,11 +17,20 @@ from datetime import datetime, timezone
 
 import httpx
 
+from ..config import get_settings
+from ..core.outbound import OutboundURLError, validate_outbound_url
+
 logger = logging.getLogger(__name__)
 
 
 async def send_webhook(url: str, payload: dict, timeout: float = 10.0) -> bool:
     """POST ``payload`` to ``url``. Returns True on 2xx, False otherwise."""
+    try:
+        validate_outbound_url(url, get_settings())
+    except OutboundURLError as exc:
+        logger.warning("Refusing webhook delivery to %s: %s", url, exc)
+        return False
+
     envelope = {
         "source": "sharpy",
         "event": "alert.triggered",

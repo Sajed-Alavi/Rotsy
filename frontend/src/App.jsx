@@ -1,4 +1,5 @@
-import { Routes, Route, Navigate } from 'react-router-dom';
+import { lazy, Suspense } from 'react';
+import { Routes, Route, Navigate } from 'react-router';
 import AppShell from './components/AppShell.jsx';
 import ProtectedRoute from './components/ProtectedRoute.jsx';
 import LoginPage from './features/auth/LoginPage.jsx';
@@ -11,14 +12,35 @@ import AlertsPage from './features/alerts/AlertsPage.jsx';
 import SettingsPage from './features/settings/SettingsPage.jsx';
 import UsersPage from './features/users/UsersPage.jsx';
 import RolesPage from './features/roles/RolesPage.jsx';
+import AuditPage from './features/audit/AuditPage.jsx';
 import RetentionPage from './features/retention/RetentionPage.jsx';
 import SystemPage from './features/system/SystemPage.jsx';
-import ScanPage from './features/scan/ScanPage.jsx';
 import BlobstoresPage from './features/blobstores/BlobstoresPage.jsx';
 import RepositoriesPage from './features/repositories/RepositoriesPage.jsx';
-import {
-  AccessPage, AnalyticsPage,
-} from './features/comingsoon/ComingSoonPage.jsx';
+import TasksPage from './features/tasks/TasksPage.jsx';
+
+import ScanLayout from './features/scan/ScanLayout.jsx';
+import ScanOverviewPage from './features/scan/pages/OverviewPage.jsx';
+import ScanTargetsPage from './features/scan/pages/TargetsPage.jsx';
+import ScanImagesPage from './features/scan/pages/ImagesPage.jsx';
+import ScanReportsPage from './features/scan/pages/ReportsPage.jsx';
+import ScanFindingsPage from './features/scan/pages/FindingsPage.jsx';
+import ScanDatabasePage from './features/scan/pages/DatabasePage.jsx';
+
+import AccessLayout from './features/access/AccessLayout.jsx';
+import TokensPage from './features/access/pages/TokensPage.jsx';
+import WebhooksPage from './features/access/pages/WebhooksPage.jsx';
+import AnonymousPage from './features/access/pages/AnonymousPage.jsx';
+
+// The docs bundle every Markdown page inline. That is ~35 files nobody needs
+// on the dashboard, so the whole section is a separate chunk fetched on first
+// visit to /docs rather than part of the initial load.
+const DocsLayout = lazy(() => import('./features/docs/DocsLayout.jsx'));
+const DocPage = lazy(() => import('./features/docs/DocPage.jsx'));
+
+function DocsFallback() {
+  return <div className="p-8 font-mono text-xs text-slate-400 dark:text-slate-600">loading documentation…</div>;
+}
 
 export default function App() {
   return (
@@ -36,12 +58,32 @@ export default function App() {
           <Route path="retention" element={<RetentionPage />} />
           <Route path="blobstores" element={<BlobstoresPage />} />
           <Route path="system" element={<SystemPage />} />
-          <Route path="scan" element={<ScanPage />} />
           <Route path="repositories" element={<RepositoriesPage />} />
-          <Route path="access" element={<AccessPage />} />
-          <Route path="analytics" element={<AnalyticsPage />} />
+          <Route path="tasks" element={<TasksPage />} />
           <Route path="users" element={<UsersPage />} />
           <Route path="roles" element={<RolesPage />} />
+          <Route path="audit" element={<AuditPage />} />
+
+          {/* Vulnerability scanning: one section, six views, each linkable. */}
+          <Route path="scan" element={<ScanLayout />}>
+            <Route index element={<ScanOverviewPage />} />
+            <Route path="targets" element={<ScanTargetsPage />} />
+            <Route path="images" element={<ScanImagesPage />} />
+            <Route path="reports" element={<ScanReportsPage />} />
+            <Route path="findings" element={<ScanFindingsPage />} />
+            <Route path="database" element={<ScanDatabasePage />} />
+          </Route>
+
+          <Route path="access" element={<AccessLayout />}>
+            <Route index element={<TokensPage />} />
+            <Route path="webhooks" element={<WebhooksPage />} />
+            <Route path="anonymous" element={<AnonymousPage />} />
+          </Route>
+
+          <Route path="docs" element={<Suspense fallback={<DocsFallback />}><DocsLayout /></Suspense>}>
+            <Route index element={<Suspense fallback={<DocsFallback />}><DocPage /></Suspense>} />
+            <Route path=":slug" element={<Suspense fallback={<DocsFallback />}><DocPage /></Suspense>} />
+          </Route>
         </Route>
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />

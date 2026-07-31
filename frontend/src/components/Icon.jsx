@@ -32,6 +32,9 @@ const ICONS = {
   file: ['M6 2h8l4 4v16H6z', 'M14 2v4h4'],
   copy: ['M8 8h12v12H8z', 'M4 4h12v4', 'M4 4v12h4'],
   bug: ['M12 8a3 3 0 1 0 0-6 3 3 0 0 0 0 6z', 'M12 8v4', 'M8 16a4 4 0 0 0 8 0', 'M4 12h4', 'M16 12h4', 'M5 19l3-3', 'M19 19l-3-3'],
+  book: ['M4 4h7a2 2 0 0 1 2 2v14a2 2 0 0 0-2-2H4z', 'M20 4h-7a2 2 0 0 0-2 2v14a2 2 0 0 1 2-2h7z'],
+  stop: ['M6 6h12v12H6z'],
+  clock: ['M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18z', 'M12 7v5l3 2'],
 };
 
 export default function Icon({ name, size = 16, className = '' }) {

@@ -42,10 +42,34 @@ async def get_current_user(
     settings: Annotated[Settings, Depends(get_settings)],
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> User:
-    """Resolve the authenticated user from the access-token cookie.
+    """Resolve the authenticated user from the access-token cookie, or an API token.
 
-    Raises 401 if the cookie is missing/invalid or the user no longer exists.
+    Two principals reach the same place. Browsers send the ``access_token``
+    httpOnly cookie. Non-interactive callers (CI, scripts) send
+    ``Authorization: Bearer shp_…`` — a pipeline cannot hold a cookie, and
+    without this it would have to embed a human's password.
+
+    The bearer path is checked first and only for ``shp_``-prefixed values, so a
+    caller sending some other bearer token still falls through to the cookie
+    rather than being rejected outright.
+
+    Raises 401 if neither credential is present or valid.
     """
+    from .services.access_tokens import TOKEN_PREFIX, resolve_token
+
+    authorization = request.headers.get("authorization", "")
+    if authorization.lower().startswith("bearer "):
+        presented = authorization[7:].strip()
+        if presented.startswith(TOKEN_PREFIX):
+            resolved = await resolve_token(session, presented)
+            if resolved is None:
+                # Unknown, revoked, expired, or the owner was deactivated — all
+                # one answer, so a caller cannot probe which.
+                raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid or expired API token.")
+            token_user, effective = resolved
+            token_user._effective_permissions = effective  # type: ignore[attr-defined]
+            return token_user
+
     token = request.cookies.get("access_token")
     if not token:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Not authenticated.")

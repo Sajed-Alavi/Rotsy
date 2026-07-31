@@ -16,7 +16,7 @@ loop that previously re-enumerated every enabled repository every 60 seconds
 with a 24-hour Redis dedupe (so every image was re-scanned daily, and everything
 was re-scanned whenever Redis restarted) has been replaced by a ledger-backed
 watcher that baselines a repository on first sight. See
-:mod:`app.services.scan_events`.
+:mod:`app.services.scanning.events`.
 """
 
 from __future__ import annotations
@@ -40,7 +40,6 @@ from .db.session import get_session_factory
 from .routers import (
     access,
     alerts,
-    analytics,
     audit,
     auth,
     blobstores,
@@ -55,6 +54,7 @@ from .routers import (
     settings as settings_router,
     storage,
     system,
+    tasks,
     users,
 )
 from .services.alerting import evaluate_alerts
@@ -130,7 +130,7 @@ async def _scanner_db_loop(settings: Settings, stop: asyncio.Event) -> None:
     """
     import datetime as _dt
 
-    from .services import scanner_db
+    from .services.scanning import db as scanner_db
 
     logger = logging.getLogger("scanner_db_loop")
     cache = _lifespan_state.get("cache")
@@ -151,8 +151,10 @@ async def _scanner_db_loop(settings: Settings, stop: asyncio.Event) -> None:
 
     async def enqueue(reason: str) -> None:
         try:
-            from .core.jobs import JobQueue
-            job_id = await JobQueue(cache).enqueue(job_type, {})
+            # Goes through the tracking helper rather than JobQueue directly so
+            # the Database Management page can find a refresh it did not start.
+            from .services.scanning.db.tracking import enqueue_db_job
+            job_id = await enqueue_db_job(cache, job_type, {})
             logger.info("%s scanner database %s enqueued: job %s", reason,
                         "import" if settings.SCANNER_DB_OFFLINE_MODE else "update", job_id)
         except Exception:  # noqa: BLE001
@@ -203,7 +205,7 @@ async def _push_watch_loop(settings: Settings, stop: asyncio.Event) -> None:
 
     from .db.session import get_session_factory
     from .models import ScanTarget
-    from .services import scan_events
+    from .services.scanning import events as scan_events
 
     logger = logging.getLogger("push_watcher")
     cache = _lifespan_state.get("cache")
@@ -330,7 +332,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Database hygiene, not work: close out scan reports left mid-flight by a
     # previous process. This inspects rows only and starts no scans.
     try:
-        from .services.scanners import reap_stale_reports
+        from .services.scanning import reap_stale_reports
         factory = get_session_factory()
         async with factory() as session:
             await reap_stale_reports(session)
@@ -432,8 +434,8 @@ def create_app() -> FastAPI:
                                             "(Nexus webhook) or on request — never as a sweep."},
             {"name": "blobstores", "description": "Blobstore management (scaffolded)."},
             {"name": "system", "description": "Backup + Nexus-to-Nexus sync + scripts."},
-            {"name": "access", "description": "CI/CD tokens + webhooks (scaffolded)."},
-            {"name": "analytics", "description": "Bandwidth + top downloads (scaffolded)."},
+            {"name": "access", "description": "API tokens, webhooks and anonymous repository access."},
+            {"name": "tasks", "description": "Nexus scheduled tasks: list, run, stop."},
         ],
         docs_url="/docs",
         redoc_url="/redoc",
@@ -458,7 +460,7 @@ def create_app() -> FastAPI:
     app.include_router(system.router, prefix="/api")
     app.include_router(scan.router, prefix="/api")
     app.include_router(access.router, prefix="/api")
-    app.include_router(analytics.router, prefix="/api")
+    app.include_router(tasks.router, prefix="/api")
     app.include_router(metrics.router, prefix="/api")
     app.include_router(jobs.router, prefix="/api")
     app.include_router(prometheus.router)  # no prefix — serves at /metrics/export

@@ -6,20 +6,28 @@
 # nginx.conf at container start.
 
 # ---------- Stage 1: build ----------
-FROM node:20-alpine AS build
+# Node 22: required by the toolchain, not chosen freely — vite 8 needs
+# ^20.19.0 || >=22.12.0 and react-router 8 needs >=22.22.0. Pinned to a patch
+# release so the build is reproducible.
+FROM node:22.23.2-alpine AS build
 
 WORKDIR /app
 
 # Install dependencies first for layer caching.
-COPY package.json package-lock.json* ./
-RUN npm install
+#
+# `npm ci` (not `npm install`): it installs exactly what package-lock.json
+# resolves and fails loudly when the lockfile and package.json disagree, rather
+# than silently resolving something else. Regenerate the lockfile with
+# `npm install` locally whenever package.json changes, and commit it.
+COPY package.json package-lock.json ./
+RUN npm ci
 
 # Copy sources and build. VITE_* env vars are read at build time.
 COPY . .
 RUN npm run build
 
 # ---------- Stage 2: serve ----------
-FROM nginx:alpine AS serve
+FROM nginx:1.27.3-alpine AS serve
 
 # Run nginx as a non-root user. The nginx alpine image ships an unprivileged
 # user "nginx"; we listen on port 80 inside the container, which is fine

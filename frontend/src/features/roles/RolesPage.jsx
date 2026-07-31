@@ -42,6 +42,33 @@ export default function RolesPage() {
     },
   ];
 
+  // DELETE /roles/{id} existed server-side with no caller, so a custom role
+  // could be created and edited but never removed from the UI. System roles are
+  // not deletable — the app seeds and depends on them.
+  const remove = async (role) => {
+    if (role.is_system) return;
+    if (!confirm(`Delete the role "${role.name}"?\n\nUsers holding it lose those permissions immediately. This cannot be undone.`)) return;
+    try {
+      await api.delete(`/roles/${role.id}`);
+      load();
+    } catch (err) { setError(err.message); }
+  };
+
+  const deleteColumn = {
+    key: '__actions',
+    header: '\u00b7',
+    headClassName: 'text-right',
+    className: 'text-right',
+    render: (_v, row) => (row.is_system ? (
+      <span className="font-mono text-[10px] text-slate-300 dark:text-slate-700" title="System roles cannot be deleted">system</span>
+    ) : (
+      <button
+        onClick={(e) => { e.stopPropagation(); remove(row); }}
+        className="border border-rose-200 px-2 py-0.5 font-mono text-[10px] uppercase text-rose-600 hover:bg-rose-50 disabled:opacity-50 dark:border-rose-800 dark:text-rose-400 dark:hover:bg-rose-950/40"
+      >delete</button>
+    )),
+  };
+
   return (
     <div className="p-6">
       <div className="mb-4 flex items-center justify-between">
@@ -59,7 +86,7 @@ export default function RolesPage() {
       {loading ? (
         <div className="border border-slate-200 px-3 py-10 text-center font-mono text-xs text-slate-400 dark:border-slate-800 dark:text-slate-600">loading…</div>
       ) : (
-        <DataTable columns={columns} rows={roles} onRowClick={(r) => setEditing({ role: r })} />
+        <DataTable columns={[...columns, deleteColumn]} rows={roles} onRowClick={(r) => setEditing({ role: r })} />
       )}
 
       {editing && (

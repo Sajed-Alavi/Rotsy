@@ -10,10 +10,13 @@ default on first launch. After that, the dashboard-stored config wins.
 
 from __future__ import annotations
 
+import logging
 from functools import lru_cache
 
-from pydantic import field_validator
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+logger = logging.getLogger(__name__)
 
 # Values that ship as copy-paste-ready placeholders in .env.example. A secret
 # equal to one of these means the operator deployed the example file
@@ -47,7 +50,7 @@ class Settings(BaseSettings):
     NEXUS_VERIFY_SSL: bool = True
     # NOTE: there is deliberately no Docker registry URL or port setting. Each
     # Docker repository's connector endpoint is discovered from Nexus at scan
-    # time (app/services/registry.py), so adding repositories or moving a
+    # time (app/services/scanning/registry.py), so adding repositories or moving a
     # connector port needs no configuration change here or in the UI.
 
     # --- Database (v2 persistence: users/roles/permissions) --------------
@@ -55,10 +58,12 @@ class Settings(BaseSettings):
 
     # --- Auth (JWT in httpOnly cookies) -----------------------------------
     JWT_SECRET: str
-    # Encryption key for the Nexus password stored in the dashboard DB. If
-    # unset, we derive one from JWT_SECRET so the app still boots (with a
-    # warning) — set it explicitly in production.
-    NEXUS_CONFIG_ENCRYPTION_KEY: str = ""
+    # Encryption key for the Nexus password stored in the dashboard DB.
+    # REQUIRED and distinct from JWT_SECRET: these two secrets protect
+    # different things (session signing vs. data at rest) and must be
+    # rotatable independently. See
+    # security/findings/medium/MED-01-encryption-key-derived-from-jwt-secret.md.
+    NEXUS_CONFIG_ENCRYPTION_KEY: str
     JWT_ALGORITHM: str
     JWT_ACCESS_TTL_SECONDS: int
     JWT_REFRESH_TTL_SECONDS: int
@@ -130,6 +135,15 @@ class Settings(BaseSettings):
     # BACKUP_OUTPUT_DIR drops below this many bytes. Default 512MB.
     BACKUP_MIN_FREE_BYTES: int = 536_870_912
 
+    # --- Outbound request guard (SSRF) ------------------------------------
+    # Hosts the backend is permitted to make user-directed outbound requests
+    # to even though they resolve to a private/loopback/link-local address —
+    # i.e. legitimate on-prem alert webhooks and sync targets. Comma-separated
+    # hostnames or bare IPs, e.g. "nexus.internal,10.0.0.5". Empty (default)
+    # means: no private destinations at all. See app/core/outbound.py and
+    # security/findings/medium/MED-04-alert-webhook-ssrf.md.
+    OUTBOUND_ALLOWED_HOSTS: str = ""
+
     # --- Backend server runtime ------------------------------------------
     BACKEND_HOST: str
     BACKEND_PORT: int
@@ -183,6 +197,74 @@ class Settings(BaseSettings):
         if len(value) < 12:
             raise ValueError("BOOTSTRAP_ADMIN_PASSWORD must be at least 12 characters.")
         return value
+
+    @field_validator("NEXUS_CONFIG_ENCRYPTION_KEY")
+    @classmethod
+    def _reject_weak_encryption_key(cls, value: str) -> str:
+        """Require a real, dedicated key for the at-rest Nexus password.
+
+        This previously fell back to ``JWT_SECRET`` when unset "so the app
+        still boots", which collapsed two secrets with different threat models
+        into one: leaking JWT_SECRET then both forged sessions *and* decrypted
+        the stored Nexus admin password out of a database backup. Requiring it
+        explicitly is the same fail-fast treatment JWT_SECRET already gets.
+        """
+        if value.strip().lower() in _PLACEHOLDER_SECRETS:
+            raise ValueError(
+                "NEXUS_CONFIG_ENCRYPTION_KEY is still set to the .env.example "
+                "placeholder. Generate a real one: `openssl rand -hex 32`."
+            )
+        if len(value) < 32:
+            raise ValueError(
+                "NEXUS_CONFIG_ENCRYPTION_KEY must be at least 32 characters. "
+                "Generate one with `openssl rand -hex 32`. It must be different "
+                "from JWT_SECRET so the two can be rotated independently."
+            )
+        return value
+
+    @model_validator(mode="after")
+    def _check_secret_separation(self) -> "Settings":
+        """The at-rest key must not simply be a copy of the signing key."""
+        if self.NEXUS_CONFIG_ENCRYPTION_KEY == self.JWT_SECRET:
+            raise ValueError(
+                "NEXUS_CONFIG_ENCRYPTION_KEY must not be the same value as "
+                "JWT_SECRET — that reintroduces the single-secret weakness it "
+                "exists to remove. Generate a separate `openssl rand -hex 32`."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _check_cookie_secure(self) -> "Settings":
+        """Reject the https-origin + insecure-cookie combination.
+
+        ``COOKIE_SECURE=false`` is legitimate for local HTTP development. It is
+        never legitimate alongside an https frontend origin: that pairing ships
+        auth cookies without the ``Secure`` flag to a TLS site, so any plaintext
+        hop leaks them. Treat it as the misconfiguration it is.
+        """
+        if not self.COOKIE_SECURE:
+            https_origins = [o for o in self.cors_origins if o.lower().startswith("https://")]
+            if https_origins:
+                raise ValueError(
+                    f"COOKIE_SECURE=false with an https FRONTEND_ORIGIN "
+                    f"({', '.join(https_origins)}) would send auth cookies "
+                    "without the Secure flag over TLS. Set COOKIE_SECURE=true."
+                )
+            logger.warning(
+                "COOKIE_SECURE=false — auth cookies will be sent without the "
+                "Secure flag. This is only safe for local HTTP development; "
+                "set COOKIE_SECURE=true for any deployment behind TLS."
+            )
+        return self
+
+    @property
+    def outbound_allowed_hosts(self) -> set[str]:
+        """Hosts exempt from the private-address block in app/core/outbound.py."""
+        return {
+            h.strip().lower()
+            for h in self.OUTBOUND_ALLOWED_HOSTS.split(",")
+            if h.strip()
+        }
 
     @property
     def cors_origins(self) -> list[str]:

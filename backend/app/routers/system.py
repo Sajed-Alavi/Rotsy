@@ -13,12 +13,14 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import Settings, get_settings
+from ..core import config_store
 from ..core.jobs import JobQueue
+from ..core.outbound import OutboundURLError, validate_outbound_url
 from ..dependencies import RequirePermission, get_current_user, get_session
 from ..models import BackupRun, User
 from ..services.backup_archive import InvalidRepositoryName, safe_repo_dirname
@@ -214,13 +216,42 @@ class SyncRequest(BaseModel):
     target_password: str = Field(..., min_length=1)
     verify_ssl: bool = True
 
+    @field_validator("target_base_url")
+    @classmethod
+    def _check_target_base_url(cls, value: str) -> str:
+        """Reject sync targets the backend must not be pointed at.
+
+        The backend dials this URL from inside the deployment network *and*
+        sends ``target_username``/``target_password`` to it, so an unvalidated
+        destination leaks credentials as well as reachability. See
+        :mod:`app.core.outbound`.
+        """
+        try:
+            return validate_outbound_url(value, get_settings())
+        except OutboundURLError as exc:
+            raise ValueError(f"target_base_url rejected: {exc}") from exc
+
 
 @router.post("/sync", status_code=status.HTTP_202_ACCEPTED,
              dependencies=[Depends(RequirePermission(_SYNC_JOB_PERM))])
-async def enqueue_sync(request: Request, body: SyncRequest) -> dict[str, str]:
-    """Enqueue a sync job: copy all components for each source→target repo pair."""
+async def enqueue_sync(
+    request: Request,
+    body: SyncRequest,
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> dict[str, str]:
+    """Enqueue a sync job: copy all components for each source→target repo pair.
+
+    The target password is encrypted before it enters the payload. The queue is
+    Redis-backed and the payload doubles as an inspectable record of the job, so
+    a plaintext credential there would outlive the request and leak into any
+    future job-inspector or debug-logging surface.
+    """
     cache = app_state(request).cache
     if cache is None:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Cache unavailable")
-    job_id = await JobQueue(cache).enqueue("sync", body.model_dump())
+    payload = body.model_dump()
+    payload["target_password_enc"] = config_store.encrypt_password(
+        payload.pop("target_password"), settings
+    )
+    job_id = await JobQueue(cache).enqueue("sync", payload)
     return {"job_id": job_id}

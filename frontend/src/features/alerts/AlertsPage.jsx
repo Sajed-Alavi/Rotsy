@@ -11,6 +11,7 @@ export default function AlertsPage() {
   const [rules, setRules] = useState([]);
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState(null);
+  const [error, setError] = useState('');
 
   const load = async () => {
     setLoading(true);
@@ -41,6 +42,26 @@ export default function AlertsPage() {
     },
   ];
 
+  // DELETE /alerts/{id} had no caller: rules could be created and edited but
+  // only ever disabled, never removed.
+  const remove = async (rule) => {
+    if (!confirm(`Delete the alert rule "${rule.name}"?`)) return;
+    try {
+      await api.delete(`/alerts/${rule.id}`);
+      load();
+    } catch (err) { setError(err.message); }
+  };
+
+  const deleteColumn = {
+    key: '__actions',
+    header: '\u00b7',
+    headClassName: 'text-right',
+    className: 'text-right',
+    render: (_v, row) => (
+      <button onClick={(e) => { e.stopPropagation(); remove(row); }} className="border border-rose-200 px-2 py-0.5 font-mono text-[10px] uppercase text-rose-600 hover:bg-rose-50 disabled:opacity-50 dark:border-rose-800 dark:text-rose-400 dark:hover:bg-rose-950/40">delete</button>
+    ),
+  };
+
   return (
     <div className="p-6">
       <div className="mb-4 flex items-center justify-between">
@@ -49,10 +70,12 @@ export default function AlertsPage() {
           <Icon name="plus" size={13} /> New alert
         </button>
       </div>
+      {error && <div className="mb-3 border border-rose-200 bg-rose-50 px-3 py-2 font-mono text-xs text-rose-600 dark:border-rose-900 dark:bg-rose-950/30 dark:text-rose-400">{error}</div>}
+
       {loading ? (
         <div className="border border-slate-200 px-3 py-10 text-center font-mono text-xs text-slate-400 dark:border-slate-800 dark:text-slate-600">loading…</div>
       ) : (
-        <DataTable columns={columns} rows={rules} onRowClick={(r) => setEditing({ rule: r })} />
+        <DataTable columns={[...columns, deleteColumn]} rows={rules} onRowClick={(r) => setEditing({ rule: r })} />
       )}
       {editing && <AlertModal initial={editing.rule} onClose={() => setEditing(null)} onSaved={() => { setEditing(null); load(); }} />}
     </div>

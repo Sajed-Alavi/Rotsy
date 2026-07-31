@@ -2,9 +2,14 @@
 
 The Nexus connection (URL, username, password) is editable from the dashboard
 and stored in the ``system_config`` table. The password is encrypted at rest
-using Fernet symmetric encryption. The encryption key comes from
-``NEXUS_CONFIG_ENCRYPTION_KEY`` (env) or is derived from ``JWT_SECRET`` so the
-app always boots.
+using Fernet symmetric encryption. The encryption key is derived **only** from
+``NEXUS_CONFIG_ENCRYPTION_KEY``, which :mod:`app.config` requires at startup
+and forbids from equalling ``JWT_SECRET``.
+
+This used to fall back to ``JWT_SECRET`` when the dedicated key was unset. That
+made one secret do two jobs with different threat models — leaking the token
+signing key also decrypted stored Nexus admin credentials from a DB backup. The
+two are now separate and independently rotatable.
 
 Resolution order for the Nexus connection at runtime:
   1. dashboard value (DB) if present
@@ -50,9 +55,12 @@ class NexusConnection:
 
 
 def _fernet(settings: Settings) -> Fernet:
-    """Build a Fernet cipher. Key derived from the configured secret so we
-    don't need a second mandatory env var."""
-    seed = settings.NEXUS_CONFIG_ENCRYPTION_KEY or settings.JWT_SECRET
+    """Build a Fernet cipher from the dedicated at-rest encryption key.
+
+    No fallback: ``NEXUS_CONFIG_ENCRYPTION_KEY`` is a required setting and is
+    validated at startup (see :meth:`app.config.Settings._reject_weak_encryption_key`).
+    """
+    seed = settings.NEXUS_CONFIG_ENCRYPTION_KEY
     # Fernet needs 32 url-safe base64 bytes; derive deterministically.
     key = base64.urlsafe_b64encode(hashlib.sha256(seed.encode()).digest())
     return Fernet(key)

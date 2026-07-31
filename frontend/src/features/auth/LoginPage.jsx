@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Navigate, useNavigate } from 'react-router-dom';
+import { Navigate, useNavigate } from 'react-router';
 import { useAuth } from '../../context/AuthContext.jsx';
 
 /** Minimal login screen, theme-aware. Redirects to / once authenticated. */

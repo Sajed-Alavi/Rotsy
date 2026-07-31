@@ -21,7 +21,7 @@ from ..core.security import hash_password, verify_password
 from ..core.config_store import nexus_connection_masked, save_nexus_connection
 from ..models import User
 from ..schemas.auth import MeResponse, RoleBrief
-from ..services import registry
+from ..services.scanning import registry
 from ..state import app_state
 
 

@@ -8,6 +8,13 @@
 
 const BASE = import.meta.env.VITE_API_BASE_URL || '/api';
 
+/**
+ * Exported for EventSource callers, which build their own URLs rather than
+ * going through `request()` (SSE is not fetch). Keeps the base in one place
+ * instead of each streaming page re-deriving it from import.meta.env.
+ */
+export const API_BASE = BASE;
+
 export class ApiError extends Error {
   constructor(message, { status, payload } = {}) {
     super(message);

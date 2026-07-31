@@ -27,12 +27,11 @@ PERMISSIONS: list[tuple[str, str]] = [
     # Repositories (Feature F)
     ("repositories:read", "View repositories"),
     ("repositories:write", "Create, configure, invalidate cache, rebuild index"),
-    # Access & webhooks (Feature G)
-    ("access:read", "View API tokens and webhooks"),
-    ("access:write", "Manage API tokens and webhooks"),
-    # Analytics & tasks (Feature H)
-    ("analytics:read", "View analytics and task manager"),
-    ("tasks:control", "Start/stop Nexus background tasks"),
+    # Access & webhooks
+    ("access:read", "View API tokens, webhooks and anonymous access"),
+    ("access:write", "Issue and revoke API tokens, manage webhooks and anonymous access"),
+    # Nexus scheduled tasks
+    ("tasks:control", "View, start and stop Nexus background tasks"),
     # Monitoring (v3: metrics + jobs + alerts)
     ("metrics:read", "View real-time and historical metrics"),
     ("metrics:collect", "Trigger metric collection / background scans"),
@@ -58,7 +57,7 @@ SYSTEM_ROLE_PERMISSIONS: dict[str, list[str]] = {
         "retention:read", "retention:execute",
         "repositories:read", "scan:read", "scan:execute",
         "metrics:read", "metrics:collect", "jobs:read", "jobs:manage",
-        "analytics:read", "tasks:control",
+        "tasks:control",
         "profile:edit",
     ],
     "viewer": READ_PERMISSION_KEYS + ["profile:edit"],

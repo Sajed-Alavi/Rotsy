@@ -15,15 +15,35 @@
 # `oras` previously tracked `main`, a moving development branch; it is now on a
 # tagged release like the others.
 #
+# **A pin that is too old is its own outage.** These were first set to versions
+# that were current knowledge rather than current releases, roughly eighteen
+# months behind. Grype 0.87 reads database schema v5; Anchore stopped publishing
+# v5 in March 2026 and serves v6 now, so that binary could no longer obtain a
+# usable database at all — every scan failed with
+# "database metadata not found: /app/.cache/grype/db/5" while a perfectly valid
+# v6 database sat on the cache volume beside it.
+#
+# So: pin, but verify the pin against the *live* feed before shipping it, and
+# revisit on every dependency pass. A scanner is only as good as the database it
+# can still fetch.
+#
 # To move these forward deliberately, check the current releases with:
-#   docker run --rm aquasec/trivy:latest --version
-#   docker run --rm anchore/grype:latest version
-#   docker run --rm ghcr.io/oras-project/oras:v1.2.2 version
-# then bump the pin and rebuild. Override at build time if you need to test one:
-#   docker compose build --build-arg TRIVY_VERSION=0.58.1 backend
-ARG TRIVY_VERSION=0.58.1
-ARG GRYPE_VERSION=v0.87.0
-ARG ORAS_VERSION=v1.2.2
+#   curl -s https://api.github.com/repos/anchore/grype/releases/latest | jq -r .tag_name
+#   curl -s https://api.github.com/repos/aquasecurity/trivy/releases/latest | jq -r .tag_name
+#   curl -s https://api.github.com/repos/oras-project/oras/releases/latest | jq -r .tag_name
+#
+# Then confirm the new binary still reads the database already on the volume,
+# before rebuilding — this is the check that would have caught the above:
+#   docker run --rm -v nexus-project_scanner-cache:/app/.cache \
+#     -e GRYPE_DB_CACHE_DIR=/app/.cache/grype/db anchore/grype:<tag> db status
+#
+# Override at build time to test one: docker compose build --build-arg GRYPE_VERSION=v0.116.1 backend
+#
+# Verified against the live cache volume on 2026-08-01: grype v0.116.1 reports
+# schema v6.1.9 "valid"; trivy 0.72.0 reports DB schema v2, unchanged from 0.58.1.
+ARG TRIVY_VERSION=0.72.0
+ARG GRYPE_VERSION=v0.116.1
+ARG ORAS_VERSION=v1.3.3
 
 # BuildKit workaround: Define helper stages so variable expansion works
 FROM aquasec/trivy:${TRIVY_VERSION} AS trivy-source

@@ -32,7 +32,7 @@ from .paths import (
     which,
 )
 from .process import extract, oras_pull, proxy_env, prune_trivy, rate, run_streaming
-from .status import as_datetime, dir_size, grype_status, status
+from .status import as_datetime, dir_size, grype_db_usable, grype_status, status
 
 logger = logging.getLogger(__name__)
 
@@ -303,6 +303,16 @@ async def _update_grype(emit: ProgressCallback, env: dict[str, str]) -> dict[str
         shutil.rmtree(tmp, ignore_errors=True)
 
     if rc == 0:
+        # Exit 0 is not proof of a usable database. Grype can complete an update
+        # and still leave nothing the binary can load — that is exactly what
+        # happened with a v5-schema binary against a v6-only feed: the job
+        # reported success, the dashboard showed READY, and every scan failed.
+        # Verify through the same load path a scan uses before claiming success.
+        usable, why = grype_db_usable()
+        if not usable:
+            await emit(100, f"grype: update finished but the database is unusable — {why}",
+                       {"scanner": "grype", "stage": "failed", "error": why})
+            return {"ok": False, "downloaded": True, "error": why}
         await emit(100, "grype: database updated", {"scanner": "grype", "stage": "done"})
         return {"ok": True, "downloaded": True}
 

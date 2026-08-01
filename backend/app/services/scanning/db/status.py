@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -20,6 +22,11 @@ from .paths import (
     TRIVY_JAVA_DB_DIR,
     which,
 )
+
+
+# Cache for the Grype load probe: (monotonic_time, ok, reason).
+_DB_STATUS_CACHE: dict[str, tuple[float, bool, str]] = {}
+_DB_STATUS_TTL = 30.0
 
 
 def parse_iso(value: Any) -> str | None:
@@ -157,6 +164,55 @@ class Readiness:
         }
 
 
+def grype_db_usable() -> tuple[bool, str]:
+    """Ask the Grype binary whether it can actually load the database on disk.
+
+    Everything else here inspects files. That is not the same question, and the
+    difference has bitten: a Grype pinned to a version reading schema v5 sat
+    beside a valid schema v6 database, so the file checks reported a healthy
+    database while every single scan failed with "database metadata not found".
+    The dashboard said READY and nothing worked.
+
+    ``grype db status`` is the authoritative answer because it is the same load
+    path a scan takes. Result is cached briefly — this is called from a request
+    handler and a subprocess per page view would be rude.
+    """
+    grype = which("grype")
+    if grype is None:
+        return False, "the grype binary is not installed in this image"
+
+    now = time.monotonic()
+    cached = _DB_STATUS_CACHE.get("grype")
+    if cached and now - cached[0] < _DB_STATUS_TTL:
+        return cached[1], cached[2]
+
+    try:
+        proc = subprocess.run(  # noqa: S603 - fixed argv, no shell
+            [grype, "db", "status"], capture_output=True, text=True, timeout=30,
+        )
+        output = f"{proc.stdout}\n{proc.stderr}"
+        ok = proc.returncode == 0 and "invalid" not in output.lower()
+        reason = ""
+        if not ok:
+            # Surface Grype's own words; they name the path it looked in, which
+            # is what makes a schema mismatch diagnosable at a glance.
+            detail = next(
+                (ln.strip() for ln in output.splitlines()
+                 if "error" in ln.lower() or "invalid" in ln.lower()),
+                "grype reports its database is unusable",
+            )
+            reason = (
+                f"{detail} — the installed grype cannot read the database on disk. "
+                "This is usually a schema mismatch between the grype binary and the "
+                "database; update the database, or align the pinned grype version."
+            )
+    except (subprocess.SubprocessError, OSError) as exc:
+        ok, reason = False, f"could not query grype database status: {exc}"
+
+    _DB_STATUS_CACHE["grype"] = (now, ok, reason)
+    return ok, reason
+
+
 def readiness(scanners: list[str]) -> dict[str, Readiness]:
     """Check each scanner's preconditions and explain any that are unmet.
 
@@ -186,5 +242,14 @@ def readiness(scanners: list[str]) -> dict[str, Readiness]:
         built = info.get("built")
         built_dt = as_datetime(built)
         stale = built_dt is not None and (now - built_dt) > STALE_AFTER
+
+        # Files being present is necessary but not sufficient: the binary has to
+        # be able to load them. Only Grype exposes a cheap way to ask.
+        if name == "grype":
+            usable, why = grype_db_usable()
+            if not usable:
+                out[name] = Readiness(name, False, why, stale=stale, built=built)
+                continue
+
         out[name] = Readiness(name, True, "", stale=stale, built=built)
     return out

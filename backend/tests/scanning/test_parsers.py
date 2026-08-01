@@ -155,3 +155,22 @@ def test_plain_registry_reference_allowed():
 ])
 def test_severity_from_cvss_bands(score, expected):
     assert severity_from_cvss(score) == expected
+
+
+def test_grype_negligible_maps_to_low():
+    """Grype's "Negligible" band must not be reported as UNKNOWN.
+
+    SEVERITIES has no Negligible, and persistence buckets anything it does not
+    recognise as UNKNOWN. That would turn a graded finding into an ungraded one
+    — UNKNOWN means "unclassified, go look", which is the opposite of what
+    Negligible says. Grype 0.116 emits it in volume (109 of 598 on a real image),
+    so this is not a corner case.
+    """
+    from app.services.scanning.grype import _normalise_severity
+
+    assert _normalise_severity("Negligible") == "LOW"
+    assert _normalise_severity("NEGLIGIBLE") == "LOW"
+    # Everything else passes through untouched, upper-cased.
+    assert _normalise_severity("Critical") == "CRITICAL"
+    assert _normalise_severity(None) == "UNKNOWN"
+    assert _normalise_severity("") == "UNKNOWN"

@@ -24,6 +24,20 @@ from .base import (
 from .registry import DockerRegistry
 
 
+# Grype's severity vocabulary is not quite the shared one. "Negligible" sits
+# below Low and has no NVD equivalent, so it does not appear in SEVERITIES —
+# and an unrecognised band is bucketed as UNKNOWN downstream. That would report
+# a finding we have graded as one we could not grade, which is the wrong
+# direction to be wrong in: UNKNOWN means "unclassified, look at it", and these
+# are classified. Fold it into LOW, the nearest band we do carry.
+_SEVERITY_ALIASES = {"NEGLIGIBLE": "LOW"}
+
+
+def _normalise_severity(value: str | None) -> str:
+    raw = (value or "UNKNOWN").upper()
+    return _SEVERITY_ALIASES.get(raw, raw)
+
+
 def parse(raw: dict[str, Any]) -> list[dict[str, Any]]:
     findings: list[dict[str, Any]] = []
     for match in raw.get("matches") or []:
@@ -40,7 +54,7 @@ def parse(raw: dict[str, Any]) -> list[dict[str, Any]]:
         fixed = ((vuln.get("fix") or {}).get("versions") or [])
         findings.append({
             "cve": vuln.get("id") or "UNKNOWN",
-            "severity": (vuln.get("severity") or "UNKNOWN").upper(),
+            "severity": _normalise_severity(vuln.get("severity")),
             "package": artifact.get("name") or "",
             "installed_version": artifact.get("version") or "",
             "fixed_version": fixed[0] if fixed else "",

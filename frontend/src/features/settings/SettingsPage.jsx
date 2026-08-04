@@ -262,7 +262,7 @@ function NexusSection() {
       <form onSubmit={save} className="space-y-3">
         <div>
           <div className="mb-1 font-mono text-[10px] uppercase tracking-wider text-slate-500">URL</div>
-          <input value={form.url} onChange={(e) => setForm({ ...form, url: e.target.value })} placeholder="http://host.docker.internal:8081" className={INPUT} />
+          <input value={form.url} onChange={(e) => setForm({ ...form, url: e.target.value })} placeholder="" className={INPUT} />
         </div>
         <div className="grid grid-cols-2 gap-3">
           <div>

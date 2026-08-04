@@ -35,6 +35,7 @@ Removing packages turned out to be a bigger win than patching them, too: `curl` 
 - **Vulnerability scanning** — Trivy + Grype run against every image, browsable as repository → image → tag → report, with per-CVE detail (installed/fixed version, CVSS) and a **PDF export** button for sharing a report outside the tool.
 - **Event-driven, not polled** — scans fire on push (webhook or fallback watcher) or on demand, never on a blind schedule.
 - **RBAC with per-repository access rules** — read/write/delete scoped down to individual repos and images, not just role-level all-or-nothing.
+- **Cleanup/retention policies** — scheduled bulk deletion of old image tags (`keep last N` per image, or an age cutoff), with the disk-reclaiming "Compact blob store" task triggered automatically after a successful run — not just a rule that removes tags and leaves the blobs behind.
 - **Scheduled, compressed backups** — daily/weekly/monthly/cron cadence, configurable retention, `.tar.gz` archives instead of raw directory copies.
 - **Real-time job progress** — SSE-streamed progress for scans, database downloads and backups, with actual cancellation (see above) instead of a spinner that lies to you.
 - **A documentation section built into the app itself** — installation, configuration reference, troubleshooting, upgrade notes, all versioned alongside the code.

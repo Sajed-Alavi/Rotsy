@@ -477,6 +477,12 @@ Click any row in **Recent reports**. Successful reports list findings ordered by
 severity then CVSS. Failed reports show the reason plus the scanner's command
 line (password redacted), exit code and output tail.
 
+**Download PDF** on a report's detail view exports it as a standalone document:
+repository, image, tag, scan date, severity breakdown, the full CVE list
+(installed/fixed version, CVSS), and short recommendations derived from which
+Critical/High findings have a fix available — everything needed to hand a
+report to someone who does not have access to the dashboard.
+
 ### Clearing reports
 
 `DELETE /api/scan/reports` (dashboard: *clear all*) removes reports and findings.

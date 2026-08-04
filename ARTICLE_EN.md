@@ -39,14 +39,6 @@ Removing packages turned out to be a bigger win than patching them, too: `curl` 
 - **Real-time job progress** — SSE-streamed progress for scans, database downloads and backups, with actual cancellation (see above) instead of a spinner that lies to you.
 - **A documentation section built into the app itself** — installation, configuration reference, troubleshooting, upgrade notes, all versioned alongside the code.
 
-![Screenshot: repository → image → tag vulnerability tree](./screenshots/scan-tree-placeholder.png)
-
-![Screenshot: PDF export of a vulnerability report](./screenshots/pdf-export-placeholder.png)
-
-![Screenshot: scheduled backup configuration](./screenshots/backup-schedule-placeholder.png)
-
-*(Screenshots above are placeholders — drop real images into a `screenshots/` directory and update the paths.)*
-
 ## Stack
 
 FastAPI + SQLAlchemy (async) + Postgres on the backend, a Redis-backed job queue (no Celery — a few hundred lines got us pending → running → done/failed/cancelled with SSE progress, which was all we needed), React 19 + Vite on the frontend, Trivy and Grype for scanning. Python 3.13, Node 24 LTS.

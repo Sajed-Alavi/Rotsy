@@ -7,12 +7,19 @@ export default {
   theme: {
     extend: {
       colors: {
+        // The logo's palette (see components/Logo.jsx): a violet arrow over cyan
+        // cubes on a deep navy shield. Reserved for brand chrome — the working UI
+        // accent stays `sky`, which index.css explains as the deliberate
+        // "tooling, not marketing" choice.
         brand: {
-          50: '#eef6ff',
-          100: '#d9eaff',
-          500: '#2f7df5',
-          600: '#1f64d8',
-          700: '#1a4faf',
+          50: '#f5f3ff',
+          100: '#ede9fe',
+          400: '#a855f7',
+          500: '#8b5cf6',
+          600: '#7c3aed',
+          700: '#6d28d9',
+          900: '#1e3a8a',
+          950: '#0a1230',
         },
       },
     },

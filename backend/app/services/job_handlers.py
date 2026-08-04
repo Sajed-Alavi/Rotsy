@@ -6,15 +6,16 @@ request scope, and report progress so the UI can stream it over SSE.
 
 Registered job types (see :func:`app.main.lifespan` for the registration):
 
-  * ``collect_metrics``    — snapshot every repo, persist samples, evaluate alerts
-  * ``analyze_repo``       — deep storage analysis of one repository
-  * ``run_retention``      — execute retention policies (dry-run capable)
-  * ``backup``             — trigger a Nexus backup task
-  * ``backup_archive``     — real byte-level backup (full or selective) to the backup volume
-  * ``sync``               — copy components to another Nexus
-  * ``scan_image``         — statically scan one image with Trivy/Grype
-  * ``scanner_db_update``  — refresh the vulnerability databases (network)
-  * ``scanner_db_import``  — install them from offline archives (no network)
+  * ``collect_metrics``      — snapshot every repo, persist samples, evaluate alerts
+  * ``analyze_repo``         — deep storage analysis of one repository
+  * ``run_retention``        — execute retention policies (dry-run capable)
+  * ``backup``               — trigger a Nexus backup task
+  * ``backup_archive``       — real byte-level backup (full or selective) to the backup volume
+  * ``run_scheduled_backup`` — same, triggered by a BackupSchedule, then pruned to its retention rule
+  * ``sync``                 — copy components to another Nexus
+  * ``scan_image``           — statically scan one image with Trivy/Grype
+  * ``scanner_db_update``    — refresh the vulnerability databases (network)
+  * ``scanner_db_import``    — install them from offline archives (no network)
 """
 
 from __future__ import annotations
@@ -140,13 +141,20 @@ async def handle_backup(job: Job, progress: ProgressCallback) -> dict:
     return result
 
 
-async def handle_backup_archive(job: Job, progress: ProgressCallback) -> dict:
-    """Real byte-level backup archive (full or selective) to the backup volume.
-
-    Distinct from ``handle_backup`` (Nexus scheduler-task trigger, unchanged) —
-    this one actually downloads and persists asset bytes, tracked in a
-    :class:`~app.models.BackupRun` row so the archive has a durable history
-    beyond the job's own 7-day Redis TTL.
+async def _run_backup_archive(
+    *,
+    nexus,
+    mode: str,
+    repos: list[str] | None,
+    triggered_by: str,
+    compress: bool,
+    schedule_id: int | None,
+    progress: ProgressCallback,
+) -> dict:
+    """Shared body of a byte-level backup: create+track a BackupRun, run
+    :func:`create_archive`, record the outcome. Used by both the manual
+    ``backup_archive`` job and the scheduled ``run_scheduled_backup`` job so
+    the two don't maintain two copies of the same bookkeeping.
     """
     import json
     from datetime import datetime, timezone
@@ -154,22 +162,16 @@ async def handle_backup_archive(job: Job, progress: ProgressCallback) -> dict:
 
     from ..models import BackupRun
 
-    state = _shared_state()
-    nexus = state.nexus
-    if nexus is None:
-        raise RuntimeError("Nexus client not available")
-
     settings = _lifespan_state.get("settings")
     output_dir = Path(getattr(settings, "BACKUP_OUTPUT_DIR", "/app/backups") if settings else "/app/backups")
     min_free_bytes = getattr(settings, "BACKUP_MIN_FREE_BYTES", 512 * 1024 * 1024) if settings else 512 * 1024 * 1024
 
-    mode = job.payload.get("mode", "full")
-    repos = job.payload.get("repos") or None
-    triggered_by = job.payload.get("triggered_by", "")
-
     factory = get_session_factory()
     async with factory() as session:
-        run = BackupRun(mode=mode, repos=json.dumps(repos or []), status="running", triggered_by=triggered_by)
+        run = BackupRun(
+            mode=mode, repos=json.dumps(repos or []), status="running",
+            triggered_by=triggered_by, schedule_id=schedule_id,
+        )
         session.add(run)
         await session.commit()
         await session.refresh(run)
@@ -181,7 +183,7 @@ async def handle_backup_archive(job: Job, progress: ProgressCallback) -> dict:
     try:
         result = await create_archive(
             nexus, output_dir=output_dir, mode=mode, repos=repos,
-            min_free_bytes=min_free_bytes, on_progress=on_progress,
+            min_free_bytes=min_free_bytes, on_progress=on_progress, compress=compress,
         )
     except Exception as exc:  # noqa: BLE001
         async with factory() as session:
@@ -203,6 +205,76 @@ async def handle_backup_archive(job: Job, progress: ProgressCallback) -> dict:
             run.asset_count = result["asset_count"]
             run.finished_at = datetime.now(timezone.utc)
             await session.commit()
+
+    return result
+
+
+async def handle_backup_archive(job: Job, progress: ProgressCallback) -> dict:
+    """Real byte-level backup archive (full or selective) to the backup volume.
+
+    Distinct from ``handle_backup`` (Nexus scheduler-task trigger, unchanged) —
+    this one actually downloads and persists asset bytes, tracked in a
+    :class:`~app.models.BackupRun` row so the archive has a durable history
+    beyond the job's own 7-day Redis TTL. Manual runs are never compressed and
+    never auto-pruned — see ``run_scheduled_backup`` for the scheduled path.
+    """
+    state = _shared_state()
+    nexus = state.nexus
+    if nexus is None:
+        raise RuntimeError("Nexus client not available")
+
+    return await _run_backup_archive(
+        nexus=nexus,
+        mode=job.payload.get("mode", "full"),
+        repos=job.payload.get("repos") or None,
+        triggered_by=job.payload.get("triggered_by", ""),
+        compress=False,
+        schedule_id=None,
+        progress=progress,
+    )
+
+
+async def handle_run_scheduled_backup(job: Job, progress: ProgressCallback) -> dict:
+    """Run one BackupSchedule: create a compressed archive, then prune old ones.
+
+    Payload: ``{"schedule_id": int}``. Unlike a manual backup, the archive is
+    written as a single ``.tar.gz`` (see ``backup_archive.create_archive``'s
+    ``compress`` flag) and the schedule's own retention rule
+    (``retention_keep_last``/``retention_max_age_days``) is applied to its
+    prior runs afterward.
+    """
+    from ..models import BackupSchedule
+    from .backup_schedule import prune_old_archives
+
+    state = _shared_state()
+    nexus = state.nexus
+    if nexus is None:
+        raise RuntimeError("Nexus client not available")
+
+    schedule_id = job.payload.get("schedule_id")
+    if schedule_id is None:
+        raise ValueError("payload.schedule_id is required")
+
+    factory = get_session_factory()
+    async with factory() as session:
+        schedule = await session.get(BackupSchedule, int(schedule_id))
+        if schedule is None:
+            raise ValueError(f"BackupSchedule {schedule_id} not found")
+        mode, repos, name = schedule.mode, None, schedule.name
+        if schedule.repos:
+            import json
+            repos = json.loads(schedule.repos) or None
+
+    result = await _run_backup_archive(
+        nexus=nexus, mode=mode, repos=repos, triggered_by=f"schedule:{name}",
+        compress=True, schedule_id=int(schedule_id), progress=progress,
+    )
+
+    async with factory() as session:
+        schedule = await session.get(BackupSchedule, int(schedule_id))
+        if schedule is not None:
+            pruned = await prune_old_archives(session, schedule)
+            result["pruned"] = pruned
 
     return result
 

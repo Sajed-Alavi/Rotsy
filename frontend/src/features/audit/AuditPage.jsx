@@ -5,7 +5,7 @@ import DataTable from '../../components/DataTable.jsx';
 import Section from '../../components/Section.jsx';
 import Tabs from '../../components/Tabs.jsx';
 import { formatDateTime } from '../../lib/format.js';
-import { useResource } from '../scan/hooks/useResource.js';
+import { useResource } from '../../lib/useResource.js';
 
 const ACTION_TONE = { create: 'ok', update: 'info', delete: 'bad', grant: 'warn', revoke: 'warn' };
 

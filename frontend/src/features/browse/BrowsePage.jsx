@@ -3,6 +3,7 @@ import { api } from '../../lib/api.js';
 import Badge from '../../components/Badge.jsx';
 import Icon from '../../components/Icon.jsx';
 import { formatBytes, formatDateTime, relativeTime } from '../../lib/format.js';
+import { scanApi } from '../scan/api.js';
 
 /**
  * Repository browser.
@@ -121,6 +122,8 @@ function ImagesView({ repo, onError }) {
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState(null);
   const [filter, setFilter] = useState('');
+  const [scanning, setScanning] = useState({});
+  const [scanMsg, setScanMsg] = useState('');
 
   const load = async () => {
     setLoading(true);
@@ -184,6 +187,23 @@ function ImagesView({ repo, onError }) {
     }
   };
 
+  /** Queue a scan for one or more "name:tag" images — same endpoint the
+   * Vulnerability Scanning section's Images tree uses. Fired from here too so
+   * you don't have to leave Browse and re-find the image over there. */
+  const scanImages = async (imageRefs, label) => {
+    setScanMsg('');
+    const key = imageRefs.join(',');
+    setScanning((s) => ({ ...s, [key]: true }));
+    try {
+      await Promise.all(imageRefs.map((image) => scanApi.scanImage(repo, image)));
+      setScanMsg(`Scan queued for ${label || `${imageRefs.length} tag(s)`}.`);
+    } catch (err) {
+      onError(`could not queue scan: ${err.message}`);
+    } finally {
+      setScanning((s) => ({ ...s, [key]: false }));
+    }
+  };
+
   const totalTags = images.reduce((n, img) => n + img.tag_count, 0);
 
   return (
@@ -221,6 +241,9 @@ function ImagesView({ repo, onError }) {
       </div>
 
       {result && <DeleteResult result={result} />}
+      {scanMsg && (
+        <div className="mb-3 border border-sky-200 bg-sky-50 px-3 py-2 font-mono text-xs text-sky-700 dark:border-sky-800 dark:bg-sky-950/30 dark:text-sky-400">{scanMsg}</div>
+      )}
 
       <div className="border border-slate-200 dark:border-slate-800">
         <table className="w-full border-collapse text-sm">
@@ -253,6 +276,7 @@ function ImagesView({ repo, onError }) {
                   open={open}
                   busy={busy}
                   selected={selected}
+                  scanning={scanning}
                   onToggleOpen={() => setExpanded((prev) => {
                     const next = new Set(prev);
                     next.has(img.name) ? next.delete(img.name) : next.add(img.name);
@@ -261,6 +285,8 @@ function ImagesView({ repo, onError }) {
                   onToggleTag={toggleTag}
                   onDeleteTag={(id, label) => deleteSelected([id], label)}
                   onDeleteImage={() => deleteSelected(img.tags.map((t) => t.component_id), img.name)}
+                  onScanTag={(tag) => scanImages([`${img.name}:${tag}`], `${img.name}:${tag}`)}
+                  onScanImage={() => scanImages(img.tags.map((t) => `${img.name}:${t.tag}`), img.name)}
                 />
               );
             })}
@@ -272,7 +298,12 @@ function ImagesView({ repo, onError }) {
 }
 
 /** One image row plus, when expanded, its tag rows. */
-function FragmentRows({ img, open, busy, selected, onToggleOpen, onToggleTag, onDeleteTag, onDeleteImage }) {
+function FragmentRows({
+  img, open, busy, selected, scanning, onToggleOpen, onToggleTag, onDeleteTag, onDeleteImage,
+  onScanTag, onScanImage,
+}) {
+  const imageScanKey = img.tags.map((t) => `${img.name}:${t.tag}`).join(',');
+  const imageScanning = !!scanning[imageScanKey];
   return (
     <>
       <tr className="border-b border-slate-100 hover:bg-slate-50 dark:border-slate-800/60 dark:hover:bg-slate-800/30">
@@ -293,48 +324,71 @@ function FragmentRows({ img, open, busy, selected, onToggleOpen, onToggleTag, on
           {img.last_pushed_at ? relativeTime(img.last_pushed_at) : '—'}
         </td>
         <td className="px-3 py-2 text-right">
-          <button
-            onClick={onDeleteImage}
-            disabled={busy}
-            title={`Delete all ${img.tag_count} tags of ${img.name}`}
-            className="border border-rose-200 px-2 py-0.5 font-mono text-[10px] uppercase text-rose-600 hover:bg-rose-50 disabled:opacity-50 dark:border-rose-800 dark:text-rose-400 dark:hover:bg-rose-950/40"
-          >
-            delete all
-          </button>
+          <span className="inline-flex gap-1.5">
+            <button
+              onClick={onScanImage}
+              disabled={imageScanning}
+              title={`Scan all ${img.tag_count} tags of ${img.name}`}
+              className="border border-sky-200 px-2 py-0.5 font-mono text-[10px] uppercase text-sky-600 hover:bg-sky-50 disabled:opacity-50 dark:border-sky-800 dark:text-sky-400 dark:hover:bg-sky-950/40"
+            >
+              {imageScanning ? '···' : 'scan all'}
+            </button>
+            <button
+              onClick={onDeleteImage}
+              disabled={busy}
+              title={`Delete all ${img.tag_count} tags of ${img.name}`}
+              className="border border-rose-200 px-2 py-0.5 font-mono text-[10px] uppercase text-rose-600 hover:bg-rose-50 disabled:opacity-50 dark:border-rose-800 dark:text-rose-400 dark:hover:bg-rose-950/40"
+            >
+              delete all
+            </button>
+          </span>
         </td>
       </tr>
 
-      {open && img.tags.map((t) => (
-        <tr key={t.component_id} className="border-b border-slate-50 bg-slate-50/50 dark:border-slate-800/40 dark:bg-slate-900/30">
-          <td className="px-3 py-1.5 text-center">
-            <input
-              type="checkbox"
-              checked={selected.has(t.component_id)}
-              onChange={() => onToggleTag(t.component_id)}
-              className="accent-rose-500"
-            />
-          </td>
-          <td className="py-1.5 pl-9 pr-3 font-mono text-xs text-slate-600 dark:text-slate-400">
-            <span className="inline-flex items-center gap-1.5">
-              <Icon name="file" size={11} className="text-slate-400 dark:text-slate-600" />
-              {t.tag}
-            </span>
-          </td>
-          <td className="px-3 py-1.5 text-right font-mono tabular-nums text-xs text-slate-500 dark:text-slate-400">{formatBytes(t.size_bytes || 0)}</td>
-          <td className="px-3 py-1.5 font-mono text-xs text-slate-400 dark:text-slate-600" title={t.created_at || 'unknown'}>
-            {t.created_at ? formatDateTime(t.created_at) : '—'}
-          </td>
-          <td className="px-3 py-1.5 text-right">
-            <button
-              onClick={() => onDeleteTag(t.component_id, `${img.name}:${t.tag}`)}
-              disabled={busy}
-              className="border border-rose-200 px-2 py-0.5 font-mono text-[10px] uppercase text-rose-600 hover:bg-rose-50 disabled:opacity-50 dark:border-rose-800 dark:text-rose-400 dark:hover:bg-rose-950/40"
-            >
-              delete
-            </button>
-          </td>
-        </tr>
-      ))}
+      {open && img.tags.map((t) => {
+        const tagScanning = !!scanning[`${img.name}:${t.tag}`];
+        return (
+          <tr key={t.component_id} className="border-b border-slate-50 bg-slate-50/50 dark:border-slate-800/40 dark:bg-slate-900/30">
+            <td className="px-3 py-1.5 text-center">
+              <input
+                type="checkbox"
+                checked={selected.has(t.component_id)}
+                onChange={() => onToggleTag(t.component_id)}
+                className="accent-rose-500"
+              />
+            </td>
+            <td className="py-1.5 pl-9 pr-3 font-mono text-xs text-slate-600 dark:text-slate-400">
+              <span className="inline-flex items-center gap-1.5">
+                <Icon name="file" size={11} className="text-slate-400 dark:text-slate-600" />
+                {t.tag}
+              </span>
+            </td>
+            <td className="px-3 py-1.5 text-right font-mono tabular-nums text-xs text-slate-500 dark:text-slate-400">{formatBytes(t.size_bytes || 0)}</td>
+            <td className="px-3 py-1.5 font-mono text-xs text-slate-400 dark:text-slate-600" title={t.created_at || 'unknown'}>
+              {t.created_at ? formatDateTime(t.created_at) : '—'}
+            </td>
+            <td className="px-3 py-1.5 text-right">
+              <span className="inline-flex gap-1.5">
+                <button
+                  onClick={() => onScanTag(t.tag)}
+                  disabled={tagScanning}
+                  title={`Scan ${img.name}:${t.tag}`}
+                  className="border border-sky-200 px-2 py-0.5 font-mono text-[10px] uppercase text-sky-600 hover:bg-sky-50 disabled:opacity-50 dark:border-sky-800 dark:text-sky-400 dark:hover:bg-sky-950/40"
+                >
+                  {tagScanning ? '···' : 'scan'}
+                </button>
+                <button
+                  onClick={() => onDeleteTag(t.component_id, `${img.name}:${t.tag}`)}
+                  disabled={busy}
+                  className="border border-rose-200 px-2 py-0.5 font-mono text-[10px] uppercase text-rose-600 hover:bg-rose-50 disabled:opacity-50 dark:border-rose-800 dark:text-rose-400 dark:hover:bg-rose-950/40"
+                >
+                  delete
+                </button>
+              </span>
+            </td>
+          </tr>
+        );
+      })}
     </>
   );
 }

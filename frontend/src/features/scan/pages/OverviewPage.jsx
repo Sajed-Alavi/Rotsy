@@ -4,7 +4,7 @@ import Badge from '../../../components/Badge.jsx';
 import Section from '../../../components/Section.jsx';
 import { formatNumber } from '../../../lib/format.js';
 import { scanApi } from '../api.js';
-import { useResource } from '../hooks/useResource.js';
+import { useResource } from '../../../lib/useResource.js';
 
 const EMPTY_TOTALS = { critical: 0, high: 0, medium: 0, low: 0, unknown: 0, scanned_images: 0, failed: 0 };
 

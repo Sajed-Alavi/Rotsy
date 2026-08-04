@@ -65,4 +65,3 @@ export const DOC_SECTIONS = DOCS.reduce((acc, doc) => {
 }, []);
 
 export const getDoc = (slug) => DOCS.find((d) => d.slug === slug);
-export const firstDoc = () => DOCS[0];

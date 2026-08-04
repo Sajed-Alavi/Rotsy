@@ -4,11 +4,12 @@ All wiring lives in the lifespan so connections are pooled and cleaned up:
 
   * a :class:`~app.core.nexus_client.NexusClient` and a Redis-backed cache,
   * a :class:`~app.core.jobs.JobRunner` consuming the job queue,
-  * four background loops, each with a narrow remit:
-      - ``_metric_loop``        snapshot repository metrics, evaluate alerts
-      - ``_retention_scheduler`` daily retention sweep
-      - ``_scanner_db_loop``    keep the vulnerability databases usable
-      - ``_push_watch_loop``    notice newly pushed images (fallback trigger)
+  * five background loops, each with a narrow remit:
+      - ``_metric_loop``          snapshot repository metrics, evaluate alerts
+      - ``_retention_scheduler``  daily retention sweep
+      - ``_scanner_db_loop``      keep the vulnerability databases usable
+      - ``_push_watch_loop``      notice newly pushed images (fallback trigger)
+      - ``_backup_schedule_loop`` poll due BackupSchedule rows, enqueue their runs
 
 **Startup does no scanning.** Nothing here walks existing images looking for
 work: scans are triggered by a push or by an operator, and by nothing else. The
@@ -78,6 +79,18 @@ class _SharedHandles:
     retention_days: int
 
 
+def _seconds_until(hour: int, minute: int) -> float:
+    """Seconds from now until the next local ``hour:minute``, tomorrow if past.
+
+    Shared by the daily schedulers below, which each grew their own copy.
+    """
+    now = _dt.datetime.now()
+    target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    if target <= now:
+        target += _dt.timedelta(days=1)
+    return (target - now).total_seconds()
+
+
 async def _metric_loop(settings: Settings, stop: asyncio.Event) -> None:
     """Periodically collect metrics + evaluate alerts.
 
@@ -141,14 +154,6 @@ async def _scanner_db_loop(settings: Settings, stop: asyncio.Event) -> None:
     time_of_day = settings.scanner_db_time_of_day
     interval = settings.SCANNER_DB_UPDATE_INTERVAL_HOURS * 3600
 
-    def seconds_until_next_run() -> float:
-        now = _dt.datetime.now()
-        hour, minute = time_of_day  # type: ignore[misc]
-        target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
-        if target <= now:
-            target += _dt.timedelta(days=1)
-        return (target - now).total_seconds()
-
     async def enqueue(reason: str) -> None:
         try:
             # Goes through the tracking helper rather than JobQueue directly so
@@ -177,7 +182,7 @@ async def _scanner_db_loop(settings: Settings, stop: asyncio.Event) -> None:
         logger.info("Vulnerability databases already present; leaving them to the schedule.")
 
     while not stop.is_set():
-        delay = max(30.0, seconds_until_next_run()) if time_of_day is not None else interval
+        delay = max(30.0, _seconds_until(*time_of_day)) if time_of_day is not None else interval
         try:
             await asyncio.wait_for(stop.wait(), timeout=delay)
             return
@@ -262,13 +267,6 @@ async def _retention_scheduler(settings: Settings, stop: asyncio.Event) -> None:
         return
     target_hh, target_mm = settings.retention_time_of_day
 
-    def seconds_until_next_run() -> float:
-        now = _dt.datetime.now()
-        target = now.replace(hour=target_hh, minute=target_mm, second=0, microsecond=0)
-        if target <= now:
-            target += _dt.timedelta(days=1)
-        return (target - now).total_seconds()
-
     # Wait one full minute after startup so the metric loop and the runner are
     # ready, then enter the daily scheduling loop.
     try:
@@ -278,7 +276,7 @@ async def _retention_scheduler(settings: Settings, stop: asyncio.Event) -> None:
         pass
 
     while not stop.is_set():
-        delay = max(30.0, seconds_until_next_run())
+        delay = max(30.0, _seconds_until(target_hh, target_mm))
         try:
             await asyncio.wait_for(stop.wait(), timeout=delay)
             return  # stop signaled
@@ -291,6 +289,38 @@ async def _retention_scheduler(settings: Settings, stop: asyncio.Event) -> None:
             logger.info("Daily retention sweep enqueued: job %s", jid)
         except Exception:  # noqa: BLE001
             logger.exception("Failed to enqueue daily retention sweep")
+
+
+async def _backup_schedule_loop(settings: Settings, stop: asyncio.Event) -> None:
+    """Poll BackupSchedule rows whose next_run_at is due, every
+    BACKUP_SCHEDULER_POLL_SECONDS.
+
+    Unlike ``_retention_scheduler``'s single sleep-until-next-time timer (which
+    only works because there's one shared daily time), independent schedules
+    can each have their own cadence — including arbitrary cron expressions —
+    so this polls the DB on a short fixed interval instead, the same shape as
+    ``_scanner_db_loop``/``_push_watch_loop``.
+    """
+    logger = logging.getLogger("backup_schedule_loop")
+    cache = _lifespan_state.get("cache")
+    if cache is None:
+        return
+    interval = settings.BACKUP_SCHEDULER_POLL_SECONDS
+    factory = get_session_factory()
+
+    while not stop.is_set():
+        try:
+            from .services import backup_schedule as backup_schedule_service
+            async with factory() as session:
+                enqueued = await backup_schedule_service.poll_due_schedules(cache, session)
+            if enqueued:
+                logger.info("Enqueued %d scheduled backup job(s)", len(enqueued))
+        except Exception:  # noqa: BLE001
+            logger.exception("Backup schedule poll cycle failed")
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=interval)
+        except asyncio.TimeoutError:
+            pass
 
 
 @asynccontextmanager
@@ -371,11 +401,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     runner.register("run_retention", job_handlers.handle_run_retention)
     runner.register("backup", job_handlers.handle_backup)
     runner.register("backup_archive", job_handlers.handle_backup_archive)
+    runner.register("run_scheduled_backup", job_handlers.handle_run_scheduled_backup)
     runner.register("sync", job_handlers.handle_sync)
     runner.register("scan_image", job_handlers.handle_scan_image)
     runner.register("scanner_db_update", job_handlers.handle_scanner_db_update)
     runner.register("scanner_db_import", job_handlers.handle_scanner_db_import)
     await runner.start()
+    app.state.runner = runner
 
     # Start the periodic metric-collection loop.
     stop_metric = asyncio.Event()
@@ -393,12 +425,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     stop_push_watch = asyncio.Event()
     push_watch_task = asyncio.create_task(_push_watch_loop(settings, stop_push_watch))
 
+    # Start the scheduled-backup poll loop.
+    stop_backup_schedule = asyncio.Event()
+    backup_schedule_task = asyncio.create_task(_backup_schedule_loop(settings, stop_backup_schedule))
+
     logger.info("Sharpy v%s started.", __version__)
     try:
         yield
     finally:
-        background = (metric_task, retention_task, scanner_db_task, push_watch_task)
-        for event in (stop_metric, stop_retention, stop_scanner_db, stop_push_watch):
+        background = (metric_task, retention_task, scanner_db_task, push_watch_task, backup_schedule_task)
+        for event in (stop_metric, stop_retention, stop_scanner_db, stop_push_watch, stop_backup_schedule):
             event.set()
         for task in background:
             task.cancel()

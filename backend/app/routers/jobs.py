@@ -50,11 +50,20 @@ async def get_job(request: Request, job_id: str) -> dict[str, Any]:
 
 @router.post("/{job_id}/cancel", dependencies=[Depends(RequirePermission("jobs:manage"))])
 async def cancel_job(request: Request, job_id: str) -> dict[str, Any]:
-    """Mark a running/pending job as cancelled.
+    """Cancel a running/pending job.
 
-    The worker checks the job status between steps and aborts if it sees
-    'cancelled'. This is cooperative cancellation (the subprocess may finish
-    its current chunk first).
+    Two steps, in order:
+      1. Flip the Redis status to 'cancelled' immediately — this is what a job
+         still sitting in the queue (not yet picked up by the worker) needs;
+         ``JobRunner._run_one`` checks for it before invoking the handler.
+      2. Ask the in-process ``JobRunner`` to cancel the asyncio Task actually
+         running the handler, if this worker owns one. This is real
+         cancellation, not cooperative polling: it interrupts the handler at
+         its next ``await`` (e.g. the subprocess-wait loop a database download
+         is sitting in) rather than waiting for the handler to check a flag it
+         was never actually reading — a handler that kills its own subprocess
+         on ``asyncio.CancelledError`` (see services/scanning/db/process.py)
+         stops within moments, not "eventually or never".
     """
     cache = app_state(request).cache
     if cache is None or cache.redis is None:
@@ -64,14 +73,17 @@ async def cancel_job(request: Request, job_id: str) -> dict[str, Any]:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Job not found")
     if job.status in ("done", "failed", "cancelled"):
         return {"ok": True, "status": job.status, "message": "already terminal"}
-    # Set status to cancelled so the worker picks it up.
     import time
     await cache.redis.hset(f"job:{job_id}", mapping={
         "status": "cancelled", "message": "cancelled by user",
         "updated_at": str(time.time()),
     })
-    await JobQueue(cache).push_event(job_id, {"type": "phase", "message": "cancelled by user"})
-    return {"ok": True, "status": "cancelled"}
+    await JobQueue(cache).push_event(
+        job_id, {"type": "phase", "status": "cancelled", "message": "cancelled by user"},
+    )
+    runner = getattr(request.app.state, "runner", None)
+    cancelled_in_process = bool(runner and runner.request_cancel(job_id))
+    return {"ok": True, "status": "cancelled", "stopped_running_task": cancelled_in_process}
 
 
 @router.get("/{job_id}/stream", dependencies=[Depends(RequirePermission("jobs:read"))])

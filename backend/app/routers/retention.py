@@ -16,13 +16,28 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..core.access_control import DELETE, AccessResolver
 from ..core.jobs import JobQueue
-from ..dependencies import RequirePermission, get_session
+from ..dependencies import RequirePermission, get_access, get_session
 from ..models import RetentionPolicy
 from ..services.retention import run_policy
-from ..state import app_state
+from ..state import app_state, require_nexus
 
 router = APIRouter(prefix="/retention", tags=["retention"])
+
+
+def _require_repo_wide(access: AccessResolver, repo: str) -> None:
+    """Refuse unless the caller may delete every image in ``repo``.
+
+    A retention policy deletes on a schedule, across images that do not exist
+    yet. Someone scoped to ``abrisham*`` must not be able to author a rule whose
+    blast radius is the whole repository.
+    """
+    if not access.repo(repo).covers_all(DELETE):
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            f"Managing retention for '{repo}' requires delete access to every image in it.",
+        )
 
 
 class PolicyCreate(BaseModel):
@@ -63,14 +78,22 @@ def _validate(body: PolicyCreate | PolicyUpdate) -> None:
 
 @router.get("/policies", response_model=list[PolicyOut],
             dependencies=[Depends(RequirePermission("retention:read"))])
-async def list_policies(session: Annotated[AsyncSession, Depends(get_session)]):
+async def list_policies(
+    session: Annotated[AsyncSession, Depends(get_session)],
+    access: Annotated[AccessResolver, Depends(get_access)],
+):
     rows = (await session.execute(select(RetentionPolicy).order_by(RetentionPolicy.id))).scalars().all()
-    return list(rows)
+    return [row for row in rows if access.repo(row.repo).visible]
 
 
 @router.post("/policies", response_model=PolicyOut, status_code=status.HTTP_201_CREATED,
              dependencies=[Depends(RequirePermission("retention:execute"))])
-async def create_policy(body: PolicyCreate, session: Annotated[AsyncSession, Depends(get_session)]):
+async def create_policy(
+    body: PolicyCreate,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    access: Annotated[AccessResolver, Depends(get_access)],
+):
+    _require_repo_wide(access, body.repo)
     _validate(body)
     policy = RetentionPolicy(**body.model_dump())
     session.add(policy)
@@ -81,12 +104,20 @@ async def create_policy(body: PolicyCreate, session: Annotated[AsyncSession, Dep
 
 @router.patch("/policies/{policy_id}", response_model=PolicyOut,
               dependencies=[Depends(RequirePermission("retention:execute"))])
-async def update_policy(policy_id: int, body: PolicyUpdate,
-                        session: Annotated[AsyncSession, Depends(get_session)]):
+async def update_policy(
+    policy_id: int,
+    body: PolicyUpdate,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    access: Annotated[AccessResolver, Depends(get_access)],
+):
     policy = await session.get(RetentionPolicy, policy_id)
     if policy is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Policy not found")
+    _require_repo_wide(access, policy.repo)
     data = body.model_dump(exclude_unset=True)
+    # Repointing a policy needs authority over the destination too.
+    if data.get("repo") and data["repo"] != policy.repo:
+        _require_repo_wide(access, data["repo"])
     if "keep_last_n" in data or "delete_older_than_days" in data:
         merged = PolicyCreate(name=policy.name, repo=policy.repo,
                               keep_last_n=data.get("keep_last_n", policy.keep_last_n),
@@ -101,33 +132,56 @@ async def update_policy(policy_id: int, body: PolicyUpdate,
 
 @router.delete("/policies/{policy_id}", status_code=status.HTTP_204_NO_CONTENT,
                dependencies=[Depends(RequirePermission("retention:execute"))])
-async def delete_policy(policy_id: int, session: Annotated[AsyncSession, Depends(get_session)]):
+async def delete_policy(
+    policy_id: int,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    access: Annotated[AccessResolver, Depends(get_access)],
+):
     policy = await session.get(RetentionPolicy, policy_id)
     if policy is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Policy not found")
+    _require_repo_wide(access, policy.repo)
     await session.delete(policy)
     await session.commit()
 
 
 @router.post("/policies/{policy_id}/preview",
              dependencies=[Depends(RequirePermission("retention:read"))])
-async def preview_policy(policy_id: int, request: Request,
-                         session: Annotated[AsyncSession, Depends(get_session)]) -> dict[str, Any]:
-    """Dry-run: compute what would be deleted without changing anything."""
+async def preview_policy(
+    policy_id: int,
+    request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    access: Annotated[AccessResolver, Depends(get_access)],
+) -> dict[str, Any]:
+    """Dry-run: compute what would be deleted without changing anything.
+
+    A preview names real images, so it is gated the same way the policy itself is.
+    """
     policy = await session.get(RetentionPolicy, policy_id)
     if policy is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Policy not found")
-    nexus = app_state(request).nexus
-    if nexus is None:
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Nexus client not available")
-    return await run_policy(nexus, session, policy, dry_run=True)
+    _require_repo_wide(access, policy.repo)
+    return await run_policy(require_nexus(request), session, policy, dry_run=True)
 
 
 @router.post("/policies/{policy_id}/run", status_code=status.HTTP_202_ACCEPTED,
              dependencies=[Depends(RequirePermission("retention:execute"))])
-async def run_policy_now(policy_id: int, request: Request,
-                         dry_run: Annotated[bool, Query()] = False) -> dict[str, str]:
-    """Enqueue a background job to execute the policy now."""
+async def run_policy_now(
+    policy_id: int,
+    request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    access: Annotated[AccessResolver, Depends(get_access)],
+    dry_run: Annotated[bool, Query()] = False,
+) -> dict[str, str]:
+    """Enqueue a background job to execute the policy now.
+
+    The job runs out-of-band with no principal attached, so authority has to be
+    established here, at enqueue time.
+    """
+    policy = await session.get(RetentionPolicy, policy_id)
+    if policy is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Policy not found")
+    _require_repo_wide(access, policy.repo)
     cache = app_state(request).cache
     if cache is None:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Cache unavailable")
@@ -137,8 +191,22 @@ async def run_policy_now(policy_id: int, request: Request,
 
 @router.post("/run-all", status_code=status.HTTP_202_ACCEPTED,
              dependencies=[Depends(RequirePermission("retention:execute"))])
-async def run_all(request: Request, dry_run: Annotated[bool, Query()] = False) -> dict[str, str]:
-    """Enqueue a background job to run every enabled policy."""
+async def run_all(
+    request: Request,
+    access: Annotated[AccessResolver, Depends(get_access)],
+    dry_run: Annotated[bool, Query()] = False,
+) -> dict[str, str]:
+    """Enqueue a background job to run every enabled policy.
+
+    Refused for a caller whose rules do not cover everything: running "all"
+    partially would report success for work that never happened.
+    """
+    if not access.unrestricted_everywhere:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "Running every policy requires unrestricted access. Run the individual "
+            "policies you can reach instead.",
+        )
     cache = app_state(request).cache
     if cache is None:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Cache unavailable")

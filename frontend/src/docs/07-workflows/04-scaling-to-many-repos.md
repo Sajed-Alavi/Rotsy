@@ -18,7 +18,7 @@ Configure the Nexus webhook and set `SCAN_PUSH_POLL_SECONDS=0`. Webhooks react i
 
 With one team, everyone seeing everything is fine. With twelve, it is not.
 
-Use image scopes to restrict roles to their own images — and remember to turn off `image_scope_unrestricted` on the other roles those users hold, or the scoping does nothing. See [RBAC and image scopes](/docs/rbac-and-image-scopes).
+Use access rules to restrict roles to their own images. One rule with a repository wildcard — `prod-*` / `abrisham*` — covers every matching repository, including ones created later, so the configuration does not grow with the repository count. Remember to set the other roles those users hold to `scoped`, or the scoping does nothing. See [the permission model](/docs/permission-model).
 
 ## Retention becomes mandatory
 

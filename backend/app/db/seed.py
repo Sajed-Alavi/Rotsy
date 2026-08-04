@@ -28,6 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from ..config import Settings
+from ..core.access_control import MODE_UNRESTRICTED
 from ..core.permissions import (
     ALL_PERMISSION_KEYS,
     PERMISSIONS,
@@ -37,6 +38,9 @@ from ..core.security import hash_password
 from ..models import AlertRule, Permission, Role, User
 
 logger = logging.getLogger(__name__)
+
+#: Roles whose access_mode is repaired on every boot rather than preserved.
+_ALWAYS_UNRESTRICTED = {"admin"}
 
 # (name, metric, condition, threshold) — install-agnostic defaults only.
 # No storage.total default is seeded: there's no sensible byte threshold that
@@ -80,6 +84,7 @@ async def _seed_roles(session: AsyncSession, perms_by_key: dict[str, Permission]
                 name=role_name,
                 description=f"System role: {role_name}",
                 is_system=True,
+                access_mode=MODE_UNRESTRICTED,
             )
             session.add(role)
             await session.flush()
@@ -91,6 +96,16 @@ async def _seed_roles(session: AsyncSession, perms_by_key: dict[str, Permission]
         role = by_name[role_name]
         role.is_system = True
         role.permissions = [perms_by_key[k] for k in perm_keys if k in perms_by_key]
+        # access_mode is set once, at creation, and then left alone: scoping a
+        # role is a deliberate decision that must survive a restart. The one
+        # exception is admin, which is repaired every boot — an administrator
+        # with no access to a repository has no in-app way to give it back.
+        if role_name in _ALWAYS_UNRESTRICTED and role.access_mode != MODE_UNRESTRICTED:
+            logger.warning(
+                "Resetting the '%s' role's access_mode from %r to %r: it cannot be scoped.",
+                role_name, role.access_mode, MODE_UNRESTRICTED,
+            )
+            role.access_mode = MODE_UNRESTRICTED
 
     await session.flush()
     return by_name

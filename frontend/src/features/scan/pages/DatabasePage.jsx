@@ -4,7 +4,7 @@ import Notice from '../../../components/Notice.jsx';
 import Section from '../../../components/Section.jsx';
 import { formatBytes } from '../../../lib/format.js';
 import { scanApi } from '../api.js';
-import { useResource, useStatus } from '../hooks/useResource.js';
+import { useResource, useStatus } from '../../../lib/useResource.js';
 import { useDbJob } from '../hooks/useDbJob.js';
 import DbPanel from '../components/DbPanel.jsx';
 
@@ -28,9 +28,10 @@ export default function DatabasePage() {
     reloadOffline();
     if (outcome === 'done') say('Database job finished.', 'ok');
     else if (outcome === 'failed') fail('Database job failed — see the log below.');
+    else if (outcome === 'cancelled') say('Database job cancelled.', 'info');
   }, [reloadStatus, reloadOffline, say, fail]);
 
-  const { job, scanners, log, running, start, dismiss } = useDbJob(onFinished);
+  const { job, scanners, log, running, start, cancel, dismiss } = useDbJob(onFinished);
 
   useEffect(() => {
     if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
@@ -43,6 +44,15 @@ export default function DatabasePage() {
       say(`${what} started.`, 'info');
     } catch (e) {
       fail(`${what} could not be queued: ${e.message}`);
+    }
+  };
+
+  const cancelRun = async () => {
+    try {
+      await cancel();
+      say('Cancelling — the download will stop within a few seconds.', 'info');
+    } catch (e) {
+      fail(`could not cancel: ${e.message}`);
     }
   };
 
@@ -86,12 +96,14 @@ export default function DatabasePage() {
         <Section
           title="Current job"
           hint={job.id?.slice(0, 8)}
-          actions={!running && (
+          actions={running ? (
+            <button onClick={cancelRun} className="border border-rose-300 px-2 py-0.5 font-mono text-[10px] uppercase text-rose-600 hover:bg-rose-50 dark:border-rose-800 dark:text-rose-400 dark:hover:bg-rose-950/40">cancel</button>
+          ) : (
             <button onClick={dismiss} className="border border-slate-300 px-2 py-0.5 font-mono text-[10px] uppercase text-slate-500 hover:bg-slate-100 dark:border-slate-700 dark:text-slate-400 dark:hover:bg-slate-800">dismiss</button>
           )}
         >
           <div className="mb-3 flex flex-wrap items-center gap-3">
-            <Badge tone={running ? 'info' : job.status === 'done' ? 'ok' : job.status === 'failed' ? 'bad' : 'neutral'}>
+            <Badge tone={running ? 'info' : job.status === 'done' ? 'ok' : job.status === 'failed' ? 'bad' : job.status === 'cancelled' ? 'warn' : 'neutral'}>
               {running ? 'running' : job.status}
             </Badge>
             <span className="font-mono text-[11px] text-slate-500 dark:text-slate-400">{job.message}</span>

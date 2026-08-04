@@ -22,6 +22,49 @@ Guards worth knowing about:
 
 Completed runs are listed with a download link.
 
+### "Permission denied" writing to the backup directory
+
+If an archive run fails with a permission error on `/app/backups`, the backup
+volume was created before the image knew to seed it with the right ownership.
+Docker creates a brand-new named volume owned by `root`, and the backend
+runs as a non-root user — current images fix this at build time by creating
+and `chown`ing `/app/backups` before switching to that user, but an **already
+existing** volume from an older image build keeps its old (root) ownership.
+Fix it once:
+
+```bash
+docker compose run --rm -u root backend chown -R app:app /app/backups
+```
+
+## Scheduled backups
+
+Rather than triggering an archive by hand, a **backup schedule** runs one
+automatically — same full/selective target as above, plus a cadence:
+
+- **daily** / **weekly** / **monthly**, each at a fixed time of day, or
+- a **custom cron expression**, for anything the presets don't cover.
+
+All schedule times are evaluated in UTC. Configure schedules under **System →
+Scheduled backups**: name, target (full or a list of repositories), cadence,
+and a retention rule (keep the last *N* archives, delete archives older than
+*N* days, or both).
+
+Two things make a scheduled run different from a manual one:
+
+- **The archive is a single compressed `.tar.gz`**, not a plain directory of
+  files — each asset is streamed to a small scratch file and immediately
+  folded into the archive and deleted, so extra disk usage never exceeds the
+  size of the single largest in-flight asset, however large the whole backup
+  is.
+- **Its own archives are pruned automatically** once they age out of the
+  schedule's retention rule. A schedule only ever prunes archives *it*
+  created — a manual, on-demand backup is never touched by any schedule's
+  retention.
+
+Use **preview next run** on the schedule editor to sanity-check a cadence
+(especially a cron expression) before saving, and **run now** to trigger an
+out-of-band run without waiting for the next scheduled time.
+
 ## Nexus-to-Nexus sync
 
 Copies components from repositories on this Nexus to repositories on another one — for promoting artifacts between environments or seeding a new instance.

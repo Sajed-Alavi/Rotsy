@@ -20,20 +20,12 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
-from ..core.nexus_client import NexusClient
 from ..dependencies import RequirePermission
-from ..state import app_state
+from ..state import app_state, require_nexus
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/blobstores", tags=["blobstores"])
-
-
-async def _nexus(request: Request) -> NexusClient:
-    client = app_state(request).nexus
-    if client is None:
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Nexus client not initialised")
-    return client
 
 
 def _explain_nexus_error(exc: Exception) -> str:
@@ -50,7 +42,7 @@ async def list_blobstores(request: Request) -> list[dict[str, Any]]:
 
     Enriches the base list with per-store quota/space where Nexus exposes it.
     """
-    nexus = await _nexus(request)
+    nexus = require_nexus(request)
     try:
         resp = await nexus.client.get("/service/rest/v1/blobstores")
         resp.raise_for_status()
@@ -93,7 +85,7 @@ class FileBlobstoreCreate(BaseModel):
              dependencies=[Depends(RequirePermission("blobstores:write"))])
 async def create_file_blobstore(request: Request, body: FileBlobstoreCreate) -> dict[str, Any]:
     """Create a File-type blobstore in Nexus."""
-    nexus = await _nexus(request)
+    nexus = require_nexus(request)
     payload: dict[str, Any] = {"name": body.name, "path": body.path}
     if body.soft_quota is not None:
         payload["softQuota"] = {"type": body.soft_quota.type, "limit": body.soft_quota.limit}
@@ -123,7 +115,7 @@ class S3BlobstoreCreate(BaseModel):
              dependencies=[Depends(RequirePermission("blobstores:write"))])
 async def create_s3_blobstore(request: Request, body: S3BlobstoreCreate) -> dict[str, Any]:
     """Create an S3-type blobstore in Nexus (AWS or S3-compatible endpoint)."""
-    nexus = await _nexus(request)
+    nexus = require_nexus(request)
     bucket_cfg: dict[str, Any] = {
         "region": body.region,
         "name": body.bucket,
@@ -164,7 +156,7 @@ async def create_s3_blobstore(request: Request, body: S3BlobstoreCreate) -> dict
                dependencies=[Depends(RequirePermission("blobstores:write"))])
 async def delete_blobstore(request: Request, name: str):
     """Delete a blobstore. Nexus refuses if a repository still uses it (409)."""
-    nexus = await _nexus(request)
+    nexus = require_nexus(request)
     try:
         resp = await nexus.client.delete(f"/service/rest/v1/blobstores/{name}")
     except Exception as exc:  # noqa: BLE001

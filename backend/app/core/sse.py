@@ -10,7 +10,7 @@ back to ``str(dict)`` (Python repr with single quotes), which the browser's
 from __future__ import annotations
 
 import json
-from typing import Any, AsyncIterator, Literal
+from typing import Any, Literal
 
 # Canonical event names. The frontend's EventSource switches on these.
 ProgressEvent = Literal[
@@ -35,11 +35,5 @@ def event(name: ProgressEvent, data: dict[str, Any] | None = None) -> dict[str, 
     return {"event": name, "data": json.dumps(data or {}, default=str)}
 
 
-async def drain(gen: AsyncIterator[dict[str, Any]]):
-    """Consume an async generator to completion, ignoring values."""
-    async for _ in gen:
-        pass
-
-
-__all__ = ["ProgressEvent", "event", "drain"]
+__all__ = ["ProgressEvent", "event"]
 

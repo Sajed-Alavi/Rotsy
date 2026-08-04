@@ -20,6 +20,7 @@ from typing import Any
 import httpx
 
 from ..core.nexus_client import NexusClient
+from . import make_emitter
 
 logger = logging.getLogger(__name__)
 
@@ -46,9 +47,7 @@ async def sync_repository(
 
     Returns ``{source_repo, target_repo, copied, skipped, errors}``.
     """
-    async def emit(p, m):
-        if on_progress is not None:
-            await on_progress(p, m)
+    emit = make_emitter(on_progress)
 
     await emit(0, f"enumerating {source_repo}")
     components = await _enumerate_components(source, source_repo)

@@ -28,4 +28,4 @@ Downloads are proxied through the backend, so your browser never handles Nexus c
 
 ## Image scoping applies here
 
-If your role is restricted to certain image patterns, both views filter to what you are allowed to see, and the download proxy enforces the same restriction. See [RBAC and image scopes](/docs/rbac-and-image-scopes).
+If your roles carry access rules, both views filter to what you are allowed to read, the repository list itself is filtered the same way, and the download proxy enforces the same restriction. See [the permission model](/docs/permission-model).

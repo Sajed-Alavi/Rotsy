@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..core.nexus_client import NexusClient
 from ..models import Metric
+from . import make_emitter
 
 logger = logging.getLogger(__name__)
 
@@ -43,9 +44,7 @@ async def collect_once(
     async callback ``(percent: int, message: str) -> None`` used by the job
     runner to update job progress.
     """
-    async def emit(p, m):
-        if on_progress is not None:
-            await on_progress(p, m)
+    emit = make_emitter(on_progress)
 
     # Guard: if the Nexus client has no URL configured, fail fast with a
     # clear message instead of a cryptic connection error.

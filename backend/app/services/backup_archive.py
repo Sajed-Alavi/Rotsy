@@ -17,17 +17,43 @@ that may include large Docker layer blobs.
 
 from __future__ import annotations
 
+import io
 import json
 import logging
 import secrets
 import shutil
+import tarfile
 import time
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 from ..core.nexus_client import NexusClient
+from . import make_emitter
 
 logger = logging.getLogger(__name__)
+
+
+def _permission_error(output_dir: Path, exc: PermissionError) -> RuntimeError:
+    """Turn a bare ``PermissionError`` into an actionable message.
+
+    The most common cause is a freshly-created Docker named volume mounted at
+    ``output_dir``: Docker seeds it as ``root:root`` unless the mountpoint
+    already existed (and was chowned) inside the image, so the app's non-root
+    user can create the mountpoint's *parent* but not write inside it. A bare
+    ``[Errno 13]`` on a ``BackupRun.error`` column gives an operator nothing to
+    act on, so this is raised instead, everywhere a write into ``output_dir``
+    can fail this way.
+    """
+    logger.error("Backup directory %s is not writable: %s", output_dir, exc)
+    err = RuntimeError(
+        f"Cannot write to backup directory {output_dir}: permission denied. "
+        "The container's non-root 'app' user does not own this path — if this "
+        "is a pre-existing Docker volume, run "
+        "`docker compose run --rm -u root backend chown -R app:app /app/backups` "
+        "once to fix it (see the Troubleshooting docs)."
+    )
+    err.__cause__ = exc
+    return err
 
 ProgressCallback = Callable[[int, str], Awaitable[None]]
 
@@ -106,18 +132,29 @@ async def create_archive(
     repos: list[str] | None,
     min_free_bytes: int,
     on_progress: ProgressCallback | None = None,
+    compress: bool = False,
 ) -> dict[str, Any]:
-    """Back up asset bytes to a new per-run directory under ``output_dir``.
+    """Back up asset bytes under ``output_dir``.
 
     ``mode == "full"`` backs up every repository Nexus reports; ``mode ==
     "selective"`` backs up only ``repos`` (required, non-empty).
 
+    When ``compress`` is false (the default, used by the manual on-demand
+    backup endpoint), assets are written to a plain per-run directory tree
+    exactly as before. When ``compress`` is true (used by scheduled backups),
+    assets are written to a single ``<run_id>.tar.gz`` instead: each asset is
+    still streamed to a small scratch file first (so a stalled download can't
+    corrupt bytes already inside the tar stream), then immediately appended
+    with :meth:`tarfile.TarFile.add` and deleted — bounding the extra,
+    uncompressed disk usage to the single largest in-flight asset rather than
+    the whole backup, so nothing "runs the volume to 2x" the way compressing a
+    fully-materialized directory afterwards would.
+
     Returns a summary: ``run_id``, ``output_path``, ``repos``, ``total_bytes``,
-    ``asset_count``, ``per_repo`` (per-repo asset_count/total_bytes).
+    ``asset_count``, ``per_repo`` (per-repo asset_count/total_bytes),
+    ``compressed``.
     """
-    async def emit(pct: int, msg: str) -> None:
-        if on_progress is not None:
-            await on_progress(pct, msg)
+    emit = make_emitter(on_progress)
 
     if mode == "selective":
         if not repos:
@@ -136,12 +173,29 @@ async def create_archive(
     for repo in target_repos:
         safe_repo_dirname(repo)
 
-    output_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        output_dir.mkdir(parents=True, exist_ok=True)
+    except PermissionError as exc:
+        raise _permission_error(output_dir, exc)
     _ensure_disk_space(output_dir, min_free_bytes)
 
     run_id = _new_run_id()
-    run_dir = output_dir / run_id
-    run_dir.mkdir(parents=True, exist_ok=True)
+    run_dir: Path | None = None
+    scratch_dir: Path | None = None
+    tar: tarfile.TarFile | None = None
+    archive_path: Path | None = None
+
+    try:
+        if compress:
+            archive_path = output_dir / f"{run_id}.tar.gz"
+            scratch_dir = output_dir / f".{run_id}.scratch"
+            scratch_dir.mkdir(parents=True, exist_ok=True)
+            tar = tarfile.open(archive_path, "w:gz")
+        else:
+            run_dir = output_dir / run_id
+            run_dir.mkdir(parents=True, exist_ok=True)
+    except PermissionError as exc:
+        raise _permission_error(output_dir, exc)
 
     manifest: dict[str, Any] = {"run_id": run_id, "mode": mode, "repos": target_repos, "assets": {}}
     total_bytes = 0
@@ -149,63 +203,91 @@ async def create_archive(
     bytes_since_disk_check = 0
     per_repo: dict[str, dict[str, int]] = {}
 
-    await emit(0, f"backing up {len(target_repos)} repositories")
-    total_repos = max(1, len(target_repos))
-    for i, repo in enumerate(target_repos):
-        repo_dir = run_dir / repo
-        repo_bytes = 0
-        repo_assets = 0
-        manifest["assets"][repo] = []
+    try:
+        await emit(0, f"backing up {len(target_repos)} repositories")
+        total_repos = max(1, len(target_repos))
+        for i, repo in enumerate(target_repos):
+            repo_dir = run_dir / repo if run_dir is not None else None
+            repo_bytes = 0
+            repo_assets = 0
+            manifest["assets"][repo] = []
 
-        async for asset in nexus.paginate("/service/rest/v1/assets", params={"repository": repo}):
-            path = asset.get("path") or asset.get("id") or ""
-            download_url = asset.get("downloadUrl")
-            if not download_url:
-                continue
-            dest = repo_dir / _safe_relpath(path)
-            dest.parent.mkdir(parents=True, exist_ok=True)
-
-            upstream = await nexus.client.send(nexus.client.build_request("GET", download_url), stream=True)
-            try:
-                if upstream.status_code >= 400:
-                    logger.warning("skip %s/%s: upstream returned %d", repo, path, upstream.status_code)
+            async for asset in nexus.paginate("/service/rest/v1/assets", params={"repository": repo}):
+                path = asset.get("path") or asset.get("id") or ""
+                download_url = asset.get("downloadUrl")
+                if not download_url:
                     continue
-                size = 0
-                with open(dest, "wb") as f:
-                    async for chunk in upstream.aiter_raw():
-                        f.write(chunk)
-                        size += len(chunk)
-            finally:
-                await upstream.aclose()
+                relpath = _safe_relpath(path)
+                if compress:
+                    dest = scratch_dir / f"{asset_count}.blob"
+                else:
+                    dest = repo_dir / relpath
+                    dest.parent.mkdir(parents=True, exist_ok=True)
 
-            manifest["assets"][repo].append({
-                "path": path, "size": size,
-                "checksum": asset.get("checksum"), "contentType": asset.get("contentType"),
-            })
-            repo_bytes += size
-            repo_assets += 1
-            asset_count += 1
-            bytes_since_disk_check += size
-            if (
-                asset_count % _DISK_CHECK_EVERY == 0
-                or bytes_since_disk_check >= _DISK_CHECK_EVERY_BYTES
-            ):
-                _ensure_disk_space(output_dir, min_free_bytes)
-                bytes_since_disk_check = 0
+                upstream = await nexus.client.send(nexus.client.build_request("GET", download_url), stream=True)
+                try:
+                    if upstream.status_code >= 400:
+                        logger.warning("skip %s/%s: upstream returned %d", repo, path, upstream.status_code)
+                        continue
+                    size = 0
+                    try:
+                        with open(dest, "wb") as f:
+                            async for chunk in upstream.aiter_raw():
+                                f.write(chunk)
+                                size += len(chunk)
+                    except PermissionError as exc:
+                        raise _permission_error(output_dir, exc)
+                finally:
+                    await upstream.aclose()
 
-        total_bytes += repo_bytes
-        per_repo[repo] = {"asset_count": repo_assets, "total_bytes": repo_bytes}
-        await emit(int((i + 1) / total_repos * 100), f"backed up {repo} ({repo_assets} assets, {repo_bytes} bytes)")
+                if compress:
+                    tar.add(dest, arcname=str(Path(repo) / relpath))
+                    dest.unlink(missing_ok=True)
 
-    manifest["total_bytes"] = total_bytes
-    manifest["asset_count"] = asset_count
-    (run_dir / "manifest.json").write_text(json.dumps(manifest, indent=2, default=str))
+                manifest["assets"][repo].append({
+                    "path": path, "size": size,
+                    "checksum": asset.get("checksum"), "contentType": asset.get("contentType"),
+                })
+                repo_bytes += size
+                repo_assets += 1
+                asset_count += 1
+                bytes_since_disk_check += size
+                if (
+                    asset_count % _DISK_CHECK_EVERY == 0
+                    or bytes_since_disk_check >= _DISK_CHECK_EVERY_BYTES
+                ):
+                    _ensure_disk_space(output_dir, min_free_bytes)
+                    bytes_since_disk_check = 0
+
+            total_bytes += repo_bytes
+            per_repo[repo] = {"asset_count": repo_assets, "total_bytes": repo_bytes}
+            await emit(int((i + 1) / total_repos * 100), f"backed up {repo} ({repo_assets} assets, {repo_bytes} bytes)")
+
+        manifest["total_bytes"] = total_bytes
+        manifest["asset_count"] = asset_count
+        manifest_bytes = json.dumps(manifest, indent=2, default=str).encode()
+
+        if compress:
+            info = tarfile.TarInfo(name="manifest.json")
+            info.size = len(manifest_bytes)
+            info.mtime = int(time.time())
+            tar.addfile(info, io.BytesIO(manifest_bytes))
+            output_path = str(archive_path)
+        else:
+            (run_dir / "manifest.json").write_bytes(manifest_bytes)
+            output_path = str(run_dir)
+    finally:
+        if tar is not None:
+            tar.close()
+        if scratch_dir is not None:
+            shutil.rmtree(scratch_dir, ignore_errors=True)
 
     return {
         "run_id": run_id,
-        "output_path": str(run_dir),
+        "output_path": output_path,
         "repos": target_repos,
         "total_bytes": total_bytes,
         "asset_count": asset_count,
         "per_repo": per_repo,
+        "compressed": compress,
     }

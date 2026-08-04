@@ -75,6 +75,16 @@ async def run_streaming(
         await proc.wait()
         pump_task.cancel()
         raise RuntimeError(f"timed out after {timeout:.0f}s: {args[0]} {' '.join(args[1:3])}")
+    except asyncio.CancelledError:
+        # The job was cancelled (POST /jobs/{id}/cancel -> Task.cancel()). Kill
+        # the subprocess before re-raising, or it keeps running orphaned and
+        # writing to the cache dir after the job itself has been marked
+        # cancelled — this was the "cancel does nothing" bug: the job hash
+        # flipped to cancelled but nothing ever stopped the download.
+        proc.kill()
+        await proc.wait()
+        pump_task.cancel()
+        raise
     await pump_task
     return rc, lines
 
@@ -91,22 +101,33 @@ async def oras_pull(
     label: str,
     scanner: str = "trivy",
     timeout: float = 1800.0,
+    total_bytes: int | None = None,
 ) -> bool:
     """``oras pull`` with live byte progress polled from the output directory.
 
     ``oras`` does not report progress in a machine-readable way, so the output
     directory is sized every two seconds to derive speed and ETA.
 
+    ``total_bytes``, when the caller resolved it from the image's real manifest
+    (see ``_oras_manifest_size`` in ``update.py``), is the actual expected size
+    and is reported with ``estimated: False``. When it is ``None`` or ``0`` this
+    falls back to the ``expected_mb`` hardcoded guess, reported as an estimate —
+    that guess has drifted from the real archive size before (the database grows
+    over time), which is why a caller-supplied real size always wins.
+
     ``timeout`` bounds the whole pull: a stalled connection would otherwise hold
     the job open indefinitely, with the queue behind it.
     """
     low, high = progress_range
     span = high - low
-    total_bytes = int(expected_mb * 1e6) if expected_mb else 0
+    real_total = int(total_bytes) if total_bytes else 0
+    estimated = real_total <= 0
+    display_total = real_total if real_total > 0 else (int(expected_mb * 1e6) if expected_mb else 0)
+    display_mb = display_total / 1e6
     deadline = time.monotonic() + timeout
     await emit(low, f"{label}: connecting to the registry",
-               {"scanner": scanner, "stage": "connecting", "total_bytes": total_bytes,
-                "estimated": True, "artifact": label})
+               {"scanner": scanner, "stage": "connecting", "total_bytes": display_total,
+                "estimated": estimated, "artifact": label})
     proc = await asyncio.create_subprocess_exec(
         oras, "pull", "--no-tty", image, "--output", out_dir,
         stdout=asyncio.subprocess.PIPE,
@@ -125,43 +146,57 @@ async def oras_pull(
             del tail[:-10]
 
     drain_task = asyncio.create_task(drain())
-    prev_bytes, prev_time = 0, time.monotonic()
-    while proc.returncode is None:
-        if time.monotonic() > deadline:
-            proc.kill()
-            await proc.wait()
-            drain_task.cancel()
-            await emit(high, f"{label}: timed out after {timeout / 60:.0f} minutes",
-                       {"scanner": scanner, "stage": "failed", "artifact": label,
-                        "error": f"timed out after {timeout / 60:.0f} minutes"})
-            return False
-        downloaded = dir_size(Path(out_dir))
-        now = time.monotonic()
-        elapsed = now - prev_time
-        speed_bps = ((downloaded - prev_bytes) / elapsed) if elapsed > 0 else 0.0
-        prev_bytes, prev_time = downloaded, now
+    try:
+        prev_bytes, prev_time = 0, time.monotonic()
+        while proc.returncode is None:
+            if time.monotonic() > deadline:
+                proc.kill()
+                await proc.wait()
+                drain_task.cancel()
+                await emit(high, f"{label}: timed out after {timeout / 60:.0f} minutes",
+                           {"scanner": scanner, "stage": "failed", "artifact": label,
+                            "error": f"timed out after {timeout / 60:.0f} minutes"})
+                return False
+            downloaded = dir_size(Path(out_dir))
+            now = time.monotonic()
+            elapsed = now - prev_time
+            speed_bps = ((downloaded - prev_bytes) / elapsed) if elapsed > 0 else 0.0
+            prev_bytes, prev_time = downloaded, now
 
-        done_mb = downloaded / 1e6
-        speed_mbps = speed_bps / 1e6
-        remaining_mb = max(0.0, expected_mb - done_mb)
-        pct = low + min(span, int(done_mb / expected_mb * span)) if expected_mb else low
-        await emit(
-            pct,
-            f"{label}: {done_mb:.1f} / ~{expected_mb} MB{rate(speed_mbps, remaining_mb)}",
-            # ``estimated`` is the important flag here: oras reports no total, so
-            # ``total_bytes`` is the hardcoded guess from paths.py. The UI shows an
-            # indeterminate bar rather than a precise-looking but invented percentage.
-            {"scanner": scanner, "stage": "downloading", "artifact": label,
-             "done_bytes": downloaded, "total_bytes": total_bytes, "estimated": True,
-             "speed_bps": round(speed_bps),
-             "eta_seconds": round(remaining_mb / speed_mbps) if speed_mbps > 0.1 else None},
-        )
-        try:
-            await asyncio.wait_for(asyncio.shield(proc.wait()), timeout=2.0)
-        except asyncio.TimeoutError:
-            continue
+            done_mb = downloaded / 1e6
+            speed_mbps = speed_bps / 1e6
+            remaining_mb = max(0.0, display_mb - done_mb) if display_total else 0.0
+            pct = low + min(span, int(done_mb / display_mb * span)) if display_total else low
+            total_label = f"{display_mb:.0f}" if not estimated else f"~{display_mb:.0f}"
+            await emit(
+                pct,
+                f"{label}: {done_mb:.1f}" + (f" / {total_label} MB{rate(speed_mbps, remaining_mb)}"
+                                              if display_total else " MB downloaded"),
+                # ``estimated`` says whether ``total_bytes`` came from the real
+                # manifest (False) or the hardcoded fallback guess (True) — the UI
+                # shows an indeterminate bar rather than a precise-looking but
+                # invented percentage when it can't trust the total.
+                {"scanner": scanner, "stage": "downloading", "artifact": label,
+                 "done_bytes": downloaded, "total_bytes": display_total, "estimated": estimated,
+                 "indeterminate": not display_total,
+                 "speed_bps": round(speed_bps),
+                 "eta_seconds": round(remaining_mb / speed_mbps) if speed_mbps > 0.1 else None},
+            )
+            try:
+                await asyncio.wait_for(asyncio.shield(proc.wait()), timeout=2.0)
+            except asyncio.TimeoutError:
+                continue
 
-    await drain_task
+        await drain_task
+    except asyncio.CancelledError:
+        # Same reasoning as run_streaming(): a cancelled job must not leave
+        # ``oras`` running in the background, still writing to out_dir after the
+        # job itself has been marked cancelled.
+        proc.kill()
+        await proc.wait()
+        drain_task.cancel()
+        raise
+
     ok = proc.returncode == 0
     final_bytes = dir_size(Path(out_dir))
     if ok:

@@ -15,12 +15,15 @@ from fastapi import Depends, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .config import Settings, get_settings
+from .core.access_control import AccessResolver, load_access
 from .core.security import TokenError, decode_token
 from .db.session import get_session
 from .models import User
 
 # Re-export for convenience.
-__all__ = ["get_settings", "get_session", "get_current_user", "RequirePermission"]
+__all__ = [
+    "get_settings", "get_session", "get_current_user", "RequirePermission", "get_access",
+]
 
 
 async def _load_user_permissions(session: AsyncSession, user: User) -> list[str]:
@@ -105,6 +108,18 @@ async def get_current_user(
 def user_permissions(user: User) -> list[str]:
     """Helper to read permissions attached by :func:`get_current_user`."""
     return getattr(user, "_effective_permissions", [])  # type: ignore[attr-defined]
+
+
+async def get_access(
+    user: Annotated[User, Depends(get_current_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> AccessResolver:
+    """The current user's repository/image access rules, loaded once per request.
+
+    Handlers that touch per-repository or per-image data declare this and ask it
+    what the user may see; see :mod:`app.core.access_control`.
+    """
+    return await load_access(session, user)
 
 
 class RequirePermission:

@@ -8,12 +8,14 @@ a synchronous 'download DB snapshot' endpoint for convenience.
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from pathlib import Path
 from typing import Annotated, Any
 
+from croniter import croniter
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -22,7 +24,8 @@ from ..core import config_store
 from ..core.jobs import JobQueue
 from ..core.outbound import OutboundURLError, validate_outbound_url
 from ..dependencies import RequirePermission, get_current_user, get_session
-from ..models import BackupRun, User
+from ..models import BackupRun, BackupSchedule, User
+from ..services import backup_schedule as backup_schedule_service
 from ..services.backup_archive import InvalidRepositoryName, safe_repo_dirname
 from ..state import app_state
 
@@ -158,24 +161,53 @@ async def download_backup_archive(
     session: Annotated[AsyncSession, Depends(get_session)],
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> StreamingResponse:
-    """Zip a completed archive run's directory on demand and stream it down."""
+    """Stream a completed archive run down.
+
+    A scheduled (compressed) run already sits on disk as a single
+    ``<run_id>.tar.gz`` — that's streamed directly. A manual (uncompressed) run
+    is still a directory, zipped on demand exactly as before.
+    """
     import asyncio
     import shutil
 
     run = await session.get(BackupRun, run_id)
     if run is None or not run.output_path:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Backup run not found")
-    run_dir = Path(run.output_path)
-    if not run_dir.is_dir():
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Archive directory no longer exists on disk")
+    output_path = Path(run.output_path)
+
+    if output_path.is_file():
+        filename = output_path.name
+
+        async def gen_file():
+            with open(output_path, "rb") as f:
+                while True:
+                    chunk = f.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    yield chunk
+
+        return StreamingResponse(
+            gen_file(), media_type="application/gzip",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+
+    if not output_path.is_dir():
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Archive no longer exists on disk")
 
     # Written under the same volume (not the system tmpdir), which may be a
     # much smaller overlay/tmpfs inside the container than the dedicated
     # backup volume that already has room reserved for archives.
     tmp_dir = Path(settings.BACKUP_OUTPUT_DIR) / "_tmp"
-    tmp_dir.mkdir(parents=True, exist_ok=True)
-    zip_base = tmp_dir / f"backup-{run_id}"
-    zip_path = Path(await asyncio.to_thread(shutil.make_archive, str(zip_base), "zip", str(run_dir)))
+    try:
+        tmp_dir.mkdir(parents=True, exist_ok=True)
+        zip_base = tmp_dir / f"backup-{run_id}"
+        zip_path = Path(await asyncio.to_thread(shutil.make_archive, str(zip_base), "zip", str(output_path)))
+    except PermissionError as exc:
+        raise HTTPException(
+            status.HTTP_500_INTERNAL_SERVER_ERROR,
+            "Cannot write temporary archive: the backup directory is not writable "
+            "by the application user — see the System troubleshooting docs.",
+        ) from exc
 
     async def gen():
         try:
@@ -199,6 +231,221 @@ async def download_backup_archive(
 async def trigger_script(name: str) -> dict[str, str]:
     """TODO: trigger a whitelisted host maintenance script."""
     return {"status": "not_implemented", "feature": "System — Host scripts"}
+
+
+# ---------------------------------------------------------------------------
+# Scheduled backups
+# ---------------------------------------------------------------------------
+class BackupScheduleBase(BaseModel):
+    name: str = Field(..., min_length=1, max_length=128)
+    mode: str = Field(..., description="full | selective")
+    repos: list[str] | None = Field(default=None, description="Required, non-empty when mode == 'selective'")
+    frequency: str = Field(..., description="daily | weekly | monthly | cron")
+    time_of_day: str | None = Field(default=None, description="HH:MM, 24h — daily/weekly/monthly")
+    day_of_week: int | None = Field(default=None, ge=0, le=6, description="0=Monday..6=Sunday — weekly")
+    day_of_month: int | None = Field(default=None, ge=1, le=31, description="Clamped to month length — monthly")
+    cron_expression: str | None = Field(default=None, max_length=128, description="Standard 5-field cron — cron")
+    retention_keep_last: int | None = Field(default=None, ge=0)
+    retention_max_age_days: int | None = Field(default=None, ge=1)
+    enabled: bool = True
+
+    @model_validator(mode="after")
+    def _validate(self) -> "BackupScheduleBase":
+        if self.mode not in ("full", "selective"):
+            raise ValueError("mode must be 'full' or 'selective'")
+        if self.mode == "selective" and not self.repos:
+            raise ValueError("selective backup requires a non-empty 'repos' list")
+        if self.repos:
+            for repo in self.repos:
+                try:
+                    safe_repo_dirname(repo)
+                except InvalidRepositoryName as exc:
+                    raise ValueError(str(exc)) from exc
+
+        if self.frequency not in backup_schedule_service.FREQUENCIES:
+            raise ValueError(f"frequency must be one of {backup_schedule_service.FREQUENCIES}")
+        if self.frequency == "cron":
+            if not self.cron_expression:
+                raise ValueError("cron frequency requires cron_expression")
+            if not croniter.is_valid(self.cron_expression):
+                raise ValueError(f"invalid cron expression: {self.cron_expression!r}")
+        else:
+            if not self.time_of_day:
+                raise ValueError(f"{self.frequency} frequency requires time_of_day (HH:MM)")
+            try:
+                hh, mm = self.time_of_day.split(":")
+                if not (0 <= int(hh) <= 23 and 0 <= int(mm) <= 59):
+                    raise ValueError
+            except ValueError:
+                raise ValueError("time_of_day must be 'HH:MM' 24h") from None
+            if self.frequency == "weekly" and self.day_of_week is None:
+                raise ValueError("weekly frequency requires day_of_week")
+            if self.frequency == "monthly" and self.day_of_month is None:
+                raise ValueError("monthly frequency requires day_of_month")
+        return self
+
+
+class BackupScheduleCreate(BackupScheduleBase):
+    pass
+
+
+class BackupScheduleUpdate(BaseModel):
+    """Partial update. Re-validated as a merge against the existing row."""
+    name: str | None = Field(default=None, min_length=1, max_length=128)
+    mode: str | None = None
+    repos: list[str] | None = None
+    frequency: str | None = None
+    time_of_day: str | None = None
+    day_of_week: int | None = Field(default=None, ge=0, le=6)
+    day_of_month: int | None = Field(default=None, ge=1, le=31)
+    cron_expression: str | None = Field(default=None, max_length=128)
+    retention_keep_last: int | None = Field(default=None, ge=0)
+    retention_max_age_days: int | None = Field(default=None, ge=1)
+    enabled: bool | None = None
+
+
+class BackupScheduleOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    name: str
+    mode: str
+    repos: list[str]
+    frequency: str
+    time_of_day: str | None
+    day_of_week: int | None
+    day_of_month: int | None
+    cron_expression: str | None
+    retention_keep_last: int | None
+    retention_max_age_days: int | None
+    enabled: bool
+    created_at: datetime
+    updated_at: datetime
+    last_run_at: datetime | None
+    next_run_at: datetime | None
+
+    @field_validator("repos", mode="before")
+    @classmethod
+    def _parse_repos(cls, value: Any) -> list[str]:
+        if isinstance(value, str):
+            return json.loads(value or "[]")
+        return value or []
+
+
+def _schedule_out(schedule: BackupSchedule) -> BackupScheduleOut:
+    return BackupScheduleOut.model_validate(schedule)
+
+
+@router.get("/backup/schedules", response_model=list[BackupScheduleOut],
+            dependencies=[Depends(RequirePermission("system:read"))])
+async def list_backup_schedules(
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> list[BackupScheduleOut]:
+    rows = (await session.execute(select(BackupSchedule).order_by(BackupSchedule.id))).scalars().all()
+    return [_schedule_out(r) for r in rows]
+
+
+@router.post("/backup/schedules", response_model=BackupScheduleOut, status_code=status.HTTP_201_CREATED,
+             dependencies=[Depends(RequirePermission(_BACKUP_JOB_PERM))])
+async def create_backup_schedule(
+    body: BackupScheduleCreate,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> BackupScheduleOut:
+    data = body.model_dump()
+    data["repos"] = json.dumps(data.get("repos") or [])
+    schedule = BackupSchedule(**data)
+    schedule.next_run_at = backup_schedule_service.compute_next_run(schedule)
+    session.add(schedule)
+    await session.commit()
+    await session.refresh(schedule)
+    return _schedule_out(schedule)
+
+
+@router.patch("/backup/schedules/{schedule_id}", response_model=BackupScheduleOut,
+              dependencies=[Depends(RequirePermission(_BACKUP_JOB_PERM))])
+async def update_backup_schedule(
+    schedule_id: int,
+    body: BackupScheduleUpdate,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> BackupScheduleOut:
+    schedule = await session.get(BackupSchedule, schedule_id)
+    if schedule is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Backup schedule not found")
+
+    data = body.model_dump(exclude_unset=True)
+    schedule_affecting = {
+        "mode", "repos", "frequency", "time_of_day", "day_of_week",
+        "day_of_month", "cron_expression",
+    }
+    merged = BackupScheduleCreate(
+        name=data.get("name", schedule.name),
+        mode=data.get("mode", schedule.mode),
+        repos=data.get("repos", json.loads(schedule.repos or "[]") or None),
+        frequency=data.get("frequency", schedule.frequency),
+        time_of_day=data.get("time_of_day", schedule.time_of_day),
+        day_of_week=data.get("day_of_week", schedule.day_of_week),
+        day_of_month=data.get("day_of_month", schedule.day_of_month),
+        cron_expression=data.get("cron_expression", schedule.cron_expression),
+        retention_keep_last=data.get("retention_keep_last", schedule.retention_keep_last),
+        retention_max_age_days=data.get("retention_max_age_days", schedule.retention_max_age_days),
+        enabled=data.get("enabled", schedule.enabled),
+    )
+    for key, value in merged.model_dump().items():
+        if key == "repos":
+            value = json.dumps(value or [])
+        setattr(schedule, key, value)
+    if schedule_affecting & data.keys():
+        schedule.next_run_at = backup_schedule_service.compute_next_run(schedule)
+    await session.commit()
+    await session.refresh(schedule)
+    return _schedule_out(schedule)
+
+
+@router.delete("/backup/schedules/{schedule_id}", status_code=status.HTTP_204_NO_CONTENT,
+               dependencies=[Depends(RequirePermission(_BACKUP_JOB_PERM))])
+async def delete_backup_schedule(
+    schedule_id: int,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> None:
+    schedule = await session.get(BackupSchedule, schedule_id)
+    if schedule is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Backup schedule not found")
+    await session.delete(schedule)
+    await session.commit()
+
+
+@router.post("/backup/schedules/{schedule_id}/run", status_code=status.HTTP_202_ACCEPTED,
+             dependencies=[Depends(RequirePermission(_BACKUP_JOB_PERM))])
+async def run_backup_schedule_now(
+    schedule_id: int,
+    request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict[str, str]:
+    schedule = await session.get(BackupSchedule, schedule_id)
+    if schedule is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Backup schedule not found")
+    cache = app_state(request).cache
+    if cache is None:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Cache unavailable")
+    job_id = await JobQueue(cache).enqueue("run_scheduled_backup", {"schedule_id": schedule_id})
+    return {"job_id": job_id}
+
+
+@router.get("/backup/schedules/{schedule_id}/preview",
+            dependencies=[Depends(RequirePermission("system:read"))])
+async def preview_backup_schedule(
+    schedule_id: int,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict[str, Any]:
+    """Live ``next_run_at`` for the schedule's saved config — a sanity check,
+    not a dry run of any deletion (schedules don't delete anything by
+    themselves; ``prune_old_archives`` only removes archives this same
+    schedule created)."""
+    schedule = await session.get(BackupSchedule, schedule_id)
+    if schedule is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Backup schedule not found")
+    next_run_at = backup_schedule_service.compute_next_run(schedule)
+    return {"next_run_at": next_run_at}
 
 
 # ---------------------------------------------------------------------------

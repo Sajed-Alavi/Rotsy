@@ -134,6 +134,13 @@ class Settings(BaseSettings):
     # Abort a run (rather than fill the volume to zero) if free space under
     # BACKUP_OUTPUT_DIR drops below this many bytes. Default 512MB.
     BACKUP_MIN_FREE_BYTES: int = 536_870_912
+    # How often the scheduled-backup loop polls for due BackupSchedule rows.
+    # Independent schedules can each have their own cadence (including
+    # arbitrary cron expressions), so — unlike the single daily retention
+    # sweep — this can't be a single sleep-until-next-time timer; it polls the
+    # `next_run_at` column instead. 60s keeps schedule times accurate to
+    # within a minute without meaningfully increasing DB load.
+    BACKUP_SCHEDULER_POLL_SECONDS: int = 60
 
     # --- Outbound request guard (SSRF) ------------------------------------
     # Hosts the backend is permitted to make user-directed outbound requests

@@ -3,41 +3,60 @@
 # Security note: every pin below is at or above the version that fixes the CVEs
 # listed in security/cve/dependency-cve-review.md. Re-run `pip-audit -r
 # requirements.txt` (see requirements-dev.txt) after changing anything here.
+#
+# Dependency pass 2026-08-02 (Python 3.13 upgrade): all pins below carry
+# published cp313 wheels, so the build needs no source compilation or extra
+# toolchain. redis and sse-starlette were bumped within their current major
+# line rather than to redis 8.x / sse-starlette 3.x — both newer majors change
+# default behavior this app depends on (RESP3-by-default and typed sync/async
+# overloads in redis-py 8; task-group/ExceptionGroup semantics in
+# sse-starlette 3) and need a dedicated migration + test pass rather than a
+# drop-in pin bump. See security/reports/2026-08-02-dependency-upgrade.md.
 
-fastapi==0.116.1
+fastapi==0.141.1
 # Pinned directly, not left transitive: FastAPI 0.111 capped starlette <0.38,
 # which held it at 0.37.2 — CVE-2024-47874 (multipart DoS, fixed 0.40.0) and
-# CVE-2025-54121 (event loop blocked on large upload, fixed 0.47.2).
-starlette==0.47.2
+# CVE-2025-54121 (event loop blocked on large upload, fixed 0.47.2). FastAPI
+# 0.141.1 requires starlette>=0.46.0 with no upper cap; verified compatible
+# with 1.3.1 (this app already uses the `lifespan` context-manager style, so
+# starlette 1.0's only breaking change — removal of on_startup/on_shutdown
+# params — does not apply here).
+starlette==1.3.1
 # Pinned directly for the same reason: FastAPI only requires >=0.0.7, which
 # leaves CVE-2024-53981 (DoS on malformed multipart, fixed 0.0.18) reachable.
-python-multipart==0.0.20
-uvicorn[standard]==0.34.0
+python-multipart==0.0.32
+uvicorn[standard]==0.52.0
 httpx==0.28.1
 redis==5.2.1
-sse-starlette==2.1.2
-pydantic==2.10.4
-pydantic-settings==2.7.0
-email-validator==2.2.0
+sse-starlette==2.3.6
+pydantic==2.13.4
+pydantic-settings==2.14.2
+email-validator==2.3.0
 
 # Database + migrations (v2: persistence layer for users/roles/permissions)
-SQLAlchemy[asyncio]==2.0.36
-asyncpg==0.30.0         # async driver for the app runtime
-psycopg[binary]==3.2.3  # sync driver used by alembic + entrypoint DB-wait loop
-alembic==1.14.0
+SQLAlchemy[asyncio]==2.0.51
+asyncpg==0.31.0         # async driver for the app runtime
+psycopg[binary]==3.3.4  # sync driver used by alembic + entrypoint DB-wait loop
+alembic==1.18.5
+
+# Cron-expression parsing for scheduled backups (backend/app/services/backup_schedule.py).
+croniter==6.2.2
+
+# PDF generation for vulnerability report export (backend/app/services/scan_report_pdf.py).
+reportlab==5.0.0
 
 # Auth: password hashing + JWT.
 # bcrypt is called directly by app/core/security.py. passlib was dropped —
 # see security/findings/low/LOW-01-unmaintained-passlib.md: no release since
 # 2020 and no maintainer to respond to future findings. It only ever wrapped a
 # single CryptContext, so the direct calls are a smaller surface, not a bigger.
-bcrypt==4.2.1
-PyJWT==2.10.1
+bcrypt==5.0.0
+PyJWT==2.13.0
 # Required directly by app/core/config_store.py (Fernet encryption of the
 # dashboard-stored Nexus password) — NOT a PyJWT dependency. Previously came
 # in transitively via python-jose[cryptography]; must stay explicit now that
 # nothing else pulls it in. >=44.0.1 fixes CVE-2024-12797.
-cryptography==44.0.1
+cryptography==50.0.0
 
 # Host process metrics (dashboard CPU/memory/disk tiles)
-psutil==6.1.1
+psutil==7.2.2

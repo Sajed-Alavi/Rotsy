@@ -43,4 +43,16 @@ Permission keys are `resource:action`. Effective permissions are the union acros
 
 `roles:manage` includes reading the audit log, since role administration and reviewing the trail are the same job.
 
-Image scoping is orthogonal to all of this. See [RBAC and image scopes](/docs/rbac-and-image-scopes).
+Access rules are orthogonal to all of this. A permission key says *what* a user may do; an access rule says *which repositories and images* it reaches. Both are required.
+
+## Access-rule actions
+
+Rules grant these independently of the keys above.
+
+| Action | Grants |
+|---|---|
+| `read` | See an image in listings, browse and download its assets, read its scan reports and findings, see it in storage analysis |
+| `scan` | Trigger a scan of it, and configure scanning for its repository |
+| `delete` | Delete its tags, delete its scan reports, and have retention act on it |
+
+A rule combines an effect (`allow` or `deny`), an action set, a repository pattern and an image pattern. Patterns are Ant-style: `*` matches any characters except `/`, `**` crosses `/`, `?` is one character. See [the permission model](/docs/permission-model) and the [cookbook](/docs/access-rules-cookbook).

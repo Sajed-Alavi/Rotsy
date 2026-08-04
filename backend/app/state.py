@@ -14,7 +14,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from fastapi import Request
+from fastapi import HTTPException, Request, status
 
 from .core.cache import Cache
 from .core.nexus_client import NexusClient
@@ -34,6 +34,17 @@ def app_state(request: Request) -> AppState:
         nexus=getattr(request.app.state, "nexus", None),
         cache=getattr(request.app.state, "cache", None),
     )
+
+
+def require_nexus(request: Request) -> NexusClient:
+    """The shared Nexus client, or 503 if the lifespan has not configured one.
+
+    Usable directly (``require_nexus(request)``) or as a FastAPI dependency.
+    """
+    client = app_state(request).nexus
+    if client is None:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Nexus client not initialised")
+    return client
 
 
 # Module-level handles for code that runs outside a request (job handlers).

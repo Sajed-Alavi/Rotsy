@@ -31,7 +31,7 @@ The separation is real, not decorative: services are importable and testable wit
 
 Anything slow goes through a Redis-backed job queue rather than blocking a request. Jobs report progress over Server-Sent Events, which is how the Database Management page draws a live download bar and the Storage Analyzer streams results as it walks.
 
-Four background loops run in the application lifespan, each with one job:
+Five background loops run in the application lifespan, each with one job:
 
 | Loop | Responsibility |
 |---|---|
@@ -39,6 +39,13 @@ Four background loops run in the application lifespan, each with one job:
 | `_retention_scheduler` | Daily retention sweep |
 | `_scanner_db_loop` | Keep the vulnerability databases usable |
 | `_push_watch_loop` | Notice newly pushed images (fallback trigger) |
+| `_backup_schedule_loop` | Poll due backup schedules, enqueue their runs |
+
+`_backup_schedule_loop` polls on a short fixed interval
+(`BACKUP_SCHEDULER_POLL_SECONDS`) rather than sleeping until one shared time
+the way `_retention_scheduler` does — independent backup schedules can each
+have their own cadence, including arbitrary cron expressions, so there is no
+single "next event" to sleep until.
 
 **None of them scan on startup.** This is deliberate and load-bearing — see [The ledger and baseline](/docs/the-ledger-and-baseline).
 

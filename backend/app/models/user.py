@@ -7,6 +7,10 @@ RBAC model:
     be deleted through the API.
   - ``Permission.key`` is a stable ``"resource:action"`` string referenced by
     :class:`app.dependencies.RequirePermission`.
+
+Permissions answer *what actions*. Which repositories and images those actions
+reach is decided separately by :class:`~app.models.RoleAccessRule` — see
+:mod:`app.core.access_control`.
 """
 
 from __future__ import annotations
@@ -57,15 +61,16 @@ class Role(Base):
     name: Mapped[str] = mapped_column(String(64), unique=True, index=True, nullable=False)
     description: Mapped[str] = mapped_column(String(255), default="", nullable=False)
     is_system: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
-    # Image-scope union semantics (see app.core.image_scope): a role with no
-    # RoleImageScope rows for a repo is normally treated as unrestricted there,
-    # and a user's effective access is the union across held roles — so any
-    # second role without scope rows silently reopens access an explicitly
-    # scoped role was meant to restrict. Defaults to True so existing roles
-    # (admin/operator/viewer) keep today's behavior; an admin can flip a
-    # specific role to False to make it always defer to scope rows instead of
-    # granting blanket access, closing that bypass where it matters.
-    image_scope_unrestricted: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    # How this role behaves for a repository none of its access rules match
+    # (see app.core.access_control):
+    #   "unrestricted" — full access there. The default, so a role with no rules
+    #                    at all behaves exactly as roles did before access rules.
+    #   "scoped"       — nothing. The role grants only what its own rules allow,
+    #                    so it can never widen a user's access by accident.
+    # Effective access is the union across held roles, so this is what stops a
+    # baseline role everyone holds from silently reopening what a deliberately
+    # narrow role was meant to restrict.
+    access_mode: Mapped[str] = mapped_column(String(16), default="unrestricted", nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     users: Mapped[list[User]] = relationship(secondary=user_roles, back_populates="roles", lazy="selectin")

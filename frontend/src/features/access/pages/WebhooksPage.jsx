@@ -1,7 +1,7 @@
 import { Link } from 'react-router';
 import Badge from '../../../components/Badge.jsx';
 import Section from '../../../components/Section.jsx';
-import { useResource } from '../../scan/hooks/useResource.js';
+import { useResource } from '../../../lib/useResource.js';
 import { accessApi } from '../api.js';
 
 /**

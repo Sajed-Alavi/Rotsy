@@ -13,7 +13,8 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..dependencies import RequirePermission, get_session
+from ..core.access_control import AccessResolver
+from ..dependencies import RequirePermission, get_access, get_session
 from ..state import app_state
 from ..services.metrics_collector import blobstore_timeseries, latest_snapshot, timeseries
 
@@ -22,16 +23,26 @@ router = APIRouter(prefix="/metrics", tags=["metrics"])
 
 
 @router.get("/overview", dependencies=[Depends(RequirePermission("metrics:read"))])
-async def overview(session: Annotated[AsyncSession, Depends(get_session)]) -> list[dict[str, Any]]:
-    return await latest_snapshot(session)
+async def overview(
+    session: Annotated[AsyncSession, Depends(get_session)],
+    access: Annotated[AccessResolver, Depends(get_access)],
+) -> list[dict[str, Any]]:
+    """Latest per-repository snapshot, limited to repositories the caller may see."""
+    rows = await latest_snapshot(session)
+    return [row for row in rows if access.repo(row.get("repo") or "").visible]
 
 
 @router.get("/{repo}/timeseries", dependencies=[Depends(RequirePermission("metrics:read"))])
 async def repo_timeseries(
     repo: str,
     session: Annotated[AsyncSession, Depends(get_session)],
+    access: Annotated[AccessResolver, Depends(get_access)],
     hours: Annotated[int, Query(ge=1, le=24 * 30)] = 24,
 ) -> list[dict[str, Any]]:
+    if not access.repo(repo).visible:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN, f"No access rule of yours covers '{repo}'."
+        )
     return await timeseries(session, repo, hours)
 
 

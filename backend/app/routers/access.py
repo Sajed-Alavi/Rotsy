@@ -16,12 +16,13 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..core.config_store import get_or_create_webhook_secret
-from ..core.nexus_client import NexusClient
+from ..core.permissions import PERMISSIONS
 from ..dependencies import RequirePermission, get_current_user, get_session
 from ..models import User
 from ..services import access_tokens as token_service
 from ..services import nexus_security
-from ..state import app_state
+from ..services.audit import log_action
+from ..state import app_state, require_nexus
 
 router = APIRouter(prefix="/access", tags=["access"])
 
@@ -29,13 +30,6 @@ router = APIRouter(prefix="/access", tags=["access"])
 # ever revisits; a year is long enough for a real pipeline and short enough that
 # forgotten tokens age out.
 _MAX_TOKEN_DAYS = 365
-
-
-async def _nexus(request: Request) -> NexusClient:
-    client = app_state(request).nexus
-    if client is None:
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Nexus client not initialised")
-    return client
 
 
 # ---------------------------------------------------------------------------
@@ -58,7 +52,17 @@ class TokenCreate(BaseModel):
     @field_validator("scopes")
     @classmethod
     def _clean_scopes(cls, value: list[str]) -> list[str]:
-        return sorted({s.strip() for s in value if s and s.strip()})
+        """Dedupe, sort, and reject keys that are not real permissions.
+
+        A typo'd scope used to be accepted and then silently intersect to
+        nothing, producing a token that authenticates but can do nothing — with
+        no hint as to why.
+        """
+        cleaned = sorted({s.strip() for s in value if s and s.strip()})
+        unknown = sorted(set(cleaned) - {key for key, _ in PERMISSIONS})
+        if unknown:
+            raise ValueError(f"Unknown permission keys: {unknown}")
+        return cleaned
 
 
 class TokenOut(BaseModel):
@@ -95,6 +99,10 @@ async def create_token(
     )
     token, plaintext = await token_service.create_token(
         session, name=body.name, owner_id=user.id, scopes=body.scopes, expires_at=expires_at,
+    )
+    await log_action(
+        session, user.username, "create", "access_token", token.id,
+        f"{token.name} (prefix {token.prefix}, scopes: {token.scopes or 'all of owner'})",
     )
     return {
         "token": plaintext,
@@ -136,6 +144,7 @@ async def revoke_token(
 
     if not await token_service.revoke_token(session, token_id):
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Token not found or already revoked")
+    await log_action(session, user.username, "revoke", "access_token", token_id)
     return {"revoked": True, "id": token_id}
 
 
@@ -195,19 +204,19 @@ async def anonymous_status(request: Request) -> dict[str, Any]:
     and per-repository grants could only be made at creation time — so a repo
     made public by accident could not be found from here, let alone fixed.
     """
-    nexus = await _nexus(request)
+    nexus = require_nexus(request)
     return await nexus_security.anonymous_overview(nexus)
 
 
 @router.post("/anonymous/grant", dependencies=[Depends(RequirePermission("access:write"))])
 async def grant_anonymous(request: Request, body: AnonymousGrant) -> dict[str, Any]:
     """Let unauthenticated clients browse and read one repository."""
-    nexus = await _nexus(request)
+    nexus = require_nexus(request)
     return await nexus_security.grant_anonymous_access(nexus, body.repo, body.repo_format)
 
 
 @router.post("/anonymous/revoke", dependencies=[Depends(RequirePermission("access:write"))])
 async def revoke_anonymous(request: Request, body: AnonymousGrant) -> dict[str, Any]:
     """Remove the anonymous read grant from one repository."""
-    nexus = await _nexus(request)
+    nexus = require_nexus(request)
     return await nexus_security.revoke_anonymous_access(nexus, body.repo)

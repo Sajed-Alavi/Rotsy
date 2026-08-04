@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { Navigate, useNavigate } from 'react-router';
+import LogoLockup from '../../components/Logo.jsx';
 import { useAuth } from '../../context/AuthContext.jsx';
 
 /** Minimal login screen, theme-aware. Redirects to / once authenticated. */
@@ -30,9 +31,8 @@ export default function LoginPage() {
   return (
     <div className="flex min-h-screen items-center justify-center bg-slate-50 px-4 dark:bg-slate-950">
       <form onSubmit={onSubmit} className="w-full max-w-xs border border-slate-200 bg-white p-6 dark:border-slate-800 dark:bg-slate-900/60">
-        <div className="mb-5 flex items-center gap-2">
-          <div className="h-2 w-2 rounded-full bg-emerald-400" />
-          <span className="font-mono text-xs tracking-tight text-slate-600 dark:text-slate-300">sharpy</span>
+        <div className="mb-6 flex justify-center">
+          <LogoLockup size={34} tagline />
         </div>
 
         <label className="mb-1 block font-mono text-[10px] uppercase tracking-wider text-slate-500">

@@ -13,6 +13,7 @@ from typing import Any
 
 from .paths import OFFLINE_DB_DIR, TRIVY_DB_DIR, TRIVY_JAVA_DB_DIR, ProgressCallback, which
 from .process import extract, prune_trivy, run_streaming
+from ... import make_detail_emitter
 
 
 def offline_status() -> dict[str, Any]:
@@ -67,9 +68,7 @@ async def import_offline(
     ``grype db import``, its supported offline path, which validates the
     checksum and schema before installing.
     """
-    async def emit(pct: int, msg: str, detail: dict[str, Any] | None = None) -> None:
-        if on_progress is not None:
-            await on_progress(pct, msg, detail)
+    emit = make_detail_emitter(on_progress)
 
     enabled = [s.strip().lower() for s in scanners if s.strip()]
     if not OFFLINE_DB_DIR.exists():

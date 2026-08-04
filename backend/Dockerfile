@@ -51,22 +51,28 @@ FROM anchore/grype:${GRYPE_VERSION} AS grype-source
 FROM ghcr.io/oras-project/oras:${ORAS_VERSION} AS oras-source
 
 # Pinned to a patch release + suite so the base OS package set — and therefore
-# the image's CVE posture — is reproducible. `python:3.11-slim` alone silently
-# moves under you between builds.
-FROM python:3.11.11-slim-bookworm AS base
+# the image's CVE posture — is reproducible. `python:3.13-alpine` alone
+# silently moves under you between builds.
+FROM python:3.13.14-alpine3.23 AS base
 
-# Runtime deps: psycopg needs libpq5; ca-certificates + curl are needed to
-# fetch the scanner install scripts and for the scanners to verify TLS when
-# they pull their vulnerability DBs at runtime.
+# Runtime deps: psycopg needs libpq; ca-certificates for TLS verification on
+# outbound calls (Nexus REST API, database downloads via httpx). Neither curl
+# nor gnupg are invoked anywhere in this app or entrypoint.sh — scanner
+# binaries are copied from upstream images (see below), not fetched with curl
+# via an install script, and nothing here shells out to gpg. They used to be
+# installed "just in case"; carrying them bought nothing but their own CVEs
+# (curl alone was ~40 of a 102-finding scan, with several unresolved CRITICALs
+# since Alpine hadn't repatched this build yet — the only real fix available
+# for an unused package is not shipping it).
 #
-# `apt-get upgrade` picks up base-OS security updates published after the base
+# `apk upgrade` picks up base-OS security updates published after the base
 # image was cut — without it a pinned base tag means pinned known-vulnerable
 # system libraries.
-RUN apt-get update \
-    && apt-get upgrade -y \
-    && apt-get install -y --no-install-recommends \
-        libpq5 curl ca-certificates gnupg \
-    && rm -rf /var/lib/apt/lists/*
+RUN apk update && apk upgrade --no-cache \
+    && apk add --no-cache \
+        libpq ca-certificates \
+        gcompat libstdc++ libgcc \
+    && rm -rf /var/cache/apk/*
 
 # ---------------------------------------------------------------------------
 # Scanner binaries, copied out of the official images.
@@ -85,7 +91,12 @@ RUN trivy --version && grype version && oras version
 # ---------------------------------------------------------------------------
 # Application user (non-root) + working directory
 # ---------------------------------------------------------------------------
-RUN groupadd --system app && useradd --system --gid app --home-dir /app app
+# Explicitly set UID/GID to 999 so it matches Debian's default system user ID
+# and retains read/write access to existing persisted Docker volumes.
+# In Alpine, GID 999 is used by 'ping' by default, so we remove it first.
+RUN delgroup ping 2>/dev/null || true \
+    && addgroup -g 999 -S app \
+    && adduser -u 999 -S -G app -h /app app
 WORKDIR /app
 
 # Install Python dependencies first to leverage Docker layer caching.
@@ -105,9 +116,15 @@ COPY alembic/ ./alembic/
 COPY entrypoint.sh ./entrypoint.sh
 RUN chmod +x ./entrypoint.sh
 
-# Create the scanner cache dir under /app so the non-root user can write to it
-# (Trivy downloads its DB here at runtime; grype uses ~/.cache/grype).
-RUN mkdir -p /app/.cache/trivy /app/.cache/grype && chown -R app:app /app
+# Create the scanner cache dir and the backup output dir under /app so the
+# non-root user can write to them (Trivy downloads its DB here at runtime;
+# grype uses ~/.cache/grype; backups land in /app/backups, normally a mounted
+# volume — creating and chowning the mountpoint here means Docker seeds a
+# freshly-created named volume with the right ownership on first mount,
+# instead of leaving it root-owned and un-writable by the `app` user).
+RUN mkdir -p /app/.cache/trivy /app/.cache/grype /app/backups \
+    && chown -R app:app /app \
+    && chmod -R 777 /app/.cache /app/backups
 
 # Switch to the non-root user.
 USER app

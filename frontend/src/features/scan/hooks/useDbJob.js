@@ -116,7 +116,16 @@ export function useDbJob(onFinished) {
     return r;
   }, [subscribe]);
 
+  /** Stop the active job. The backend kills the subprocess it owns (see
+   * services/scanning/db/process.py) before marking the job cancelled, so this
+   * is real termination, not a UI-only dismissal — the SSE 'phase' event with
+   * status 'cancelled' (already subscribed to above) reflects it back here. */
+  const cancel = useCallback(async () => {
+    if (!job?.id) return;
+    await scanApi.cancelJob(job.id);
+  }, [job?.id]);
+
   const running = !!job && !TERMINAL.has(job.status);
 
-  return { job, scanners, log, running, start, dismiss: () => setJob(null) };
+  return { job, scanners, log, running, start, cancel, dismiss: () => setJob(null) };
 }

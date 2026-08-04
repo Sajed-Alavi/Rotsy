@@ -5,7 +5,8 @@ import Notice from '../../../components/Notice.jsx';
 import Section from '../../../components/Section.jsx';
 import { formatDateTime } from '../../../lib/format.js';
 import { scanApi } from '../api.js';
-import { useResource, useStatus } from '../hooks/useResource.js';
+import SeverityCounts from '../../../components/SeverityCounts.jsx';
+import { useResource, useStatus } from '../../../lib/useResource.js';
 import ReportDetailModal from '../components/ReportDetailModal.jsx';
 
 /** One row per scanner run. Clicking a row opens that run's CVE list. */
@@ -49,14 +50,7 @@ export default function ReportsPage() {
       header: 'C/H/M/L',
       headClassName: 'text-center',
       className: 'text-center',
-      render: (_v, row) => (
-        <span className="font-mono tabular-nums text-xs">
-          <span className="text-rose-600 dark:text-rose-400">{row.critical}</span>/
-          <span className="text-amber-600 dark:text-amber-400">{row.high}</span>/
-          <span className="text-sky-600 dark:text-sky-400">{row.medium}</span>/
-          <span className="text-slate-500">{row.low}</span>
-        </span>
-      ),
+      render: (_v, row) => <SeverityCounts counts={row} />,
     },
     { key: 'status', header: 'Status', render: (v) => <Badge tone={v === 'success' ? 'ok' : v === 'failed' ? 'bad' : 'info'}>{v}</Badge> },
     { key: 'started_at', header: 'When', render: (v) => <span className="font-mono text-xs text-slate-400 dark:text-slate-600">{formatDateTime(v)}</span> },

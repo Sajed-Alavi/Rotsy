@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import BigInteger, DateTime, Integer, String, Text, func
+from sqlalchemy import BigInteger, DateTime, ForeignKey, Integer, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from ..db.base import Base
@@ -32,3 +32,9 @@ class BackupRun(Base):
     triggered_by: Mapped[str] = mapped_column(String(255), nullable=False, default="")
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # NULL for manual/on-demand runs (POST /system/backup/archive). Set for
+    # runs triggered by a BackupSchedule, so its prune step can find and
+    # retire only the archives it owns — see app.services.backup_schedule.
+    schedule_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("backup_schedules.id", ondelete="SET NULL"), nullable=True, index=True
+    )

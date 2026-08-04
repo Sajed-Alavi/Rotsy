@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import os
 import shutil
 import tempfile
 import time
@@ -33,6 +35,7 @@ from .paths import (
 )
 from .process import extract, oras_pull, proxy_env, prune_trivy, rate, run_streaming
 from .status import as_datetime, dir_size, grype_db_usable, grype_status, status
+from ... import make_detail_emitter
 
 logger = logging.getLogger(__name__)
 
@@ -72,9 +75,7 @@ async def update(
     Trivy is fetched with ``oras`` (its databases are plain OCI artifacts) and
     falls back to Trivy's own downloader; Grype uses ``grype db update``.
     """
-    async def emit(pct: int, msg: str, detail: dict[str, Any] | None = None) -> None:
-        if on_progress is not None:
-            await on_progress(pct, msg, detail)
+    emit = make_detail_emitter(on_progress)
 
     enabled = [s.strip().lower() for s in scanners if s.strip()]
     results: dict[str, Any] = {}
@@ -94,14 +95,94 @@ async def update(
         await emit(100, "all databases current, nothing to download", {"stage": "done"})
         return results
 
+    # Each scanner is isolated: an unexpected crash in one (as opposed to the
+    # ok=False results both already return for their own handled failures)
+    # must not stop the other from being attempted. Previously an uncaught
+    # exception in _update_trivy propagated straight out of update(), so Grype
+    # was silently never reached — this looked like "the Grype database is
+    # never downloaded" with nothing in the UI explaining why.
     if "trivy" in enabled:
-        results["trivy"] = await _update_trivy(emit, env)
+        try:
+            results["trivy"] = await _update_trivy(emit, env)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - see comment above
+            logger.exception("trivy database update crashed")
+            results["trivy"] = {"ok": False, "error": str(exc)}
     if "grype" in enabled:
-        results["grype"] = await _update_grype(emit, env)
+        try:
+            results["grype"] = await _update_grype(emit, env)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - see comment above
+            logger.exception("grype database update crashed")
+            results["grype"] = {"ok": False, "error": str(exc)}
 
     if not results:
         await emit(100, "no scanners enabled", {"stage": "done"})
     return results
+
+
+async def _oras_manifest_size(oras: str, image: str, env: dict[str, str]) -> int:
+    """Real total size (config + all layers) of an OCI artifact, from its manifest.
+
+    ``oras pull`` itself reports no machine-readable progress, and the hardcoded
+    ``TRIVY_DB_MB``/``TRIVY_JAVA_DB_MB`` guesses in paths.py go stale as the
+    published databases grow — that drift is exactly why the UI has shown a
+    ~50-125 MB total while a download kept going past 250 MB. The manifest is
+    small and fetching it costs one extra round trip; a failure here just falls
+    back to the hardcoded guess (marked ``estimated``), never blocks the pull.
+    """
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            oras, "manifest", "fetch", "--output", "-", image,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+            env={**os.environ, **env},
+        )
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout=20)
+        if proc.returncode != 0:
+            return 0
+        manifest = json.loads(out)
+        total = int((manifest.get("config") or {}).get("size", 0) or 0)
+        total += sum(int((layer or {}).get("size", 0) or 0) for layer in manifest.get("layers") or [])
+        return total
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - best-effort size hint only
+        logger.debug("could not resolve the real size of %s: %s", image, exc)
+        return 0
+
+
+async def _oras_pull_retrying(*, retries: int = 2, backoff: float = 5.0, **kwargs: Any) -> bool:
+    """``oras_pull`` with a couple of retries for transient network failures.
+
+    ``oras pull`` streams over HTTP/2 through a registry/CDN, and a stream
+    reset mid-transfer (``stream error: stream ID 1; PROTOCOL_ERROR``) is a
+    known transient failure mode there — not a sign the artifact or the
+    network path is actually broken. Retrying the whole pull (oras has no
+    resume) turns "download 265 of 945 MB, hit a stream reset, fail the whole
+    job" into "retry and usually succeed a few seconds later". A deliberate
+    cancellation is not retried — it propagates immediately.
+    """
+    attempt = 0
+    while True:
+        attempt += 1
+        try:
+            ok = await oras_pull(**kwargs)
+        except asyncio.CancelledError:
+            raise
+        if ok or attempt > retries:
+            return ok
+        label = kwargs.get("label", "download")
+        logger.warning("%s: pull failed (attempt %d/%d), retrying in %.0fs",
+                        label, attempt, retries + 1, backoff)
+        await kwargs["emit"](
+            kwargs["progress_range"][0],
+            f"{label}: attempt {attempt} failed, retrying in {backoff:.0f}s",
+            {"scanner": kwargs.get("scanner", "trivy"), "stage": "connecting",
+             "artifact": label, "note": f"retry {attempt}/{retries}"},
+        )
+        await asyncio.sleep(backoff)
 
 
 async def _update_trivy(emit: ProgressCallback, env: dict[str, str]) -> dict[str, Any]:
@@ -113,15 +194,21 @@ async def _update_trivy(emit: ProgressCallback, env: dict[str, str]) -> dict[str
     if oras is not None:
         tmp = tempfile.mkdtemp(prefix="trivy-db-")
         try:
-            if not await oras_pull(oras, TRIVY_DB_IMAGE, tmp, expected_mb=TRIVY_DB_MB,
-                                   emit=emit, env=env, progress_range=(2, 35),
-                                   label="trivy-db", scanner="trivy"):
+            db_size = await _oras_manifest_size(oras, TRIVY_DB_IMAGE, env)
+            if not await _oras_pull_retrying(
+                oras=oras, image=TRIVY_DB_IMAGE, out_dir=tmp, expected_mb=TRIVY_DB_MB,
+                emit=emit, env=env, progress_range=(2, 35),
+                label="trivy-db", scanner="trivy", total_bytes=db_size,
+            ):
                 raise RuntimeError(f"oras pull {TRIVY_DB_IMAGE} failed")
             # The Java database is optional: without it Trivy still scans OS
             # packages and every non-Java language ecosystem.
-            java_ok = await oras_pull(oras, TRIVY_JAVA_DB_IMAGE, tmp, expected_mb=TRIVY_JAVA_DB_MB,
-                                      emit=emit, env=env, progress_range=(35, 46),
-                                      label="trivy-java-db", scanner="trivy")
+            java_size = await _oras_manifest_size(oras, TRIVY_JAVA_DB_IMAGE, env)
+            java_ok = await _oras_pull_retrying(
+                oras=oras, image=TRIVY_JAVA_DB_IMAGE, out_dir=tmp, expected_mb=TRIVY_JAVA_DB_MB,
+                emit=emit, env=env, progress_range=(35, 46),
+                label="trivy-java-db", scanner="trivy", total_bytes=java_size,
+            )
             await emit(46, "trivy: extracting database",
                        {"scanner": "trivy", "stage": "extracting"})
             db_tar, java_tar = Path(tmp) / "db.tar.gz", Path(tmp) / "javadb.tar.gz"

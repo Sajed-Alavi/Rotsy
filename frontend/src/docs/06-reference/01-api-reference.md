@@ -73,6 +73,30 @@ Authenticate with either the session cookie (browser) or a bearer [API token](/d
 | GET | `/api/jobs/{id}/stream` | `jobs:read` (SSE) |
 | POST | `/api/jobs/{id}/cancel` | `jobs:manage` |
 
+## Roles and access rules
+
+All require `roles:manage`.
+
+| Method | Path | Notes |
+|---|---|---|
+| GET | `/api/roles` | Each role carries `access_mode` (`unrestricted` \| `scoped`) |
+| POST | `/api/roles` | |
+| PATCH | `/api/roles/{id}` | |
+| DELETE | `/api/roles/{id}` | System roles are refused |
+| GET | `/api/roles/permissions` | The permission catalog |
+| GET | `/api/roles/actions` | The access-rule actions: `read`, `scan`, `delete` |
+| GET | `/api/roles/{id}/access-rules` | |
+| POST | `/api/roles/{id}/access-rules` | `{effect, repo_pattern, image_pattern, actions[], description}` |
+| PATCH | `/api/roles/{id}/access-rules/{rule_id}` | |
+| DELETE | `/api/roles/{id}/access-rules/{rule_id}` | |
+| POST | `/api/roles/{id}/access-rules/test` | `{repo, image}` → allowed actions + the rules that matched |
+
+`GET /api/users/{id}/effective-access?repo=&image=` (requires `users:manage`) resolves every role a user holds and reports which one produced the grant.
+
+Rules on the `admin` role are refused with 400 — see [the permission model](/docs/permission-model).
+
 ## Other
 
-Storage (`/api/storage/*`), metrics (`/api/metrics/*`), alerts (`/api/alerts`), retention (`/api/retention/*`), system (`/api/system/*`), users, roles and audit follow the same conventions. Prometheus metrics are exported at `/metrics/export`.
+Storage (`/api/storage/*`), metrics (`/api/metrics/*`), alerts (`/api/alerts`), retention (`/api/retention/*`), system (`/api/system/*`), users and audit follow the same conventions. Prometheus metrics are exported at `/metrics/export`.
+
+Endpoints returning per-repository or per-image data apply the caller's access rules to the response, including the repository lists themselves. Bulk operations that cannot be applied partially — `DELETE /api/scan/reports`, `POST /api/retention/run-all` — return 403 for a caller whose rules do not cover everything.

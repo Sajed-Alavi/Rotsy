@@ -6,7 +6,7 @@ import Modal from '../../../components/Modal.jsx';
 import Notice from '../../../components/Notice.jsx';
 import Section from '../../../components/Section.jsx';
 import { formatDateTime, relativeTime } from '../../../lib/format.js';
-import { useResource, useStatus } from '../../scan/hooks/useResource.js';
+import { useResource, useStatus } from '../../../lib/useResource.js';
 import { accessApi } from '../api.js';
 
 const INPUT = 'w-full border border-slate-300 bg-white px-2 py-1.5 font-mono text-xs text-slate-800 focus:border-sky-500 focus:outline-none dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200';

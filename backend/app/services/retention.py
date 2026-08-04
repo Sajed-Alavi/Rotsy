@@ -24,6 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..core.nexus_client import NexusClient
 from ..models import RetentionPolicy
 from .images import component_timestamps, delete_component, trigger_compact
+from . import make_emitter
 
 logger = logging.getLogger(__name__)
 
@@ -130,9 +131,7 @@ async def run_policy(
     Returns ``{repo, deleted, skipped, dry_run}``. When ``dry_run`` is true
     no deletion happens — the result lists what *would* be deleted.
     """
-    async def emit(p, m):
-        if on_progress is not None:
-            await on_progress(p, m)
+    emit = make_emitter(on_progress)
 
     await emit(0, f"listing components in {policy.repo}")
     components = await _collect_components(nexus, policy.repo)

@@ -223,6 +223,15 @@ class JobRunner:
         self._task: asyncio.Task | None = None
         self._stop = asyncio.Event()
         self._dedicated: aioredis.Redis | None = None
+        # job_id -> the asyncio.Task running its handler, for real cancellation.
+        # POST /jobs/{id}/cancel used to only flip the Redis status field and
+        # hope a handler noticed — nothing ever polled it, so a subprocess-backed
+        # handler (e.g. a database download) kept running in the background
+        # regardless of what the UI showed. This is a single-process worker (no
+        # --reload, no multi-worker uvicorn), so an in-process Task.cancel() is
+        # both sufficient and immediate: it interrupts the handler at its next
+        # await point rather than waiting on a polling interval.
+        self._running: dict[str, asyncio.Task] = {}
 
     def register(self, job_type: str, handler: JobHandler) -> None:
         self._handlers[job_type] = handler
@@ -283,13 +292,35 @@ class JobRunner:
                 except (ValueError, AttributeError):
                     logger.warning("Malformed job queue item: %r", value)
                     continue
-            asyncio.create_task(self._run_one(job_id, job_type))
+            task = asyncio.create_task(self._run_one(job_id, job_type))
+            self._running[job_id] = task
+            task.add_done_callback(lambda _t, jid=job_id: self._running.pop(jid, None))
+
+    def request_cancel(self, job_id: str) -> bool:
+        """Cancel a job's handler task in-process, if this worker owns it.
+
+        Returns whether a running task was found and cancelled. The Redis
+        status flip (so a cancellation requested before the worker even popped
+        the job off the queue still takes effect) is the caller's job — see
+        ``POST /jobs/{id}/cancel`` in routers/jobs.py.
+        """
+        task = self._running.get(job_id)
+        if task is None or task.done():
+            return False
+        task.cancel()
+        return True
 
     async def _run_one(self, job_id: str, job_type: str) -> None:
         r = self._cache.redis
         handler = self._handlers.get(job_type)
         job = await JobQueue(self._cache).get(job_id)
         if job is None or r is None:
+            return
+        if job.status == "cancelled":
+            # Cancelled while still queued (before this worker picked it up) —
+            # the status flip already happened via the cancel endpoint; there is
+            # no handler running yet to interrupt, so just honor it.
+            logger.info("Job %s was cancelled before it started running", job_id)
             return
 
         async def progress(percent: int, message: str, detail: dict | None = None) -> None:
@@ -331,6 +362,22 @@ class JobRunner:
             )
             await JobQueue(self._cache).push_event(job_id, {"type": "result", "result": result})
             logger.info("Job %s done", job_id)
+        except asyncio.CancelledError:
+            # Task.cancel() from request_cancel() lands here. The handler is
+            # expected to have killed any subprocess it owned on its way out
+            # (see run_streaming/oras_pull in services/scanning/db/process.py) —
+            # this is only responsible for the terminal job state, not process
+            # cleanup. Deliberately not re-raised: this task is what was
+            # cancelled, and swallowing it here is how that cancellation ends
+            # cleanly instead of surfacing as a "Job ... failed" error log.
+            logger.info("Job %s cancelled", job_id)
+            await r.hset(
+                f"job:{job_id}",
+                mapping={"status": "cancelled", "message": "cancelled by user", "updated_at": str(time.time())},
+            )
+            await JobQueue(self._cache).push_event(
+                job_id, {"type": "phase", "status": "cancelled", "message": "cancelled by user"},
+            )
         except Exception as exc:  # noqa: BLE001
             logger.exception("Job %s failed", job_id)
             await r.hset(

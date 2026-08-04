@@ -2,16 +2,21 @@
 
 from __future__ import annotations
 
+from dataclasses import asdict
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
-from ..dependencies import RequirePermission, get_session
-from ..models import Role, User
-from ..schemas.user import UserCreate, UserOut, UserUpdate
+from ..core.access_control import ACTIONS, MODE_UNRESTRICTED, explain
 from ..core.security import hash_password
+from ..dependencies import RequirePermission, get_current_user, get_session
+from ..models import Role, RoleAccessRule, User
+from ..schemas.role import EffectiveAccessOut, RoleAccessBreakdown, RuleMatchOut
+from ..schemas.user import UserCreate, UserOut, UserUpdate
+from ..services.audit import log_action
 
 router = APIRouter(
     prefix="/users",
@@ -38,6 +43,11 @@ async def _resolve_roles(session: AsyncSession, role_ids: list[int]) -> list[Rol
     return roles
 
 
+def _user_detail(user: User) -> str:
+    roles = ", ".join(sorted(r.name for r in user.roles)) or "no roles"
+    return f"{user.username} ({'active' if user.is_active else 'inactive'}; {roles})"
+
+
 @router.get("", response_model=list[UserOut])
 async def list_users(session: Annotated[AsyncSession, Depends(get_session)]):
     result = await session.execute(select(User).order_by(User.id))
@@ -48,6 +58,7 @@ async def list_users(session: Annotated[AsyncSession, Depends(get_session)]):
 async def create_user(
     body: UserCreate,
     session: Annotated[AsyncSession, Depends(get_session)],
+    actor: Annotated[User, Depends(get_current_user)],
 ):
     existing = await session.scalar(select(User).where((User.username == body.username) | (User.email == body.email)))
     if existing is not None:
@@ -63,6 +74,7 @@ async def create_user(
     session.add(user)
     await session.commit()
     await session.refresh(user)
+    await log_action(session, actor.username, "create", "user", user.id, _user_detail(user))
     return user
 
 
@@ -71,6 +83,7 @@ async def update_user(
     user_id: int,
     body: UserUpdate,
     session: Annotated[AsyncSession, Depends(get_session)],
+    actor: Annotated[User, Depends(get_current_user)],
 ):
     user = await _load_user_with_roles(session, user_id)
 
@@ -88,6 +101,7 @@ async def update_user(
 
     await session.commit()
     await session.refresh(user)
+    await log_action(session, actor.username, "update", "user", user.id, _user_detail(user))
     return user
 
 
@@ -95,7 +109,69 @@ async def update_user(
 async def delete_user(
     user_id: int,
     session: Annotated[AsyncSession, Depends(get_session)],
+    actor: Annotated[User, Depends(get_current_user)],
 ):
     user = await _load_user_with_roles(session, user_id)
+    username = user.username
     await session.delete(user)
     await session.commit()
+    await log_action(session, actor.username, "delete", "user", user_id, username)
+
+
+@router.get("/{user_id}/effective-access", response_model=EffectiveAccessOut)
+async def effective_access(
+    user_id: int,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    repo: Annotated[str, Query(min_length=1, max_length=255)],
+    image: Annotated[str, Query(min_length=1, max_length=255)],
+) -> EffectiveAccessOut:
+    """Answer "why can (or can't) this person reach that image", role by role.
+
+    Effective access is a union across roles, so when a grant is unexpected the
+    only useful question is *which* role produced it. That is what this returns.
+    """
+    user = await session.scalar(
+        select(User).options(selectinload(User.roles)).where(User.id == user_id)
+    )
+    if user is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "User not found.")
+
+    rules_by_role: dict[int, list[RoleAccessRule]] = {}
+    if user.roles:
+        rows = (await session.execute(
+            select(RoleAccessRule).where(RoleAccessRule.role_id.in_([r.id for r in user.roles]))
+        )).scalars().all()
+        for rule in rows:
+            rules_by_role.setdefault(rule.role_id, []).append(rule)
+
+    unrestricted = False
+    union: set[str] = set()
+    breakdown: list[RoleAccessBreakdown] = []
+    matched: list[RuleMatchOut] = []
+
+    for role in user.roles:
+        applied, allowed = explain(rules_by_role.get(role.id, []), repo, image)
+        # No rule speaking to this repository puts the role on its mode fallback.
+        role_open = not applied and role.access_mode == MODE_UNRESTRICTED
+        if role_open:
+            unrestricted = True
+        role_actions = list(ACTIONS) if role_open else [a for a in ACTIONS if a in allowed]
+        union.update(role_actions)
+        rule_matches = [RuleMatchOut(**asdict(match)) for match in applied]
+        matched.extend(rule_matches)
+        breakdown.append(RoleAccessBreakdown(
+            role_id=role.id,
+            role_name=role.name,
+            access_mode=role.access_mode,
+            allowed_actions=role_actions,
+            matched_rules=rule_matches,
+        ))
+
+    return EffectiveAccessOut(
+        repo=repo,
+        image=image,
+        unrestricted=unrestricted,
+        allowed_actions=[a for a in ACTIONS if a in union],
+        matched_rules=matched,
+        by_role=breakdown,
+    )

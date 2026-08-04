@@ -35,6 +35,7 @@ is enforced in code and pointed at below.
 - [Architecture](#architecture)
 - [Browsing images](#browsing-images)
 - [Deleting images](#deleting-images)
+- [Access control](#access-control)
 - [How scanning is triggered](#how-scanning-is-triggered)
 - [Zero-configuration registry discovery](#zero-configuration-registry-discovery)
 - [Static-only guarantee](#static-only-guarantee)
@@ -166,6 +167,39 @@ image's only tag. Components whose age Nexus does not report are never deleted b
 an age rule; the run reports them as skipped rather than guessing.
 
 ---
+
+## Access control
+
+Two independent axes, modelled on JFrog Artifactory's permission targets.
+
+**Permissions** are `resource:action` keys on a role (`scan:execute`,
+`repositories:write`, …) and answer *what* a user may do. **Access rules** are
+also attached to roles and answer *where* those actions reach:
+
+```
+<allow|deny>  <read,scan,delete>  on  <repo pattern> / <image pattern>
+```
+
+Patterns are Ant-style — `*` matches any characters except `/`, `**` crosses
+it, `?` is one character — and cover both dimensions, so one rule can span
+every repository matching `prod-*` without being rewritten each time a
+repository is added. Within a role a deny beats an allow, which is how
+"everything except `*-secrets`" is expressed. The three actions are
+independent: a team can be given `read` and `scan` on its own images without
+`delete`.
+
+A role with no rule matching a repository falls back to its access mode:
+`unrestricted` (that repository stays open — the default, and what the seeded
+admin/operator/viewer roles carry) or `scoped` (deny by default). Effective
+access is the union across a user's roles, so scoping one role only bites once
+the baseline roles those users also hold are set to `scoped`.
+
+Rules gate the repository lists themselves, not only their contents, and
+repository-wide operations (retention policies, enabling scanning, bulk report
+deletion) require access to the whole repository rather than part of it.
+
+Full reference, wildcard tables and worked examples are in the in-app docs at
+**/docs/permission-model** and **/docs/access-rules-cookbook**.
 
 ## How scanning is triggered
 
@@ -320,6 +354,14 @@ than download. The on-demand import always works regardless.
 - Docker + Docker Compose
 - A reachable Nexus Repository Manager with at least one **Docker** repository
 - A Nexus account with repository-admin read privileges (for discovery)
+
+For local (non-Docker) development only — Docker deployment needs none of
+these locally, since the images pin their own runtimes:
+
+- Python **3.13** (backend/Dockerfile pins `python:3.13.14-slim-bookworm`)
+- Node.js **24** LTS "Krypton" (frontend/Dockerfile pins `node:24.16.0-alpine`)
+- PostgreSQL 16, Redis 7 (or use the `postgres`/`redis` services in
+  `docker-compose.yml`)
 
 ### 1. Configure
 

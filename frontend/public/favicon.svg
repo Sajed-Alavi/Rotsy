@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <!--
+    Favicon variant of the Sharpy mark. Deliberately simpler than
+    src/components/Logo.jsx: at 16px the globe wireframe and the cube facets
+    collapse into noise, so only the shield, one cube and the arrow survive.
+    Keep the two in visual sync when either changes.
+  -->
+  <defs>
+    <linearGradient id="s" x1="32" y1="2" x2="32" y2="62" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#1e3a8a"/>
+      <stop offset="1" stop-color="#0a1230"/>
+    </linearGradient>
+    <linearGradient id="c" x1="18" y1="18" x2="46" y2="46" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#a5f3fc"/>
+      <stop offset="1" stop-color="#38bdf8"/>
+    </linearGradient>
+    <linearGradient id="a" x1="10" y1="54" x2="58" y2="10" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#6d28d9"/>
+      <stop offset="1" stop-color="#c084fc"/>
+    </linearGradient>
+  </defs>
+
+  <path d="M32 2 60 12v20c0 15.5-11.3 26.4-28 31.5C15.3 58.4 4 47.5 4 32V12z"
+        fill="url(#s)" stroke="#38bdf8" stroke-width="2.5" stroke-linejoin="round"/>
+  <path d="M32 17 43 23.5v13L32 43l-11-6.5v-13z"
+        fill="url(#c)" stroke="#e0f2fe" stroke-width="1.6" stroke-linejoin="round"/>
+  <path d="M11 49c8-10 14.5-4.5 20.5-10.5S45 20 54 12"
+        stroke="url(#a)" stroke-width="9" stroke-linecap="round" fill="none"/>
+  <path d="M41 11 60 8l-3 19z" fill="#a855f7"/>
+</svg>

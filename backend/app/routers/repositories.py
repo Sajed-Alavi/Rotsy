@@ -21,12 +21,11 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..core.image_scope import allowed_image_patterns, image_visible
-from ..core.nexus_client import NexusClient
-from ..dependencies import RequirePermission, get_current_user, get_session
-from ..models import User
+from ..core.access_control import DELETE, READ, AccessResolver
+from ..dependencies import RequirePermission, get_access, get_session
 from ..services import images, nexus_security
-from ..state import app_state
+from ..services.scanning import events as scan_events
+from ..state import app_state, require_nexus
 
 logger = logging.getLogger(__name__)
 
@@ -36,20 +35,18 @@ _REPOS_CACHE_KEY = "nexus:repositories"
 _REPO_LIST_TTL = 30
 
 
-async def _nexus(request: Request) -> NexusClient:
-    client = app_state(request).nexus
-    if client is None:
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Nexus client not initialised")
-    return client
-
-
 @router.get("", dependencies=[Depends(RequirePermission("repositories:read"))])
 async def list_repositories(
     request: Request,
+    access: Annotated[AccessResolver, Depends(get_access)],
     format_filter: Annotated[str | None, Query(alias="format", description="Filter by repository format, e.g. 'docker'")] = None,
     refresh: Annotated[bool, Query(description="Bypass/refresh the cache")] = False,
 ) -> list[dict[str, Any]]:
-    """List Nexus repositories, optionally filtered by format."""
+    """List Nexus repositories, optionally filtered by format.
+
+    Repositories no access rule of the caller's reaches are omitted: a scoped
+    user has no business learning the names of repositories they cannot open.
+    """
     cache = app_state(request).cache
     if refresh:
         await cache.delete(_REPOS_CACHE_KEY)
@@ -58,26 +55,27 @@ async def list_repositories(
     if cached is not None:
         repos = cached
     else:
-        nexus = await _nexus(request)
+        nexus = require_nexus(request)
         try:
             resp = await nexus.client.get("/service/rest/v1/repositories")
             resp.raise_for_status()
         except Exception as exc:  # noqa: BLE001
             logger.warning("Failed to list repositories: %s", exc)
-            raise HTTPException(status.HTTP_502_BAD_GATEWAY, "Failed to contact Nexus")
+            raise HTTPException(status.HTTP_502_BAD_GATEWAY, "Failed to contact Nexus") from exc
         repos = resp.json()
         await cache.set_json(_REPOS_CACHE_KEY, repos, ttl=_REPO_LIST_TTL)
     if format_filter:
         repos = [r for r in repos if r.get("format") == format_filter]
-    return repos
+    # The cache is shared and unfiltered; scoping is applied per response so one
+    # user's narrow view can never be served to another.
+    return [r for r in repos if access.repo(r.get("name") or "").visible]
 
 
 @router.get("/{name}/images", dependencies=[Depends(RequirePermission("repositories:read"))])
 async def list_repository_images(
     request: Request,
     name: str,
-    user: Annotated[User, Depends(get_current_user)],
-    session: Annotated[AsyncSession, Depends(get_session)],
+    access: Annotated[AccessResolver, Depends(get_access)],
 ) -> list[dict[str, Any]]:
     """List a repository's contents as images and tags rather than raw blobs.
 
@@ -86,20 +84,20 @@ async def list_repository_images(
     repository holds. This returns the image → tag structure with each tag's
     push time, size and component id (the handle needed to delete it).
 
-    Images outside the caller's image-scope patterns for this repo (if any
-    of their roles are scoped here) are omitted entirely.
+    Images the caller's access rules do not reach are omitted entirely.
     """
-    nexus = await _nexus(request)
+    allowed = access.repo(name)
+    if allowed.blocks_everything:
+        return []  # nothing here is reachable — skip the Nexus round-trip
+
+    nexus = require_nexus(request)
     try:
         result = await images.list_images(nexus, name)
     except Exception as exc:  # noqa: BLE001
         logger.warning("Failed to list images for %s: %s", name, exc)
-        raise HTTPException(status.HTTP_502_BAD_GATEWAY, f"Failed to list images: {exc}")
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, f"Failed to list images: {exc}") from exc
 
-    patterns = await allowed_image_patterns(session, user, name)
-    if patterns is None:
-        return result
-    return [img for img in result if image_visible(patterns, img["name"])]
+    return allowed.filter(result)
 
 
 class ComponentDelete(BaseModel):
@@ -118,7 +116,7 @@ async def delete_repository_images(
     request: Request,
     name: str,
     body: ComponentDelete,
-    user: Annotated[User, Depends(get_current_user)],
+    access: Annotated[AccessResolver, Depends(get_access)],
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> dict[str, Any]:
     """Delete specific image tags, reporting the outcome of each one.
@@ -129,26 +127,39 @@ async def delete_repository_images(
 
     Each component id's owning image is resolved server-side (never trust a
     client-supplied image name for a security check) and checked against the
-    caller's image-scope patterns for this repo before anything is deleted.
-    """
-    nexus = await _nexus(request)
+    caller's ``delete`` access for this repo before anything is deleted. Reading
+    an image and deleting it are separate actions, so a read-only rule is not
+    enough to get here.
 
-    patterns = await allowed_image_patterns(session, user, name)
-    if patterns is not None:
-        current_images = await images.list_images(nexus, name)
-        owner_by_component_id = {
-            tag["component_id"]: img["name"]
-            for img in current_images
-            for tag in img["tags"]
-        }
+    Deleting a tag from Nexus also forgets it in the scan ledger (see
+    ``forget_deleted_images``) — otherwise the vulnerability-scanning tree kept
+    showing a tag, its reports and its CVEs for an image that no longer exists
+    in the registry.
+    """
+    nexus = require_nexus(request)
+
+    # Always resolved (not only when access is restricted): deleting the scan
+    # ledger afterward needs "name:tag" per component id regardless of whether
+    # a permission check ran.
+    current_images = await images.list_images(nexus, name)
+    tag_by_component_id: dict[str, tuple[str, str]] = {
+        tag["component_id"]: (img["name"], tag["tag"])
+        for img in current_images
+        for tag in img["tags"]
+    }
+
+    allowed = access.repo(name)
+    if not allowed.unrestricted:
         denied = [
             cid for cid in body.component_ids
-            if cid not in owner_by_component_id or not image_visible(patterns, owner_by_component_id[cid])
+            if cid not in tag_by_component_id
+            or not allowed.allows(tag_by_component_id[cid][0], DELETE)
         ]
         if denied:
             raise HTTPException(
                 status.HTTP_403_FORBIDDEN,
-                f"Not permitted to delete {len(denied)} of the requested component(s) — outside your image scope for '{name}'.",
+                f"Not permitted to delete {len(denied)} of the requested component(s) — "
+                f"outside what your access rules allow you to delete in '{name}'.",
             )
 
     result = await images.delete_components(nexus, body.component_ids)
@@ -159,6 +170,20 @@ async def delete_repository_images(
         cache = app_state(request).cache
         if cache is not None:
             await cache.delete(_REPOS_CACHE_KEY, "nexus:all-repos")
+
+        deleted_images = [
+            f"{img_name}:{tag}"
+            for cid in result["deleted"]
+            if (owner := tag_by_component_id.get(cid)) is not None
+            for img_name, tag in [owner]
+        ]
+        try:
+            result["scan_ledger_removed"] = await scan_events.forget_deleted_images(
+                session, repo=name, images=deleted_images,
+            )
+        except Exception:  # noqa: BLE001 - the Nexus delete already succeeded; don't fail the request over ledger cleanup
+            logger.exception("Could not clean up scan ledger for deleted images in '%s'", name)
+            result["scan_ledger_removed"] = 0
     return result
 
 
@@ -166,8 +191,7 @@ async def delete_repository_images(
 async def list_assets(
     request: Request,
     name: str,
-    user: Annotated[User, Depends(get_current_user)],
-    session: Annotated[AsyncSession, Depends(get_session)],
+    access: Annotated[AccessResolver, Depends(get_access)],
     continuation_token: Annotated[str | None, Query(alias="continuationToken")] = None,
 ) -> dict[str, Any]:
     """Paginated asset list for a repository.
@@ -176,10 +200,14 @@ async def list_assets(
     fields the UI needs: path, downloadUrl, fileSize, contentType, uploader,
     timestamps, checksums. The frontend uses ``continuationToken`` to load more.
 
-    Items outside the caller's image-scope patterns for this repo (if any of
-    their roles are scoped here) are omitted, same as ``GET /{name}/images``.
+    Items the caller's access rules do not reach are omitted, same as
+    ``GET /{name}/images``.
     """
-    nexus = await _nexus(request)
+    allowed = access.repo(name)
+    if allowed.blocks_everything:
+        return {"items": [], "continuationToken": None}
+
+    nexus = require_nexus(request)
     params: dict[str, Any] = {"repository": name}
     if continuation_token:
         params["continuationToken"] = continuation_token
@@ -188,22 +216,18 @@ async def list_assets(
         resp.raise_for_status()
     except Exception as exc:  # noqa: BLE001
         logger.warning("Failed to list assets for %s: %s", name, exc)
-        raise HTTPException(status.HTTP_502_BAD_GATEWAY, "Failed to list assets")
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, "Failed to list assets") from exc
     result = resp.json()
 
-    patterns = await allowed_image_patterns(session, user, name)
-    if patterns is not None:
-        # One authoritative lookup covers the whole page — see
-        # _owning_image() for why the raw path is not trusted here.
+    if not allowed.unrestricted:
+        # One authoritative lookup covers the whole page — see _owning_image()
+        # for why the raw path is not trusted here. Unattributed assets are
+        # dropped rather than shown: we cannot demonstrate they are in scope.
         image_map = await images.asset_image_map(nexus, name)
-        visible = []
-        for item in result.get("items") or []:
-            owner = _owning_image(image_map, item.get("path", ""))
-            # Unattributed assets are dropped rather than shown: we cannot
-            # demonstrate they are inside the caller's scope.
-            if owner is not None and image_visible(patterns, owner):
-                visible.append(item)
-        result["items"] = visible
+        result["items"] = allowed.filter(
+            result.get("items") or [],
+            key=lambda item: _owning_image(image_map, item.get("path", "")),
+        )
     return result
 
 
@@ -242,8 +266,7 @@ def _validated_repository_path(name: str, path: str) -> str:
 async def download_asset(
     request: Request,
     name: str,
-    user: Annotated[User, Depends(get_current_user)],
-    session: Annotated[AsyncSession, Depends(get_session)],
+    access: Annotated[AccessResolver, Depends(get_access)],
     path: Annotated[str, Query(description="Asset path within the repository, e.g. '/foo/bar.jar'")] = "",
 ) -> StreamingResponse:
     """Stream an asset from Nexus to the browser (authenticated proxy).
@@ -256,18 +279,18 @@ async def download_asset(
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Query parameter 'path' is required.")
     # Validate before any Nexus call is made with this repo/path pair.
     validated_url = _validated_repository_path(name, path)
-    nexus = await _nexus(request)
+    nexus = require_nexus(request)
 
-    patterns = await allowed_image_patterns(session, user, name)
-    if patterns is not None:
+    allowed = access.repo(name)
+    if not allowed.unrestricted:
         # Ask Nexus which image owns this exact asset rather than inferring it
         # from the path the caller supplied.
         image_map = await images.asset_image_map(nexus, name)
         owner = _owning_image(image_map, path)
-        if owner is None or not image_visible(patterns, owner):
+        if owner is None or not allowed.allows(owner, READ):
             raise HTTPException(
                 status.HTTP_403_FORBIDDEN,
-                f"'{owner or path}' is outside your image scope for '{name}'.",
+                f"'{owner or path}' is outside your access rules for '{name}'.",
             )
     # Nexus serves assets at /repository/{repo}{path}. Validated above so the
     # normalized path cannot escape this repository's prefix.
@@ -392,7 +415,7 @@ def _build_repo_payload(body: RepoCreate) -> dict[str, Any]:
              dependencies=[Depends(RequirePermission("repositories:write"))])
 async def create_repository(request: Request, body: RepoCreate) -> dict[str, Any]:
     """Create a hosted/proxy/group repository for the given format."""
-    nexus = await _nexus(request)
+    nexus = require_nexus(request)
     endpoint = f"/service/rest/v1/repositories/{body.format.lower()}/{body.type.lower()}"
     payload = _build_repo_payload(body)
     try:
@@ -430,9 +453,18 @@ async def create_repository(request: Request, body: RepoCreate) -> dict[str, Any
 
 @router.delete("/{name}", status_code=status.HTTP_204_NO_CONTENT,
                dependencies=[Depends(RequirePermission("repositories:write"))])
-async def delete_repository(request: Request, name: str):
-    """Delete a repository by name."""
-    nexus = await _nexus(request)
+async def delete_repository(
+    request: Request,
+    name: str,
+    session: Annotated[AsyncSession, Depends(get_session)],
+):
+    """Delete a repository by name.
+
+    Also forgets it in the scan ledger (see ``forget_repository``) — otherwise
+    every image the repository ever contained kept showing up in the
+    vulnerability-scanning tree after the repository itself was gone.
+    """
+    nexus = require_nexus(request)
     try:
         resp = await nexus.client.delete(f"/service/rest/v1/repositories/{name}")
     except Exception as exc:  # noqa: BLE001
@@ -441,6 +473,10 @@ async def delete_repository(request: Request, name: str):
         cache = app_state(request).cache
         if cache is not None:
             await cache.delete(_REPOS_CACHE_KEY)
+        try:
+            await scan_events.forget_repository(session, repo=name)
+        except Exception:  # noqa: BLE001 - the Nexus delete already succeeded; don't fail the request over ledger cleanup
+            logger.exception("Could not clean up scan ledger for deleted repository '%s'", name)
         return
     if resp.status_code == 404:
         raise HTTPException(status.HTTP_404_NOT_FOUND, f"Repository '{name}' not found")

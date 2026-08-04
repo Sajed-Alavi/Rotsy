@@ -1,5 +1,6 @@
 import { useNavigate } from 'react-router';
 import Icon from './Icon.jsx';
+import { LogoMark } from './Logo.jsx';
 import { useAuth } from '../context/AuthContext.jsx';
 import { useTheme } from '../context/ThemeContext.jsx';
 
@@ -16,7 +17,12 @@ export default function TopBar() {
 
   return (
     <header className="flex h-12 items-center justify-between border-b border-slate-200 bg-white px-4 dark:border-slate-800 dark:bg-slate-950">
-      <div className="font-mono text-xs text-slate-400 dark:text-slate-600">sharpy · sonatype nexus console</div>
+      <div className="flex items-center gap-2">
+        <LogoMark size={16} className="opacity-70" />
+        <span className="font-mono text-xs text-slate-400 dark:text-slate-600">
+          sharpy · sonatype nexus console
+        </span>
+      </div>
       <div className="flex items-center gap-2">
         <button
           onClick={toggleTheme}

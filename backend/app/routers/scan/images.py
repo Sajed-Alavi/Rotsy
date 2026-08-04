@@ -9,14 +9,18 @@ from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...config import Settings
-from ...core.image_scope import allowed_image_patterns, image_visible
-from ...dependencies import RequirePermission, get_current_user, get_session, get_settings
-from ...models import ScannedImage, ScanReport, User
+from ...core.access_control import SCAN, AccessResolver
+from ...dependencies import RequirePermission, get_access, get_session, get_settings
+from ...models import ScannedImage, ScanReport
 from ...schemas.scan import ScanRequest
 from ...services.scanning import events as scan_events
 from ._common import default_scanners, require_backend
 
 router = APIRouter()
+
+# How much extra to read before access filtering so a full page can still be
+# returned. Three pages covers a caller who can see a third of the ledger.
+_OVERFETCH = 3
 
 
 async def _latest_reports(
@@ -52,7 +56,7 @@ async def _latest_reports(
 @router.get("/images", dependencies=[Depends(RequirePermission("scan:read"))])
 async def list_known_images(
     session: Annotated[AsyncSession, Depends(get_session)],
-    user: Annotated[User, Depends(get_current_user)],
+    access: Annotated[AccessResolver, Depends(get_access)],
     repo: Annotated[str | None, Query(description="Filter to one repository")] = None,
     state: Annotated[str | None, Query(description="baseline | queued | scanned | failed")] = None,
     limit: Annotated[int, Query(ge=1, le=500)] = 200,
@@ -67,25 +71,18 @@ async def list_known_images(
       * ``scanned``  — scanned successfully; will not be re-scanned implicitly.
       * ``failed``   — the last attempt failed; see the report for the reason.
 
-    Entries outside the caller's image-scope patterns for their repo (if any
-    of their roles are scoped there) are omitted.
+    Entries the caller's access rules do not reach are omitted.
     """
-    stmt = select(ScannedImage).order_by(desc(ScannedImage.first_seen_at)).limit(limit)
+    stmt = select(ScannedImage).order_by(desc(ScannedImage.first_seen_at))
     if repo:
         stmt = stmt.where(ScannedImage.repo == repo)
     if state:
         stmt = stmt.where(ScannedImage.state == state)
-    entries = (await session.execute(stmt)).scalars().all()
 
-    # Patterns per distinct repo, computed once rather than per-row.
-    patterns_by_repo: dict[str, list[str] | None] = {}
-    visible_entries = []
-    for entry in entries:
-        if entry.repo not in patterns_by_repo:
-            patterns_by_repo[entry.repo] = await allowed_image_patterns(session, user, entry.repo)
-        if image_visible(patterns_by_repo[entry.repo], entry.image):
-            visible_entries.append(entry)
-    entries = visible_entries
+    # Over-fetch, filter, then trim. Filtering a LIMITed page would hand a scoped
+    # caller short pages whose length leaks how much is being hidden from them.
+    rows = (await session.execute(stmt.limit(limit * _OVERFETCH))).scalars().all()
+    entries = [row for row in rows if access.repo(row.repo).allows(row.image)][:limit]
 
     reports = await _latest_reports(session, [(e.repo, e.image) for e in entries])
     out: list[dict[str, Any]] = []
@@ -122,16 +119,18 @@ async def scan_one_image(
     body: ScanRequest,
     session: Annotated[AsyncSession, Depends(get_session)],
     settings: Annotated[Settings, Depends(get_settings)],
-    user: Annotated[User, Depends(get_current_user)],
+    access: Annotated[AccessResolver, Depends(get_access)],
 ) -> dict[str, Any]:
     """Trigger (b): scan one image because an operator asked.
 
     The only path that may re-scan an image that is already scanned or
     baselined — an explicit request is always honoured.
     """
-    patterns = await allowed_image_patterns(session, user, body.repo)
-    if not image_visible(patterns, body.image):
-        raise HTTPException(status.HTTP_403_FORBIDDEN, f"'{body.image}' is outside your image scope for '{body.repo}'.")
+    if not access.repo(body.repo).allows(body.image, SCAN):
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            f"'{body.image}' is outside what your access rules let you scan in '{body.repo}'.",
+        )
 
     _, cache = require_backend(request)
     return await scan_events.request_manual_scan(

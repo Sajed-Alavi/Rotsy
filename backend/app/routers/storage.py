@@ -20,14 +20,12 @@ from typing import Annotated, Any, AsyncIterator
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sse_starlette.sse import EventSourceResponse
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import Settings, get_settings
-from ..core.image_scope import allowed_image_patterns, image_visible
+from ..core.access_control import AccessResolver, RepoAccess
 from ..core.sse import event
-from ..dependencies import RequirePermission, get_current_user, get_session
-from ..models import User
-from ..state import app_state
+from ..dependencies import RequirePermission, get_access
+from ..state import app_state, require_nexus
 from ..services.storage_analyzer import StorageAnalyzer
 
 logger = logging.getLogger(__name__)
@@ -44,8 +42,8 @@ def _result_cache_key(repo: str) -> str:
     return f"analysis:{repo}"
 
 
-def _scope_result(result: dict[str, Any], patterns: list[str] | None) -> dict[str, Any]:
-    """Apply image-scope filtering to an analyzer result.
+def _scope_result(result: dict[str, Any], access: RepoAccess) -> dict[str, Any]:
+    """Apply access-rule filtering to an analyzer result.
 
     The analyzer cache is shared/unfiltered per repo across every user, so
     this is applied as a post-processing step at every response point rather
@@ -56,9 +54,9 @@ def _scope_result(result: dict[str, Any], patterns: list[str] | None) -> dict[st
     view reports ``active_bytes == total_bytes`` and ``wasted_bytes == 0``
     rather than a misleading, precise-looking number.
     """
-    if patterns is None:
+    if access.unrestricted:
         return result
-    items = [it for it in result.get("items", []) if image_visible(patterns, it.get("name", ""))]
+    items = access.filter(result.get("items", []))
     total_bytes = sum(it.get("total_bytes", 0) for it in items)
     scoped = dict(result)
     scoped["items"] = items
@@ -74,10 +72,7 @@ def _scope_result(result: dict[str, Any], patterns: list[str] | None) -> dict[st
 
 def _analyzer(request: Request, settings: Settings) -> StorageAnalyzer:
     """Build a StorageAnalyzer bound to this request's Nexus client + settings."""
-    nexus = app_state(request).nexus
-    if nexus is None:
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Nexus client not initialised")
-    return StorageAnalyzer(nexus, max_concurrency=settings.ANALYZER_MAX_CONCURRENCY)
+    return StorageAnalyzer(require_nexus(request), max_concurrency=settings.ANALYZER_MAX_CONCURRENCY)
 
 
 class _InFlight:
@@ -148,6 +143,7 @@ async def _await_result(queue: "asyncio.Queue[dict[str, Any]]") -> dict[str, Any
 @router.get("/repos", dependencies=[Depends(RequirePermission("storage:read"))])
 async def list_all_repos(
     request: Request,
+    access: Annotated[AccessResolver, Depends(get_access)],
     refresh: Annotated[bool, Query(description="Bypass/refresh the cache")] = False,
     format_filter: Annotated[str | None, Query(alias="format", description="Filter by format: docker, maven2, nuget, etc.")] = None,
 ) -> list[dict[str, Any]]:
@@ -155,6 +151,10 @@ async def list_all_repos(
 
     ``?format=docker`` returns only Docker repos (for the scanner dropdown).
     ``?refresh=true`` bypasses the cache.
+
+    Repositories the caller's access rules do not reach are omitted. The cache
+    is shared across users, so filtering happens on the way out — never on the
+    way in, or one user's narrow view would be served to the next caller.
     """
     cache = app_state(request).cache
 
@@ -167,15 +167,15 @@ async def list_all_repos(
             repos = cached
             if format_filter:
                 repos = [r for r in repos if r.get("format") == format_filter]
-            return repos
+            return _visible(access, repos)
 
-    nexus = app_state(request).nexus
+    nexus = require_nexus(request)
     try:
         resp = await nexus.client.get("/service/rest/v1/repositories")
         resp.raise_for_status()
     except Exception as exc:  # noqa: BLE001
         logger.warning("Failed to list repositories: %s", exc)
-        raise HTTPException(status.HTTP_502_BAD_GATEWAY, "Failed to contact Nexus")
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, "Failed to contact Nexus") from exc
 
     repos = [
         {"name": r.get("name"), "format": r.get("format"), "type": r.get("type")}
@@ -188,23 +188,25 @@ async def list_all_repos(
 
     if format_filter:
         repos = [r for r in repos if r.get("format") == format_filter]
-    return repos
+    return _visible(access, repos)
+
+
+def _visible(access: AccessResolver, repos: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [r for r in repos if access.repo(r.get("name") or "").visible]
 
 
 @router.get("/{repo}/result", dependencies=[Depends(RequirePermission("storage:read"))])
 async def get_cached_result(
     request: Request,
     repo: str,
-    user: Annotated[User, Depends(get_current_user)],
-    session: Annotated[AsyncSession, Depends(get_session)],
+    access: Annotated[AccessResolver, Depends(get_access)],
 ) -> dict[str, Any]:
     """Return the cached analysis result for ``repo``, or 404 if none yet."""
     cache = app_state(request).cache
     cached = await cache.get_json(_result_cache_key(repo))
     if cached is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, f"No cached analysis for '{repo}'.")
-    patterns = await allowed_image_patterns(session, user, repo)
-    return _scope_result(cached, patterns)
+    return _scope_result(cached, access.repo(repo))
 
 
 @router.get("/{repo}/analyze", dependencies=[Depends(RequirePermission("storage:analyze"))])
@@ -212,19 +214,18 @@ async def analyze(
     request: Request,
     repo: str,
     settings: Annotated[Settings, Depends(get_settings)],
-    user: Annotated[User, Depends(get_current_user)],
-    session: Annotated[AsyncSession, Depends(get_session)],
+    access: Annotated[AccessResolver, Depends(get_access)],
     use_cache: Annotated[bool, Query(description="Return cached result if available")] = True,
     format: Annotated[str | None, Query(description="Known repo format — skips an extra lookup")] = None,
 ) -> dict[str, Any]:
     """Run the analysis (non-streaming), cache it, and return the JSON result."""
     cache = app_state(request).cache
-    patterns = await allowed_image_patterns(session, user, repo)
+    allowed = access.repo(repo)
 
     if use_cache:
         cached = await cache.get_json(_result_cache_key(repo))
         if cached is not None:
-            return _scope_result(cached, patterns)
+            return _scope_result(cached, allowed)
 
     analyzer = _analyzer(request, settings)
     _, queue = _join_or_start(repo, analyzer, format, cache)
@@ -233,7 +234,7 @@ async def analyze(
     except Exception as exc:  # noqa: BLE001
         logger.exception("Analysis failed for %s", repo)
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, f"Analysis failed: {exc}") from exc
-    return _scope_result(result, patterns)
+    return _scope_result(result, allowed)
 
 
 @router.get("/{repo}/analyze/stream", dependencies=[Depends(RequirePermission("storage:analyze"))])
@@ -241,8 +242,7 @@ async def analyze_stream(
     request: Request,
     repo: str,
     settings: Annotated[Settings, Depends(get_settings)],
-    user: Annotated[User, Depends(get_current_user)],
-    session: Annotated[AsyncSession, Depends(get_session)],
+    access: Annotated[AccessResolver, Depends(get_access)],
     use_cache: Annotated[bool, Query(description="Emit a 'cache' event and return cached result if available")] = True,
     format: Annotated[str | None, Query(description="Known repo format — skips an extra lookup")] = None,
 ) -> EventSourceResponse:
@@ -254,13 +254,15 @@ async def analyze_stream(
     starting a second, independent analysis.
     """
     cache = app_state(request).cache
-    patterns = await allowed_image_patterns(session, user, repo)
+    # Resolved outside the generator: the request scope (and its DB session) is
+    # gone by the time the SSE body streams.
+    allowed = access.repo(repo)
 
     async def event_generator() -> AsyncIterator[dict[str, Any]]:
         if use_cache:
             cached = await cache.get_json(_result_cache_key(repo))
             if cached is not None:
-                yield event("cache", {"message": "Returning cached result", "result": _scope_result(cached, patterns)})
+                yield event("cache", {"message": "Returning cached result", "result": _scope_result(cached, allowed)})
                 return
 
         analyzer = _analyzer(request, settings)
@@ -292,7 +294,7 @@ async def analyze_stream(
                 # otherwise, which JSON.parse rejects).
                 ev_type = ev.pop("type", "progress")
                 if ev_type == "result" and "result" in ev:
-                    ev["result"] = _scope_result(ev["result"], patterns)
+                    ev["result"] = _scope_result(ev["result"], allowed)
                 yield event(ev_type, ev)
 
             if analyzer_error is not None:

@@ -38,9 +38,17 @@ Generate secrets with `openssl rand -hex 32`.
 |---|---|
 | `OUTBOUND_ALLOWED_HOSTS` | Comma-separated hosts exempt from the SSRF guard, for legitimate internal webhook and sync targets |
 
+## Backups
+
+| Variable | Default | Notes |
+|---|---|---|
+| `BACKUP_OUTPUT_DIR` | `/app/backups` | Where archive runs are written — the dedicated backup volume mounts here |
+| `BACKUP_MIN_FREE_BYTES` | `536870912` (512MB) | Abort a run rather than fill the volume to zero |
+| `BACKUP_SCHEDULER_POLL_SECONDS` | `60` | How often the scheduled-backup loop checks for due schedules; independent schedules can each have their own cadence, so this polls rather than sleeping until one shared time |
+
 ## Other
 
-Metric collection interval and retention, retention sweep time, backup free-space floor and job concurrency are all in `.env.example` with inline comments.
+Metric collection interval and retention, retention sweep time, and job concurrency are all in `.env.example` with inline comments.
 
 ## Image pinning
 

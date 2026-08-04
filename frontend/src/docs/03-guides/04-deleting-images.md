@@ -22,4 +22,4 @@ For anything beyond a handful of tags, use [retention policies](/docs/retention-
 
 ## Permissions
 
-Deleting requires `repositories:write`. If your role carries image scopes, you can only delete images matching your patterns.
+Deleting requires `repositories:write` **and** an access rule granting the `delete` action on the image. Reading and deleting are separate grants, so a read-only rule is not enough — see [the permission model](/docs/permission-model).

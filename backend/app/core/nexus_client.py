@@ -40,16 +40,6 @@ class NexusRuntimeConfig:
     NEXUS_VERIFY_SSL: bool
     ANALYZER_REQUEST_TIMEOUT: int
 
-    @classmethod
-    def from_settings(cls, settings: Settings) -> NexusRuntimeConfig:
-        return cls(
-            NEXUS_URL=settings.NEXUS_URL.rstrip("/"),
-            NEXUS_USERNAME=settings.NEXUS_USERNAME,
-            NEXUS_PASSWORD=settings.NEXUS_PASSWORD,
-            NEXUS_VERIFY_SSL=settings.NEXUS_VERIFY_SSL,
-            ANALYZER_REQUEST_TIMEOUT=settings.ANALYZER_REQUEST_TIMEOUT,
-        )
-
 
 # Accept headers used when talking to the Docker v2 registry endpoints. These
 # request the manifest formats we know how to parse in ``storage_analyzer`` —

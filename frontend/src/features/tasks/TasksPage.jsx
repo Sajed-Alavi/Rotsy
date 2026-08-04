@@ -5,7 +5,7 @@ import DataTable from '../../components/DataTable.jsx';
 import Notice from '../../components/Notice.jsx';
 import Section from '../../components/Section.jsx';
 import { formatDateTime } from '../../lib/format.js';
-import { useResource, useStatus } from '../scan/hooks/useResource.js';
+import { useResource, useStatus } from '../../lib/useResource.js';
 
 const STATE_TONE = { RUNNING: 'info', WAITING: 'ok', OK: 'ok', DISABLED: 'neutral', SLEEPING: 'neutral' };
 const RESULT_TONE = { OK: 'ok', SUCCESS: 'ok', ERROR: 'bad', FAILED: 'bad', CANCELED: 'warn', CANCELLED: 'warn' };

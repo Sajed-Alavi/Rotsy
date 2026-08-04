@@ -5,7 +5,7 @@ import DataTable from '../../../components/DataTable.jsx';
 import Notice from '../../../components/Notice.jsx';
 import Section from '../../../components/Section.jsx';
 import { scanApi } from '../api.js';
-import { useResource, useStatus } from '../hooks/useResource.js';
+import { useResource, useStatus } from '../../../lib/useResource.js';
 import TargetModal from '../components/TargetModal.jsx';
 
 /**

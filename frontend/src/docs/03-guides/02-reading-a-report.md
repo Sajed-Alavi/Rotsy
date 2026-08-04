@@ -4,7 +4,7 @@
 
 The scanning section is a drill-down, and it helps to know which level you are at.
 
-**Images** — one row per image the system knows about, with its state and current severity counts. Start here when you want to know *whether* something is a problem.
+**Images** — a repository → image → tag tree, each level expandable/collapsible, with severity counts rolled up at every level (a repository's counts are the sum of its images', an image's the sum of its tags'). Images from different repositories are never mixed together. Start here when you want to know *whether* something is a problem: expand down to a tag to see its state and counts, click it to see that tag's report history.
 
 **Reports** — one row per scanner run. An image scanned by both Trivy and Grype has two reports. Start here when you want to know *what happened* on a particular run, including failures.
 
@@ -27,6 +27,10 @@ Neither is a superset of the other.
 A report with status `failed` carries the reason in its error field, shown inline in both the Reports table and the Images row. Common causes are covered in [Troubleshooting scans](/docs/troubleshooting).
 
 A failure is never reported as a clean scan. If the database could not be downloaded and no usable database is on disk, the scan fails and says so, rather than returning zero findings — zero findings and "could not check" look identical in a dashboard, and conflating them is how people ship vulnerable images believing they are clean.
+
+## Exporting a report as PDF
+
+Open a report's detail view and click **Download PDF** for a self-contained, printable copy: repository, image, tag, scan date, the severity breakdown, the full CVE list (installed/fixed versions included), and a short recommendations section derived from which Critical/High findings have a fix available. Useful for sharing a scan result outside Sharpy or filing it as an audit artifact — the PDF is generated fresh from the same data the detail view shows, not cached.
 
 ## Clearing reports
 

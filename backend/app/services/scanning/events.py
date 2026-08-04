@@ -33,13 +33,13 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Iterable
 
-from sqlalchemy import select
+from sqlalchemy import delete as sa_delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...core.cache import Cache
 from ...core.jobs import JobQueue
 from ...core.nexus_client import NexusClient
-from ...models import ScannedImage, ScanTarget
+from ...models import ScannedImage, ScanReport, ScanTarget
 
 logger = logging.getLogger(__name__)
 
@@ -361,3 +361,48 @@ async def record_scan_outcome(
     entry.last_scan_at = datetime.now(timezone.utc)
     entry.scan_count += 1
     await session.commit()
+
+
+async def forget_deleted_images(session: AsyncSession, repo: str, images: Iterable[str]) -> int:
+    """Drop the ledger entry, reports and findings for images removed from Nexus.
+
+    Deleting an image tag in Nexus (Browse Files, or the images-delete API)
+    used to leave the scan ledger and its reports/CVEs behind — the
+    vulnerability-scanning tree kept showing a tag that no longer exists in the
+    registry, with a "delete" action that didn't clean up here. ``ScanReport``
+    has no FK to ``ScannedImage`` (they only correlate by matching
+    ``(repo, image)`` strings), so both are deleted explicitly; ``Vulnerability``
+    rows cascade from ``ScanReport`` via its FK's ``ondelete="CASCADE"``.
+
+    ``images`` are ``"name:tag"`` strings, matching ``ScannedImage.image`` /
+    ``ScanReport.image``. Returns the number of ledger rows removed.
+    """
+    names = [i for i in images if i]
+    if not names:
+        return 0
+    result = await session.execute(
+        sa_delete(ScannedImage).where(ScannedImage.repo == repo, ScannedImage.image.in_(names))
+    )
+    await session.execute(
+        sa_delete(ScanReport).where(ScanReport.target_repo == repo, ScanReport.image.in_(names))
+    )
+    await session.commit()
+    return result.rowcount or 0
+
+
+async def forget_repository(session: AsyncSession, repo: str) -> int:
+    """Drop every scan trace of a repository deleted from Nexus entirely.
+
+    Same gap as ``forget_deleted_images``, one level up: deleting a whole
+    repository (``DELETE /repositories/{name}``) left every image it ever
+    contained still showing in the vulnerability-scanning tree, plus a
+    ``ScanTarget`` row pointing at a repository that no longer exists (so
+    "enabled" scanning config for a deleted repo just sat there inert).
+    Everything scoped to ``repo`` is removed: the target config, the ledger,
+    the reports (and their findings, via cascade).
+    """
+    await session.execute(sa_delete(ScanTarget).where(ScanTarget.repo == repo))
+    result = await session.execute(sa_delete(ScannedImage).where(ScannedImage.repo == repo))
+    await session.execute(sa_delete(ScanReport).where(ScanReport.target_repo == repo))
+    await session.commit()
+    return result.rowcount or 0

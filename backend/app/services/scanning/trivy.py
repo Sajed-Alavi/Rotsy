@@ -73,13 +73,21 @@ async def run(
         "--scanners", "vuln",
         # Read from the registry, never from a local container runtime.
         "--image-src", "remote",
-        # The database is managed by app.services.scanning.db. Without these,
+        # The database is managed by app.services.scanning.db. Without this,
         # Trivy tries to download it mid-scan and fails the scan when it cannot.
         "--skip-db-update",
-        "--skip-java-db-update",
         "--cache-dir", str(scanner_db.TRIVY_CACHE_ROOT),
         "--timeout", TOOL_TIMEOUT,
     ]
+    # The Java DB is optional (readiness() never requires it — see
+    # db/status.py's java_db_present) so it can legitimately be absent even
+    # when the core DB is present, e.g. its own download failed or was never
+    # attempted. --skip-java-db-update is only valid once Trivy has downloaded
+    # it at least once; passing it on a first run is a hard error ("cannot be
+    # specified on the first run"), not a graceful skip. Only pass it when
+    # there is actually something on disk to skip updating.
+    if (scanner_db.TRIVY_JAVA_DB_DIR / "metadata.json").is_file():
+        args.append("--skip-java-db-update")
     # A plaintext connector needs Trivy to talk HTTP; a TLS connector we cannot
     # verify needs certificate checks relaxed. Both are covered by --insecure.
     insecure = registry.is_plaintext or not verify_tls

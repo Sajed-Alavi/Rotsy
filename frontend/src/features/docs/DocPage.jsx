@@ -81,7 +81,7 @@ export default function DocPage() {
 function DocsIndex() {
   return (
     <div className="p-8">
-      <h1 className="mb-1 text-xl font-medium text-slate-900 dark:text-slate-100">Sharpy documentation</h1>
+      <h1 className="mb-1 text-xl font-medium text-slate-900 dark:text-slate-100">Rotsy documentation</h1>
       <p className="mb-8 max-w-2xl text-sm text-slate-600 dark:text-slate-400">
         Everything this tool does, from first login to air-gapped deployment. The sections below are
         ordered as a learning path — read them in order the first time, or jump straight to what you

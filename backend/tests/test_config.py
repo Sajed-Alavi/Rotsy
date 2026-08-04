@@ -80,7 +80,7 @@ def test_distinct_encryption_key_accepted():
 # --- MED-06: cookie Secure flag ---------------------------------------------
 def test_insecure_cookie_with_https_origin_rejected():
     with pytest.raises(ValidationError):
-        make_settings(COOKIE_SECURE=False, FRONTEND_ORIGIN="https://sharpy.example.com")
+        make_settings(COOKIE_SECURE=False, FRONTEND_ORIGIN="https://rotsy.example.com")
 
 
 def test_insecure_cookie_with_http_origin_allowed():
@@ -90,5 +90,5 @@ def test_insecure_cookie_with_http_origin_allowed():
 
 
 def test_secure_cookie_with_https_origin_allowed():
-    settings = make_settings(COOKIE_SECURE=True, FRONTEND_ORIGIN="https://sharpy.example.com")
+    settings = make_settings(COOKIE_SECURE=True, FRONTEND_ORIGIN="https://rotsy.example.com")
     assert settings.COOKIE_SECURE is True

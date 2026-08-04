@@ -1,5 +1,5 @@
 # =============================================================================
-# Sharpy — management and image-scanning console for Sonatype Nexus
+# Rotsy — management and image-scanning console for Sonatype Nexus
 # -----------------------------------------------------------------------------
 # Services: postgres (persistence), redis (cache + job queue), backend
 #           (FastAPI + Trivy/Grype), frontend (React SPA via nginx).

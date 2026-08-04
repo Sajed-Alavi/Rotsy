@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
   <!--
-    Favicon variant of the Sharpy mark. Deliberately simpler than
+    Favicon variant of the Rotsy mark. Deliberately simpler than
     src/components/Logo.jsx: at 16px the globe wireframe and the cube facets
     collapse into noise, so only the shield, one cube and the arrow survive.
     Keep the two in visual sync when either changes.

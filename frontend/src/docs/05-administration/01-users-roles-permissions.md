@@ -22,12 +22,12 @@ Because effective access is the union across a user's roles, a single `unrestric
 
 The **Test these rules** panel in the role editor shows what a role would do to a specific repository and image before you save. The effective-access view on a user resolves every role they hold at once, which is where union surprises actually surface.
 
-## Sharpy's RBAC is not Nexus's
+## Rotsy's RBAC is not Nexus's
 
 They are separate systems with separate databases. Granting someone `repositories:write` here does not give them any Nexus privilege, and it does not need to — actions are performed by the backend's Nexus service account.
 
-The one place Sharpy touches Nexus's own security model is [anonymous access](/docs/tokens-and-webhooks), which manipulates the built-in `nx-anonymous` role.
+The one place Rotsy touches Nexus's own security model is [anonymous access](/docs/tokens-and-webhooks), which manipulates the built-in `nx-anonymous` role.
 
 ## The consequence worth understanding
 
-Because everything runs through one privileged service account, **Sharpy's access control is the only thing standing between a user and that account's full authority.** That is why rules are enforced on every path that touches image data — the image list, the asset list, the download proxy, scan reports and findings, storage analysis and retention — rather than just the obvious one.
+Because everything runs through one privileged service account, **Rotsy's access control is the only thing standing between a user and that account's full authority.** That is why rules are enforced on every path that touches image data — the image list, the asset list, the download proxy, scan reports and findings, storage analysis and retention — rather than just the obvious one.

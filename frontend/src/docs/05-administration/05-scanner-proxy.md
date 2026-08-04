@@ -26,7 +26,7 @@ Skip outbound access entirely and import the databases from archives. See [Offli
 
 If the scanners are left to manage their own databases, a blocked download does not just fail to update — it fails the *scan*, because both tools try to refresh before scanning by default.
 
-Sharpy disables that and manages the database separately, precisely so a network problem produces "the database is stale" rather than "every image failed to scan". If you are seeing the latter, something has bypassed that arrangement.
+Rotsy disables that and manages the database separately, precisely so a network problem produces "the database is stale" rather than "every image failed to scan". If you are seeing the latter, something has bypassed that arrangement.
 
 ## Egress allow-list
 

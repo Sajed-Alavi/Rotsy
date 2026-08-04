@@ -13,8 +13,8 @@ Scope it deliberately. A token that can only read and trigger scans cannot delet
 If the Nexus webhook is configured, the push itself triggers the scan — you do not need to ask. Poll for the result:
 
 ```bash
-TOKEN="$SHARPY_TOKEN"
-HOST="https://sharpy.example.com"
+TOKEN="$ROTSY_TOKEN"
+HOST="https://rotsy.example.com"
 
 # Optional: trigger explicitly rather than relying on the webhook
 curl -sf -X POST "$HOST/api/scan/image" \

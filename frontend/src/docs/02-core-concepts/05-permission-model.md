@@ -1,6 +1,6 @@
 # The permission model
 
-Sharpy has its own role-based access control, in its own Postgres tables. It is **not** Nexus's RBAC and does not read or write Nexus roles.
+Rotsy has its own role-based access control, in its own Postgres tables. It is **not** Nexus's RBAC and does not read or write Nexus roles.
 
 The model has two independent axes, and keeping them apart is the whole idea:
 
@@ -125,10 +125,10 @@ Repository-wide operations are held to a higher bar. Creating a retention policy
 
 A token's effective permissions are the intersection of its declared scopes with its owner's *current* permissions, resolved on every request. Access rules apply to a token exactly as they apply to its owner, because a token resolves to the owner's account. Removing someone's role immediately narrows every token they issued. A token cannot outlive the authority it was minted from.
 
-## Sharpy's RBAC is not Nexus's
+## Rotsy's RBAC is not Nexus's
 
 They are separate systems with separate databases. Granting someone `repositories:write` here does not give them any Nexus privilege, and it does not need to — actions are performed by the backend's Nexus service account.
 
-Because everything runs through that one privileged account, **Sharpy's access control is the only thing standing between a user and its full authority.** That is why rules are enforced on every path that touches image data — listings, the asset list, the download proxy, scan reports and findings, storage analysis and retention — rather than just the obvious one.
+Because everything runs through that one privileged account, **Rotsy's access control is the only thing standing between a user and its full authority.** That is why rules are enforced on every path that touches image data — listings, the asset list, the download proxy, scan reports and findings, storage analysis and retention — rather than just the obvious one.
 
 Ready to write some? See the [access rules cookbook](/docs/access-rules-cookbook).

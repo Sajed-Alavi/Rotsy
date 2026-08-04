@@ -2,7 +2,7 @@
 
 ## Scope
 
-Full-codebase review of Sharpy (FastAPI backend + React frontend, a
+Full-codebase review of Rotsy (FastAPI backend + React frontend, a
 management/scanning console in front of Sonatype Nexus): authentication,
 authorization/RBAC, database access, configuration/secrets management,
 service-layer code (scanners, backups, sync, alerting), all API routers, and

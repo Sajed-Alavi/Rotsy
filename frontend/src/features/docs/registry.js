@@ -7,7 +7,7 @@
  * numeric prefixes exist only to order the sidebar and are stripped for display
  * and for URLs.
  *
- * Ordering is by path, so `01-getting-started/01-what-is-sharpy.md` sorts ahead
+ * Ordering is by path, so `01-getting-started/01-what-is-rotsy.md` sorts ahead
  * of `02-core-concepts/…`, and the reading order is the learning path.
  */
 const FILES = import.meta.glob('../../docs/**/*.md', { query: '?raw', import: 'default', eager: true });

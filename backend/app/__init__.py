@@ -1,4 +1,4 @@
-"""Sharpy — management and image-scanning console for Sonatype Nexus (backend).
+"""Rotsy — management and image-scanning console for Sonatype Nexus (backend).
 
 The package version is read by ``app.main`` and surfaced in ``/api/health``.
 """

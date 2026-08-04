@@ -6,7 +6,7 @@ Nothing in this system starts a container. This is worth stating precisely, beca
 
 A scanner that pulls an image into a local daemon has to *have* a local daemon, and the container it creates is built from content you have not yet vetted. That is a meaningful attack surface for a security tool: the thing you are inspecting gets to execute before you have finished inspecting it.
 
-Sharpy reads images as data over the Docker Registry v2 API. Manifests and layers are fetched, unpacked and analysed. Nothing is ever executed.
+Rotsy reads images as data over the Docker Registry v2 API. Manifests and layers are fetched, unpacked and analysed. Nothing is ever executed.
 
 ## Four independent enforcement points
 
@@ -25,4 +25,4 @@ Left to itself, Grype tries the local Docker, Podman and containerd daemons *bef
 
 ## What this costs you
 
-Very little, but be aware of it: the scanners see what the registry serves. If an image is only in a local daemon and was never pushed, Sharpy cannot scan it — correctly, since it is not in your registry.
+Very little, but be aware of it: the scanners see what the registry serves. If an image is only in a local daemon and was never pushed, Rotsy cannot scan it — correctly, since it is not in your registry.

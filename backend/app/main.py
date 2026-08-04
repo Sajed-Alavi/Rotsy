@@ -429,7 +429,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     stop_backup_schedule = asyncio.Event()
     backup_schedule_task = asyncio.create_task(_backup_schedule_loop(settings, stop_backup_schedule))
 
-    logger.info("Sharpy v%s started.", __version__)
+    logger.info("Rotsy v%s started.", __version__)
     try:
         yield
     finally:
@@ -446,14 +446,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await runner.stop()
         await cache.close()
         await nexus.close()
-        logger.info("Sharpy shut down cleanly.")
+        logger.info("Rotsy shut down cleanly.")
 
 
 def create_app() -> FastAPI:
     """Application factory."""
     settings = get_settings()
     app = FastAPI(
-        title="Sharpy",
+        title="Rotsy",
         description=(
             "Advanced management wrapper around Sonatype Nexus Repository Manager. "
             "Auth is cookie-based JWT (login at /api/auth/login). All endpoints "

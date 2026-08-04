@@ -18,4 +18,4 @@ Entries live in Postgres and are not automatically pruned. If you need them some
 
 ## A caveat worth stating
 
-This is an application-level audit log. It records what was done *through Sharpy*. Someone acting directly in the Nexus UI, or with the Nexus service account credentials, does not appear here. For a complete picture you need Nexus's own logs as well.
+This is an application-level audit log. It records what was done *through Rotsy*. Someone acting directly in the Nexus UI, or with the Nexus service account credentials, does not appear here. For a complete picture you need Nexus's own logs as well.

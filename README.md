@@ -1,4 +1,4 @@
-# Sharpy
+# Rotsy
 
 A management dashboard and API around **Sonatype Nexus Repository Manager**, with
 **static container-image vulnerability scanning** (Trivy + Grype) as its
@@ -47,6 +47,7 @@ is enforced in code and pointed at below.
 - [Configuration reference](#configuration-reference)
 - [Development](#development)
 - [Security notes](#security-notes)
+- [License](#license)
 
 ---
 
@@ -152,7 +153,7 @@ reasons now surfaced verbatim:
 | `this repository does not allow deletion` | The repository's write policy is *Disable redeploy* or *Read-only*. Change it in Nexus. |
 
 **Space is not freed by the delete itself.** Nexus removes the tag immediately
-but leaves the blobs on disk until its **Compact blob store** task runs. Sharpy
+but leaves the blobs on disk until its **Compact blob store** task runs. Rotsy
 triggers that task after a successful delete — and if no such task exists, says
 so instead of leaving you wondering why disk usage did not move. Nexus does not
 create one by default; add it under **Administration → System → Tasks**.
@@ -608,3 +609,9 @@ cd frontend && npm install && npm run dev
 - Webhook deliveries are HMAC-verified and fail closed on a mismatch.
 - Offline archives are extracted with tar's `data` filter, which rejects absolute
   paths, `..` traversal, symlinks and device files.
+
+## License
+
+See [`LICENSE`](./LICENSE). Use, modification, and redistribution are
+permitted; the original copyright notice must be retained and may not be
+removed, altered, or obscured.

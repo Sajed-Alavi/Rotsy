@@ -20,7 +20,7 @@ export default function TopBar() {
       <div className="flex items-center gap-2">
         <LogoMark size={16} className="opacity-70" />
         <span className="font-mono text-xs text-slate-400 dark:text-slate-600">
-          sharpy · sonatype nexus console
+          rotsy · sonatype nexus console
         </span>
       </div>
       <div className="flex items-center gap-2">

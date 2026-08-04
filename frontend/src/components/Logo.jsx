@@ -1,5 +1,5 @@
 /**
- * The Sharpy mark and wordmark.
+ * The Rotsy mark and wordmark.
  *
  * Hand-authored SVG rather than a raster asset: the same file has to stay legible
  * as a 16px favicon and as a 64px login lockup, and has to sit on both the light
@@ -29,7 +29,7 @@ export function LogoMark({ size = 24, className = '' }) {
       xmlns="http://www.w3.org/2000/svg"
       className={className}
       role="img"
-      aria-label="Sharpy"
+      aria-label="Rotsy"
     >
       <defs>
         <linearGradient id={shield} x1="32" y1="4" x2="32" y2="60" gradientUnits="userSpaceOnUse">
@@ -105,7 +105,7 @@ export default function LogoLockup({ size = 20, className = '', tagline = false 
           className="font-semibold tracking-tight text-slate-800 dark:text-slate-100"
           style={{ fontSize: size * 0.8 }}
         >
-          sharpy
+          rotsy
         </span>
         {tagline && (
           <span className="mt-1 font-mono text-[9px] uppercase tracking-[0.14em] text-slate-400 dark:text-slate-500">

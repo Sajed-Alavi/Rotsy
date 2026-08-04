@@ -1,6 +1,6 @@
-# Security tracking — Sharpy
+# Security tracking — Rotsy
 
-This directory is the vulnerability record for Sharpy (the FastAPI + React
+This directory is the vulnerability record for Rotsy (the FastAPI + React
 management/scanning console in front of Sonatype Nexus). It exists so a
 finding's severity, root cause, fix, and validation status are visible in one
 place instead of scattered across commits and memory.

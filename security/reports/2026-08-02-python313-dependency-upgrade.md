@@ -64,8 +64,8 @@ exclusively, so this one crossing carried no code risk.
 
 ```bash
 # Backend: confirm no source builds trigger under 3.13, then audit.
-docker build --target base -t sharpy-backend-py313-check backend/
-docker run --rm sharpy-backend-py313-check pip install --no-cache-dir -r requirements.txt -r requirements-dev.txt
+docker build --target base -t rotsy-backend-py313-check backend/
+docker run --rm rotsy-backend-py313-check pip install --no-cache-dir -r requirements.txt -r requirements-dev.txt
 docker compose run --rm backend pip-audit -r requirements.txt
 docker compose run --rm backend pytest
 

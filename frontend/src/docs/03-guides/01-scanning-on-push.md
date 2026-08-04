@@ -20,7 +20,7 @@ Get the secret and the exact URL from **Settings → Scan-on-push webhook**, the
 
 1. **Administration → System → Capabilities → Create capability**
 2. Choose **Webhook: Repository**
-3. Set the URL to `https://your-sharpy-host/api/scan/events/nexus`
+3. Set the URL to `https://your-rotsy-host/api/scan/events/nexus`
 4. Paste the secret
 5. Select the repositories to emit events for
 

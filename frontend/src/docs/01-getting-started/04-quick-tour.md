@@ -40,7 +40,7 @@ A map of the sidebar, and which page answers which question.
 
 ## Administration
 
-**Users**, **Roles & Permissions** — Sharpy's own RBAC, including per-image scoping.
+**Users**, **Roles & Permissions** — Rotsy's own RBAC, including per-image scoping.
 
 **Audit Log** — who changed what.
 

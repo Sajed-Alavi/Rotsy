@@ -30,7 +30,7 @@ A failure is never reported as a clean scan. If the database could not be downlo
 
 ## Exporting a report as PDF
 
-Open a report's detail view and click **Download PDF** for a self-contained, printable copy: repository, image, tag, scan date, the severity breakdown, the full CVE list (installed/fixed versions included), and a short recommendations section derived from which Critical/High findings have a fix available. Useful for sharing a scan result outside Sharpy or filing it as an audit artifact — the PDF is generated fresh from the same data the detail view shows, not cached.
+Open a report's detail view and click **Download PDF** for a self-contained, printable copy: repository, image, tag, scan date, the severity breakdown, the full CVE list (installed/fixed versions included), and a short recommendations section derived from which Critical/High findings have a fix available. Useful for sharing a scan result outside Rotsy or filing it as an audit artifact — the PDF is generated fresh from the same data the detail view shows, not cached.
 
 ## Clearing reports
 

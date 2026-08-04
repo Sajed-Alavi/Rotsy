@@ -158,14 +158,14 @@ async def build_report_pdf(session: AsyncSession, report: ScanReport) -> bytes:
     )
 
     styles = getSampleStyleSheet()
-    title_style = ParagraphStyle("SharpyTitle", parent=styles["Title"], fontSize=18, textColor=_SLATE_900, spaceAfter=2)
-    subtitle_style = ParagraphStyle("SharpySubtitle", parent=styles["Normal"], fontSize=9, textColor=_SLATE_500, spaceAfter=14)
-    h2_style = ParagraphStyle("SharpyH2", parent=styles["Heading2"], fontSize=12, textColor=_SLATE_900, spaceBefore=14, spaceAfter=6)
-    body_style = ParagraphStyle("SharpyBody", parent=styles["Normal"], fontSize=9.5, textColor=_SLATE_900, leading=13)
-    cell_style = ParagraphStyle("SharpyCell", parent=styles["Normal"], fontSize=8, textColor=_SLATE_900, leading=10)
+    title_style = ParagraphStyle("RotsyTitle", parent=styles["Title"], fontSize=18, textColor=_SLATE_900, spaceAfter=2)
+    subtitle_style = ParagraphStyle("RotsySubtitle", parent=styles["Normal"], fontSize=9, textColor=_SLATE_500, spaceAfter=14)
+    h2_style = ParagraphStyle("RotsyH2", parent=styles["Heading2"], fontSize=12, textColor=_SLATE_900, spaceBefore=14, spaceAfter=6)
+    body_style = ParagraphStyle("RotsyBody", parent=styles["Normal"], fontSize=9.5, textColor=_SLATE_900, leading=13)
+    cell_style = ParagraphStyle("RotsyCell", parent=styles["Normal"], fontSize=8, textColor=_SLATE_900, leading=10)
 
     story = []
-    story.append(Paragraph("Sharpy Vulnerability Scan Report", title_style))
+    story.append(Paragraph("Rotsy Vulnerability Scan Report", title_style))
     story.append(Paragraph(
         f"Generated {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}", subtitle_style,
     ))
@@ -265,6 +265,6 @@ async def build_report_pdf(session: AsyncSession, report: ScanReport) -> bytes:
     else:
         story.append(Paragraph("No vulnerabilities were recorded for this report.", body_style))
 
-    footer_left = f"Sharpy · {report.target_repo}/{report.image}"
+    footer_left = f"Rotsy · {report.target_repo}/{report.image}"
     doc.build(story, canvasmaker=_numbered_canvas_maker(footer_left))
     return buf.getvalue()

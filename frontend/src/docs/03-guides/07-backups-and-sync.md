@@ -4,7 +4,7 @@ Both live under **System & Scripts**.
 
 ## Metadata export
 
-Nexus OSS does not expose a backup API. Instead, Sharpy produces a **metadata export**: a downloadable JSON containing every repository's configuration plus asset manifests.
+Nexus OSS does not expose a backup API. Instead, Rotsy produces a **metadata export**: a downloadable JSON containing every repository's configuration plus asset manifests.
 
 This is often more useful than a raw database dump — it is version-independent and can be fed into the sync service — but be clear about what it is not. It contains metadata, not artifact content. It will not restore your blobs.
 

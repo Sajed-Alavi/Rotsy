@@ -12,7 +12,7 @@ Most tools make you configure this by hand. That means a list of ports duplicate
 
 ## How it actually works
 
-Nexus is the authority on those ports, so Sharpy asks it:
+Nexus is the authority on those ports, so Rotsy asks it:
 
 1. `GET /service/rest/v1/repositorySettings` — one call, full configuration for every repository including the `docker` connector block.
 2. `GET /service/rest/v1/repositories/docker/{type}/{name}` — per-repository fallback when the first is unavailable.

@@ -1,6 +1,6 @@
 # Connecting to Nexus
 
-Sharpy needs one Nexus account. Everything it does — reading repositories, listing components, pulling manifests for scanning — happens through it.
+Rotsy needs one Nexus account. Everything it does — reading repositories, listing components, pulling manifests for scanning — happens through it.
 
 ## Configure the connection
 

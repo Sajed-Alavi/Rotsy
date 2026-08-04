@@ -32,7 +32,7 @@ async def send_webhook(url: str, payload: dict, timeout: float = 10.0) -> bool:
         return False
 
     envelope = {
-        "source": "sharpy",
+        "source": "rotsy",
         "event": "alert.triggered",
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "data": payload,

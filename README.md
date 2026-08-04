@@ -44,9 +44,9 @@ is enforced in code and pointed at below.
 - [Manual steps you must perform](#manual-steps-you-must-perform)
 - [Operations](#operations)
 - [Troubleshooting scan failures](#troubleshooting-scan-failures)
-- [API reference](#api-reference)
 - [Configuration reference](#configuration-reference)
-- [Project layout](#project-layout)
+- [Development](#development)
+- [Security notes](#security-notes)
 
 ---
 
@@ -545,53 +545,6 @@ pages properly.
 
 ---
 
-## API reference
-
-Interactive docs at `/docs` and `/redoc`. All endpoints require a session
-(cookie JWT) plus the listed permission, except `POST /api/auth/login`,
-`POST /api/auth/refresh` and the HMAC-authenticated webhook.
-
-### Scanning
-
-| Method | Path | Permission | Purpose |
-| ------ | ---- | ---------- | ------- |
-| `GET` | `/api/scan/summary` | `scan:read` | Totals + ledger breakdown |
-| `GET` | `/api/scan/images` | `scan:read` | Known images with latest results |
-| `POST` | `/api/scan/image` | `scan:execute` | **Trigger (b):** scan one image |
-| `POST` | `/api/scan/events/nexus` | HMAC | **Trigger (a):** Nexus push webhook |
-| `GET` | `/api/scan/webhook` | `system:execute` | Webhook secret + setup steps |
-| `POST` | `/api/scan/webhook/rotate` | `system:execute` | Issue a new webhook secret |
-| `GET` | `/api/scan/registry` | `scan:read` | Discovered endpoints (`?check=true` probes them) |
-| `GET`/`POST`/`PATCH`/`DELETE` | `/api/scan/targets` | `scan:read` / `scan:execute` | Per-repository opt-in |
-| `GET` | `/api/scan/reports` | `scan:read` | Recent reports |
-| `GET` | `/api/scan/reports/{id}` | `scan:read` | One report incl. failure diagnostics |
-| `GET` | `/api/scan/reports/{id}/vulnerabilities` | `scan:read` | Findings for a report |
-| `GET` | `/api/scan/vulnerabilities` | `scan:read` | Findings across reports |
-| `DELETE` | `/api/scan/reports[/{id}]` | `scan:execute` | Delete reports |
-| `GET` | `/api/scan/db-status` | `scan:read` | Database state + readiness |
-| `POST` | `/api/scan/db-update` | `scan:execute` | Refresh databases (`?force=true`) |
-| `POST` | `/api/scan/db-import` | `scan:execute` | Install from offline archives |
-| `GET` | `/api/scan/db-offline` | `scan:read` | Archives detected offline |
-
-### Repositories and images
-
-| Method | Path | Permission | Purpose |
-| ------ | ---- | ---------- | ------- |
-| `GET` | `/api/repositories` | `repositories:read` | List repositories |
-| `GET` | `/api/repositories/{repo}/images` | `repositories:read` | Images → tags, with push time and size |
-| `POST` | `/api/repositories/{repo}/images/delete` | `repositories:write` | Delete tags; per-tag outcome, optional compaction |
-| `GET` | `/api/repositories/{repo}/assets` | `repositories:read` | Raw asset listing (paginated) |
-| `GET` | `/api/repositories/{repo}/assets/download` | `repositories:read` | Proxied download |
-
-### Other areas
-
-`auth`, `users`, `roles`, `settings`, `storage` (deep storage analyzer, which
-reports each image's size **and** creation time), `retention`, `metrics`,
-`alerts`, `jobs` (queue + SSE progress), `audit`, `system`, `blobstores`,
-`access`, `analytics`. Prometheus metrics are exported at `/metrics/export`.
-
----
-
 ## Configuration reference
 
 Every value is read from the environment; the app fails fast on a missing
@@ -633,44 +586,7 @@ There is **no** registry URL or port setting, by design — see
 
 ---
 
-## Project layout
-
-```
-.
-├── backend/
-│   ├── alembic/versions/        # schema migrations, in order
-│   ├── app/
-│   │   ├── core/               # nexus client, cache, jobs, security, config store
-│   │   ├── db/                 # session factory, base, idempotent seed
-│   │   ├── models/             # SQLAlchemy tables
-│   │   ├── routers/            # HTTP layer, one module per area
-│   │   │   └── scan/           # scanning endpoints, one module per route group
-│   │   ├── schemas/            # pydantic request/response models
-│   │   ├── services/           # domain logic
-│   │   │   └── scanning/       # the scanning feature (see the table above)
-│   │   │       └── db/         # vulnerability database lifecycle
-│   │   ├── config.py           # typed settings
-│   │   └── main.py             # app factory + lifespan + background loops
-│   ├── tests/                  # pytest; tests/scanning/ covers the scanners
-│   ├── Dockerfile              # app + Trivy + Grype + oras, no Docker client
-│   └── entrypoint.sh           # wait for DB → migrate → seed → uvicorn
-├── frontend/
-│   ├── src/components/         # shared UI primitives
-│   ├── src/features/           # one directory per page; larger pages split
-│   │                           # into components/ + hooks/ + api.js
-│   ├── src/lib/                # api client, formatters, nav
-│   └── Dockerfile, nginx.conf
-├── security/                   # vulnerability record: findings, reports, CVEs
-├── docker-compose.yml          # postgres, redis, backend, frontend
-├── docker-compose-nexus/       # local Nexus for development (gitignored: its
-│                               # blob store and logs are runtime data)
-├── offline-db/                 # drop offline DB archives here (gitignored)
-├── scripts/scanner/fetch-offline-db.sh # download DB archives on a connected machine
-├── .env.example                # annotated configuration reference
-└── README.md                   # this file — the only documentation
-```
-
-### Development
+## Development
 
 ```bash
 # backend
@@ -682,7 +598,7 @@ uvicorn app.main:app --reload
 cd frontend && npm install && npm run dev
 ```
 
-### Security notes
+## Security notes
 
 - No credential is ever baked into an image; everything comes from the
   environment or the encrypted config store.

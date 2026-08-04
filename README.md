@@ -6,8 +6,8 @@ centrepiece.
 
 Two deployable projects, one compose stack:
 
-| Path        | What it is                                                |
-| ----------- | --------------------------------------------------------- |
+| Path        | What it is                                                  |
+| ----------- | ---------------------------------------------------------   |
 | `backend/`  | FastAPI service, Alembic migrations, Trivy + Grype binaries |
 | `frontend/` | React + Vite + Tailwind single-page app served by nginx     |
 
@@ -54,22 +54,22 @@ is enforced in code and pointed at below.
 ## Architecture
 
 ```
-                    ┌──────────────────────────── Docker host ───────────────────────────┐
-                    │                                                                    │
-  browser ──HTTP──► │  nginx (frontend)                    Nexus Repository Manager      │
+                    ┌──────────────────────────── Docker host ────────────────────────────┐
+                    │                                                                     │
+  browser ──HTTP──► │  nginx (frontend)                    Nexus Repository Manager       │
                     │    │  /api/* ──proxy──► FastAPI (backend)   :8081  REST API         │
                     │    └─ React SPA              │  │           :15987 docker "team-a"  │
                     │                              │  │           :15988 docker "team-b"  │
                     │                              │  │              ⋮   (discovered)     │
-                    │                              │  │                                  │
+                    │                              │  │                                   │
                     │        Postgres ◄────────────┤  ├──REST───────► repository config,  │
                     │        (state)               │  │               components, assets  │
-                    │                              │  │                                  │
+                    │                              │  │                                   │
                     │        Redis ◄───────────────┤  └──registry v2─► manifests + layers │
                     │        (cache + job queue)   │        (Trivy / Grype, read-only)    │
-                    │                              │                                     │
+                    │                              │                                      │
                     │                              └◄── webhook on push ──────────────────┤
-                    └────────────────────────────────────────────────────────────────────┘
+                    └─────────────────────────────────────────────────────────────────────┘
 ```
 
 **Backend layers.** `routers/` handle HTTP only; `services/` hold the logic and
@@ -82,28 +82,28 @@ Four background loops run in the app lifespan, each with a single job:
 
 | Loop                   | Responsibility                                           |
 | ---------------------- | -------------------------------------------------------- |
-| `_metric_loop`         | Snapshot repository metrics, evaluate alert rules          |
-| `_retention_scheduler` | Daily retention sweep at `RETENTION_RUN_AT`               |
-| `_scanner_db_loop`     | Keep the vulnerability databases usable                   |
-| `_push_watch_loop`     | Notice newly pushed images (fallback trigger, see below)   |
+| `_metric_loop`         | Snapshot repository metrics, evaluate alert rules        |
+| `_retention_scheduler` | Daily retention sweep at `RETENTION_RUN_AT`              |
+| `_scanner_db_loop`     | Keep the vulnerability databases usable                  |
+| `_push_watch_loop`     | Notice newly pushed images (fallback trigger, see below) |
 
 **None of them scan on startup.**
 
 ### Scanning modules
 
-| Module                        | Responsibility                                             |
-| ----------------------------- | ---------------------------------------------------------- |
-| `services/scanning/registry.py` | Discover each Docker repository's registry endpoint       |
-| `services/scanning/events.py` | Decide *whether* to scan (webhook, watcher, manual)        |
+| Module                        | Responsibility                                                  |
+| ----------------------------- | --------------------------------------------------------------- |
+| `services/scanning/registry.py` | Discover each Docker repository's registry endpoint           |
+| `services/scanning/events.py` | Decide *whether* to scan (webhook, watcher, manual)             |
 | `services/scanning/base.py`   | Shared types, subprocess exec, report parsing, static-ref guard |
-| `services/scanning/trivy.py`  | Trivy adapter + its report parser                          |
-| `services/scanning/grype.py`  | Grype adapter + its report parser                          |
-| `services/scanning/persistence.py` | Runner registry, orchestration, ORM writes            |
-| `services/scanning/db/`       | Vulnerability database status, update, offline import      |
-| `routers/scan/`               | HTTP endpoints, one module per route group                 |
-| `schemas/scan.py`             | Request/response models for those endpoints                |
-| `models/scans.py`             | Targets, image ledger, reports, findings                    |
-| `services/images.py`          | Image/tag inventory, deletion, blob compaction              |
+| `services/scanning/trivy.py`  | Trivy adapter + its report parser                               |
+| `services/scanning/grype.py`  | Grype adapter + its report parser                               |
+| `services/scanning/persistence.py` | Runner registry, orchestration, ORM writes                 |
+| `services/scanning/db/`       | Vulnerability database status, update, offline import           |
+| `routers/scan/`               | HTTP endpoints, one module per route group                      |
+| `schemas/scan.py`             | Request/response models for those endpoints                     |
+| `models/scans.py`             | Targets, image ledger, reports, findings                        |
+| `services/images.py`          | Image/tag inventory, deletion, blob compaction                  |
 
 Each of those has exactly one owner. That is a change: database handling used to
 be spread across four places that could disagree, and scan triggering across two
@@ -146,10 +146,10 @@ boolean, so "4 images, none deleted" gave no clue whether Nexus had rejected the
 request, the ids were stale, or the policy had simply matched nothing. Common
 reasons now surfaced verbatim:
 
-| Reason | Meaning |
-| ------ | ------- |
-| `component not found` | Stale id — the list was loaded before something else changed it. Refresh. |
-| `Nexus refused the delete (HTTP 403)` | The service account lacks delete privileges on that repository. |
+| Reason | Meaning                                                                                                                    |
+| ------ | -------------------------------------------------------------------------------------------------------------------------- |
+| `component not found` | Stale id — the list was loaded before something else changed it. Refresh.                                   |
+| `Nexus refused the delete (HTTP 403)` | The service account lacks delete privileges on that repository.                             |
 | `this repository does not allow deletion` | The repository's write policy is *Disable redeploy* or *Read-only*. Change it in Nexus. |
 
 **Space is not freed by the delete itself.** Nexus removes the tag immediately
@@ -239,10 +239,10 @@ can still be scanned individually with the Scan button.
 
 `scan_image_ledger` is the durable record of every image the system knows about:
 
-| State      | Meaning                                                              |
-| ---------- | -------------------------------------------------------------------- |
-| `baseline` | Present before scanning was enabled. Never auto-scanned.              |
-| `queued`   | A scan job is in flight.                                              |
+| State      | Meaning                                                                |
+| ---------- | ---------------------------------------------------------------------- |
+| `baseline` | Present before scanning was enabled. Never auto-scanned.               |
+| `queued`   | A scan job is in flight.                                               |
 | `scanned`  | Scanned successfully. Will not be re-scanned implicitly.               |
 | `failed`   | The last attempt failed; the report carries the reason.                |
 
@@ -315,10 +315,10 @@ Scans need a local database. `services/scanning/db/` is its only owner, and
 scans never update it themselves — both tools would otherwise try to refresh
 mid-scan and fail the scan when the download fails.
 
-| Path                              | When                                                    |
-| --------------------------------- | ------------------------------------------------------- |
-| Online (`POST /api/scan/db-update`) | Normal networks. Trivy via `oras` (falling back to Trivy's own downloader), Grype via `grype db update`. |
-| Offline (`POST /api/scan/db-import`) | Restricted or air-gapped networks. Extracts pre-downloaded archives; nothing touches the network. |
+| Path                                 | When                                                                                                     |
+| ---------------------------------    | -------------------------------------------------------------------------------------------------------- |
+| Online (`POST /api/scan/db-update`)  | Normal networks. Trivy via `oras` (falling back to Trivy's own downloader), Grype via `grype db update`. |
+| Offline (`POST /api/scan/db-import`) | Restricted or air-gapped networks. Extracts pre-downloaded archives; nothing touches the network.        |
 
 **Startup behaviour:** the app fetches a database only if one is *missing*. A
 present database is left to `SCANNER_DB_UPDATE_AT` /

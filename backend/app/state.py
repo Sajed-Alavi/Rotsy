@@ -17,7 +17,7 @@ from typing import Any
 from fastapi import HTTPException, Request, status
 
 from .core.cache import Cache
-from .core.nexus_client import NexusClient
+from .modules.nexus.connector import NexusClient
 
 
 @dataclass

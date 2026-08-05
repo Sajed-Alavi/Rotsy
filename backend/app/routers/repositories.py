@@ -23,8 +23,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..core.access_control import DELETE, READ, AccessResolver
 from ..dependencies import RequirePermission, get_access, get_session
-from ..services import images, nexus_security
-from ..services.scanning import events as scan_events
+from ..services import images
+from ..modules.nexus import security as nexus_security
+from ..modules.nexus import events as scan_events
 from ..state import app_state, require_nexus
 
 logger = logging.getLogger(__name__)

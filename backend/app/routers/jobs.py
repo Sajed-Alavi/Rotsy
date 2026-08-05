@@ -62,7 +62,7 @@ async def cancel_job(request: Request, job_id: str) -> dict[str, Any]:
          its next ``await`` (e.g. the subprocess-wait loop a database download
          is sitting in) rather than waiting for the handler to check a flag it
          was never actually reading — a handler that kills its own subprocess
-         on ``asyncio.CancelledError`` (see services/scanning/db/process.py)
+         on ``asyncio.CancelledError`` (see modules/nexus/db/process.py)
          stops within moments, not "eventually or never".
     """
     cache = app_state(request).cache

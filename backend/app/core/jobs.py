@@ -365,7 +365,7 @@ class JobRunner:
         except asyncio.CancelledError:
             # Task.cancel() from request_cancel() lands here. The handler is
             # expected to have killed any subprocess it owned on its way out
-            # (see run_streaming/oras_pull in services/scanning/db/process.py) —
+            # (see run_streaming/oras_pull in modules/nexus/db/process.py) —
             # this is only responsible for the terminal job state, not process
             # cleanup. Deliberately not re-raised: this task is what was
             # cancelled, and swallowing it here is how that cancellation ends

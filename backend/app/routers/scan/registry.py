@@ -7,7 +7,7 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends, Query, Request
 
 from ...dependencies import RequirePermission
-from ...services.scanning import registry as registry_discovery
+from ...modules.nexus import registry as registry_discovery
 from ._common import require_backend
 
 router = APIRouter()

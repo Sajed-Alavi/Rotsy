@@ -1,6 +1,6 @@
 """Vulnerability scanning endpoints.
 
-Scans are **event-driven only** — see :mod:`app.services.scanning.events`. There
+Scans are **event-driven only** — see :mod:`app.modules.nexus.events`. There
 is no "scan everything" endpoint: the previous ``POST /scan/scan-all`` fanned a
 job out for every image in every enabled repository, which is exactly the
 behaviour this system must not have. An image is scanned when it is pushed

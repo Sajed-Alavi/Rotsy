@@ -27,7 +27,7 @@ import time
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
-from ..core.nexus_client import NexusClient
+from ..modules.nexus.connector import NexusClient
 from . import make_emitter
 
 logger = logging.getLogger(__name__)

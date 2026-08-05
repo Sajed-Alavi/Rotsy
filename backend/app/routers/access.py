@@ -20,7 +20,7 @@ from ..core.permissions import PERMISSIONS
 from ..dependencies import RequirePermission, get_current_user, get_session
 from ..models import User
 from ..services import access_tokens as token_service
-from ..services import nexus_security
+from ..modules.nexus import security as nexus_security
 from ..services.audit import log_action
 from ..state import app_state, require_nexus
 

@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ...config import Settings
 from ...core.config_store import get_or_create_webhook_secret, rotate_webhook_secret
 from ...dependencies import RequirePermission, get_session, get_settings
-from ...services.scanning import events as scan_events
+from ...modules.nexus import events as scan_events
 from ._common import default_scanners, require_backend
 
 logger = logging.getLogger(__name__)

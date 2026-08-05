@@ -14,7 +14,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 from ..dependencies import RequirePermission
-from ..services import nexus_tasks
+from ..modules.nexus import tasks as nexus_tasks
 from ..state import app_state, require_nexus
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])

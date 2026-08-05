@@ -34,10 +34,10 @@ from .backup import trigger_backup
 from .backup_archive import create_archive
 from .metrics_collector import collect_blobstore_metrics, collect_once, latest_blobstore_snapshot, latest_snapshot
 from .retention import run_all_enabled, run_policy
-from .scanning import Credentials, scan_image
-from .scanning import db as scanner_db
-from .scanning import events as scan_events
-from .scanning import registry as registry_discovery
+from ..modules.nexus import Credentials, scan_image
+from ..modules.nexus import db as scanner_db
+from ..modules.nexus import events as scan_events
+from ..modules.nexus import registry as registry_discovery
 from .sync import sync_repository
 
 logger = logging.getLogger(__name__)

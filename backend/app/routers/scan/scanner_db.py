@@ -7,8 +7,8 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends, Query, Request, status
 
 from ...dependencies import RequirePermission
-from ...services.scanning import db as scanner_db
-from ...services.scanning.db.tracking import current_db_job, enqueue_db_job
+from ...modules.nexus import db as scanner_db
+from ...modules.nexus.db.tracking import current_db_job, enqueue_db_job
 from ._common import require_backend
 
 router = APIRouter()

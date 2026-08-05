@@ -13,7 +13,7 @@ from ...core.access_control import SCAN, AccessResolver
 from ...dependencies import RequirePermission, get_access, get_session, get_settings
 from ...models import ScannedImage, ScanReport
 from ...schemas.scan import ScanRequest
-from ...services.scanning import events as scan_events
+from ...modules.nexus import events as scan_events
 from ._common import default_scanners, require_backend
 
 router = APIRouter()

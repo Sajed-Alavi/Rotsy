@@ -18,7 +18,7 @@ from datetime import datetime, timezone
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..core.nexus_client import NexusClient
+from ..modules.nexus.connector import NexusClient
 from ..models import Metric
 from . import make_emitter
 

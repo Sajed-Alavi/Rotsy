@@ -13,7 +13,7 @@ import json
 import logging
 from typing import Any
 
-from ..core.nexus_client import NexusClient
+from ..modules.nexus.connector import NexusClient
 
 logger = logging.getLogger(__name__)
 

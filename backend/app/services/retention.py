@@ -21,7 +21,7 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..core.nexus_client import NexusClient
+from ..modules.nexus.connector import NexusClient
 from ..models import RetentionPolicy
 from .images import component_timestamps, delete_component, trigger_compact
 from . import make_emitter

@@ -26,7 +26,7 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Protocol
 
-from ..core.nexus_client import DOCKER_MANIFEST_ACCEPT, NexusClient
+from ..modules.nexus.connector import DOCKER_MANIFEST_ACCEPT, NexusClient
 from .images import component_timestamps
 
 logger = logging.getLogger(__name__)

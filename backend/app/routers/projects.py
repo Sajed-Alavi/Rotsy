@@ -15,10 +15,12 @@ from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..core import projects as projects_core
+from ..core.health import compute_health_score
 from ..core.integrations import get_module
 from ..dependencies import RequirePermission, get_session
 from ..models import Insight
 from ..schemas.project import (
+    HealthScoreOut,
     InsightOut,
     IntegrationConnect,
     IntegrationOut,
@@ -105,3 +107,17 @@ async def list_insights(
         )
     ).scalars().all()
     return list(rows)
+
+
+@router.get("/{project_id}/health", response_model=HealthScoreOut,
+            dependencies=[Depends(RequirePermission("projects:read"))])
+async def get_health_score(
+    project_id: int,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> HealthScoreOut:
+    """0-100 deterministic health score — see core/health.py for the formula.
+    Higher is better; 0 with ``has_data=False`` means "nothing scored yet",
+    not "this project is unhealthy"."""
+    await projects_core.get_project(session, project_id)  # 404s if missing
+    result = await compute_health_score(session, project_id)
+    return HealthScoreOut(score=result.score, factors=result.factors, has_data=result.has_data)

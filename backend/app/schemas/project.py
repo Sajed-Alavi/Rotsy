@@ -41,6 +41,12 @@ class IntegrationConnect(BaseModel):
     credential_ref: str | None = None
 
 
+class HealthScoreOut(BaseModel):
+    score: int
+    factors: list[str]
+    has_data: bool
+
+
 class InsightOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

@@ -9,6 +9,13 @@ import StorageAnalyzerPage from './features/storage/StorageAnalyzerPage.jsx';
 import MetricsPage from './features/metrics/MetricsPage.jsx';
 import JobsPage from './features/jobs/JobsPage.jsx';
 import AlertsPage from './features/alerts/AlertsPage.jsx';
+import ProjectsListPage from './features/projects/ProjectsListPage.jsx';
+import ProjectLayout from './features/projects/ProjectLayout.jsx';
+import ProjectOverviewPage from './features/projects/pages/OverviewPage.jsx';
+import ProjectAnalysisPage from './features/projects/pages/AnalysisPage.jsx';
+import ProjectSecurityPage from './features/projects/pages/SecurityPage.jsx';
+import ProjectArtifactsPage from './features/projects/pages/ArtifactsPage.jsx';
+import ProjectInsightsPage from './features/projects/pages/InsightsPage.jsx';
 import SettingsLayout from './features/settings/SettingsLayout.jsx';
 import SettingsGeneralPage from './features/settings/pages/GeneralPage.jsx';
 import SettingsIntegrationsPage from './features/settings/pages/IntegrationsPage.jsx';
@@ -59,6 +66,14 @@ export default function App() {
           <Route path="metrics" element={<MetricsPage />} />
           <Route path="jobs" element={<JobsPage />} />
           <Route path="alerts" element={<AlertsPage />} />
+          <Route path="projects" element={<ProjectsListPage />} />
+          <Route path="projects/:id" element={<ProjectLayout />}>
+            <Route index element={<ProjectOverviewPage />} />
+            <Route path="analysis" element={<ProjectAnalysisPage />} />
+            <Route path="security" element={<ProjectSecurityPage />} />
+            <Route path="artifacts" element={<ProjectArtifactsPage />} />
+            <Route path="insights" element={<ProjectInsightsPage />} />
+          </Route>
           <Route path="settings" element={<SettingsLayout />}>
             <Route index element={<SettingsGeneralPage />} />
             <Route path="integrations" element={<SettingsIntegrationsPage />} />

@@ -13,6 +13,7 @@
 export const NAV = [
   { section: 'Overview' },
   { to: '/', label: 'Dashboard', icon: 'grid', end: true },
+  { to: '/projects', label: 'Projects', icon: 'folder', perm: 'projects:read' },
   { to: '/browse', label: 'Browse Files', icon: 'folder', perm: 'repositories:read' },
   { to: '/storage', label: 'Storage Analyzer', icon: 'hdd', perm: 'storage:read' },
 

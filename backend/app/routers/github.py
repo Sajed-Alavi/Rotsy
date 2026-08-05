@@ -44,6 +44,23 @@ class MapRepoBody(BaseModel):
     project_id: int
 
 
+@router.get("/repositories", response_model=list[RepoOut],
+            dependencies=[Depends(RequirePermission("projects:read"))])
+async def list_repositories(
+    session: Annotated[AsyncSession, Depends(get_session)],
+    unmapped: bool = False,
+) -> list[RepoOut]:
+    """All discovered repositories across every installation — the pool a
+    project's "connect a repository" step picks from. ``unmapped=true``
+    narrows to ones not yet attached to any Project."""
+    stmt = select(GitHubRepository)
+    if unmapped:
+        stmt = stmt.where(GitHubRepository.project_id.is_(None))
+    rows = (await session.execute(stmt)).scalars().all()
+    return [RepoOut(id=r.id, full_name=r.full_name, default_branch=r.default_branch, project_id=r.project_id)
+            for r in rows]
+
+
 @router.get("/status", dependencies=[Depends(RequirePermission("projects:read"))])
 async def github_status(
     session: Annotated[AsyncSession, Depends(get_session)],

@@ -31,7 +31,12 @@ class AnalysisRunOut(BaseModel):
     commit_sha: str
     ref: str
     status: str
+    trigger: str
     issues_count: int | None
+    bugs: int | None
+    vulnerabilities: int | None
+    code_smells: int | None
+    security_hotspots: int | None
     coverage: float | None
     duplication_pct: float | None
     started_at: datetime

@@ -184,16 +184,54 @@ function GitHubCard() {
 
 function SonarCard() {
   const [data, setData] = useState(null);
+  const [form, setForm] = useState({ url: '', token: '' });
   const [testing, setTesting] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [msg, setMsg] = useState('');
   const [err, setErr] = useState('');
 
   const load = async () => {
     setErr('');
     try { setData(await api.get('/modules/sonar/status')); } catch (e) { setErr(e.message); }
+    try {
+      const cfg = await api.get('/modules/sonar/config');
+      if (cfg.configured) setForm((f) => ({ ...f, url: cfg.url }));
+    } catch (_) { /* no config saved yet */ }
   };
   useEffect(() => { load(); }, []);
 
-  const test = async () => { setTesting(true); await load(); setTesting(false); };
+  const test = async () => {
+    setErr(''); setMsg(''); setTesting(true);
+    try {
+      // Test the currently-saved connection by re-checking status, which
+      // always reflects the effective (DB-first, env-fallback) connection —
+      // one code path for both the card's badge and this button.
+      await load();
+    } catch (e) { setErr(e.message); }
+    setTesting(false);
+  };
+
+  const testCandidate = async () => {
+    setErr(''); setMsg(''); setTesting(true);
+    try {
+      const r = await api.post('/modules/sonar/config/test', form);
+      if (r.ok) setMsg(`Connection OK — SonarQube ${r.version || ''}${r.compatible === false ? ' (unsupported version)' : ''}`);
+      else setErr(r.error || 'Test failed.');
+    } catch (e) { setErr(e.message); }
+    setTesting(false);
+  };
+
+  const save = async (e) => {
+    e.preventDefault();
+    setErr(''); setMsg(''); setSaving(true);
+    try {
+      await api.put('/modules/sonar/config', form);
+      setMsg('SonarQube connection saved.');
+      setForm((f) => ({ ...f, token: '' }));
+      await load();
+    } catch (ex) { setErr(ex.message); }
+    setSaving(false);
+  };
 
   const status = !data
     ? { tone: 'neutral', label: '…' }
@@ -212,25 +250,87 @@ function SonarCard() {
         { label: 'Server', value: data.server_url },
         { label: 'Version', value: data.version || '—' },
         { label: 'Health', value: data.reachable ? 'Healthy' : 'Unreachable' },
+        { label: 'Last OK', value: data.last_success_at ? relativeTime(data.last_success_at) : '—' },
       ] : []}
       onTest={data?.configured ? test : undefined}
       testing={testing}
     >
-      {!data?.configured ? (
+      <div className="space-y-4">
+        {data?.configured && data.compatible === false && (
+          <div className="border border-amber-200 bg-amber-50 px-3 py-2 font-mono text-xs text-amber-700 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-400">
+            {data.error || `SonarQube ${data.version} may not be fully supported (minimum tested: 9.x).`}
+          </div>
+        )}
+        <form onSubmit={save} className="space-y-3">
+          <div>
+            <div className="mb-1 font-mono text-[10px] uppercase tracking-wider text-slate-500">Server URL</div>
+            <input value={form.url} onChange={(e) => setForm({ ...form, url: e.target.value })} placeholder="https://sonarqube.internal" className={INPUT} />
+          </div>
+          <div>
+            <div className="mb-1 font-mono text-[10px] uppercase tracking-wider text-slate-500">
+              Token {data?.configured && '(leave blank to keep the current one)'}
+            </div>
+            <input type="password" value={form.token} onChange={(e) => setForm({ ...form, token: e.target.value })} placeholder={data?.configured ? '••••••••' : ''} className={INPUT} />
+          </div>
+          <div className="flex gap-2 pt-1">
+            <button type="button" onClick={testCandidate} disabled={testing} className="border border-slate-300 px-3 py-1.5 font-mono text-xs uppercase tracking-wider text-slate-600 hover:bg-slate-100 disabled:opacity-50 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800">
+              {testing ? '···' : 'Test'}
+            </button>
+            <button type="submit" disabled={saving} className="border border-sky-300 bg-sky-50 px-3 py-1.5 font-mono text-xs uppercase tracking-wider text-sky-700 hover:bg-sky-100 disabled:opacity-50 dark:border-sky-700 dark:bg-sky-950/40 dark:text-sky-300 dark:hover:bg-sky-900/40">
+              {saving ? '···' : 'Save'}
+            </button>
+          </div>
+        </form>
         <p className="font-mono text-[11px] text-slate-500 dark:text-slate-500">
-          No SonarQube server is configured. Set
-          <code className="mx-1 rounded bg-slate-100 px-1 dark:bg-slate-800">SONAR_URL</code> and
-          <code className="mx-1 rounded bg-slate-100 px-1 dark:bg-slate-800">SONAR_ADMIN_TOKEN</code> for this instance.
-          In-app credential configuration is planned for a future release.
+          Once healthy, attach a project to SonarQube analysis below — Rotsy creates the Sonar project and
+          issues its analysis token automatically. No manual SonarQube setup required.
         </p>
-      ) : (
-        <p className="font-mono text-[11px] text-slate-500 dark:text-slate-500">
-          Once healthy, attach individual repositories to SonarQube analysis from each Project's page —
-          Rotsy creates the Sonar project and issues its analysis token automatically.
-        </p>
-      )}
-      {data?.error && <div className="mt-3 border border-rose-200 bg-rose-50 px-3 py-2 font-mono text-xs text-rose-600 dark:border-rose-800 dark:bg-rose-950/30 dark:text-rose-400">{data.error}</div>}
+        <RunAnalysisTool />
+      </div>
+      {msg && <div className="border border-emerald-200 bg-emerald-50 px-3 py-2 font-mono text-xs text-emerald-700 dark:border-emerald-800 dark:bg-emerald-950/30 dark:text-emerald-400">{msg}</div>}
+      {data?.error && data.compatible !== false && <div className="mt-3 border border-rose-200 bg-rose-50 px-3 py-2 font-mono text-xs text-rose-600 dark:border-rose-800 dark:bg-rose-950/30 dark:text-rose-400">{data.error}</div>}
       {err && <div className="mt-3 font-mono text-xs text-rose-600 dark:text-rose-400">{err}</div>}
     </IntegrationCard>
+  );
+}
+
+/**
+ * Minimal manual-trigger tool: run analysis for a project by id. A stopgap
+ * until the full Project page (with a proper repository picker) exists —
+ * still calls the exact same backend endpoint/job that endpoint will use.
+ */
+function RunAnalysisTool() {
+  const [projectId, setProjectId] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState('');
+  const [err, setErr] = useState('');
+
+  const run = async (e) => {
+    e.preventDefault();
+    setErr(''); setMsg(''); setBusy(true);
+    try {
+      const r = await api.post(`/modules/sonar/projects/${projectId}/run-analysis`, {});
+      setMsg(`Queued job ${r.job_id} for commit ${r.commit_sha.slice(0, 8)} — see Background Jobs for progress.`);
+    } catch (ex) { setErr(ex.message); }
+    setBusy(false);
+  };
+
+  return (
+    <div className="border-t border-slate-100 pt-3 dark:border-slate-800/60">
+      <div className="mb-1 font-mono text-[10px] uppercase tracking-wider text-slate-500">Run analysis manually</div>
+      <form onSubmit={run} className="flex gap-2">
+        <input
+          value={projectId}
+          onChange={(e) => setProjectId(e.target.value)}
+          placeholder="Project ID"
+          className={`${INPUT} max-w-[10rem]`}
+        />
+        <button type="submit" disabled={busy || !projectId} className="border border-slate-300 px-3 py-1.5 font-mono text-xs uppercase tracking-wider text-slate-600 hover:bg-slate-100 disabled:opacity-50 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800">
+          {busy ? '···' : 'Run Analysis'}
+        </button>
+      </form>
+      {msg && <div className="mt-2 font-mono text-[11px] text-emerald-600 dark:text-emerald-400">{msg}</div>}
+      {err && <div className="mt-2 font-mono text-[11px] text-rose-600 dark:text-rose-400">{err}</div>}
+    </div>
   );
 }

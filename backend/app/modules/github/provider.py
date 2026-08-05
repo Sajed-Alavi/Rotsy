@@ -76,6 +76,23 @@ class GitHubProvider:
             raise GitHubProviderError(f"git clone failed for {repo.external_id}@{ref}: {safe_stderr[:500]}")
         return dest_dir
 
+    async def get_latest_commit_sha(self, credential_ref: str, repo: RepoRef, ref: str) -> str:
+        """The current HEAD sha of ``ref`` — used by the manual "Run Analysis"
+        trigger, which has a branch to analyze but (unlike a push webhook) no
+        commit sha handed to it by the event."""
+        token = await self._token(credential_ref)
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.get(
+                f"{_GITHUB_API}/repos/{repo.external_id}/commits/{ref}",
+                headers={**_HEADERS_BASE, "Authorization": f"Bearer {token}"},
+            )
+        if resp.status_code >= 400:
+            raise GitHubProviderError(
+                f"Failed to resolve the latest commit on {repo.external_id}@{ref}: "
+                f"{resp.status_code} {resp.text[:300]}"
+            )
+        return resp.json()["sha"]
+
     async def report_status(self, credential_ref: str, repo: RepoRef, sha: str, state: str, description: str, target_url: str) -> None:
         token = await self._token(credential_ref)
         async with httpx.AsyncClient(timeout=15.0) as client:

@@ -4,13 +4,18 @@ Same shape as ``app.modules.nexus.connector.NexusClient`` — one small class
 wrapping the handful of endpoints Rotsy actually needs, not a general Sonar
 SDK. Auth is HTTP Basic with the admin token as the username and an empty
 password, which is how Sonar's Web API accepts a token.
+
+Takes an explicit ``url``/``token`` pair rather than ``Settings`` directly, so
+callers can build one from either the dashboard-managed connection
+(:func:`app.core.config_store.get_sonar_connection`, DB-first with env
+fallback) or from candidate credentials that haven't been saved yet (the
+"Test Connection" flow) — same shape as how the Nexus test-connection
+endpoint validates before saving.
 """
 
 from __future__ import annotations
 
 import httpx
-
-from ...config import Settings
 
 
 class SonarError(Exception):
@@ -18,11 +23,11 @@ class SonarError(Exception):
 
 
 class SonarClient:
-    def __init__(self, settings: Settings) -> None:
-        if not settings.SONAR_URL or not settings.SONAR_ADMIN_TOKEN:
-            raise SonarError("SONAR_URL / SONAR_ADMIN_TOKEN are not configured")
-        self._base_url = settings.SONAR_URL.rstrip("/")
-        self._auth = (settings.SONAR_ADMIN_TOKEN, "")
+    def __init__(self, url: str, token: str) -> None:
+        if not url or not token:
+            raise SonarError("SonarQube URL and token are required")
+        self._base_url = url.rstrip("/")
+        self._auth = (token, "")
 
     async def _client(self) -> httpx.AsyncClient:
         return httpx.AsyncClient(base_url=self._base_url, auth=self._auth, timeout=20.0)

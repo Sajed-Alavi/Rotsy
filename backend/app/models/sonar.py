@@ -43,7 +43,15 @@ class AnalysisRun(Base):
     commit_sha: Mapped[str] = mapped_column(String(64), nullable=False)
     ref: Mapped[str] = mapped_column(String(255), nullable=False)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")  # pending|running|success|failed
+    # "push" | "manual" — how this run was started. Manual and automatic runs
+    # go through the exact same job handler; this column only records which
+    # one asked for it, for the analysis-history view.
+    trigger: Mapped[str] = mapped_column(String(16), nullable=False, default="push")
     issues_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    bugs: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    vulnerabilities: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    code_smells: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    security_hotspots: Mapped[int | None] = mapped_column(Integer, nullable=True)
     coverage: Mapped[float | None] = mapped_column(Float, nullable=True)
     duplication_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)

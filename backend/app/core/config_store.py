@@ -210,3 +210,99 @@ async def rotate_webhook_secret(session: AsyncSession) -> str:
     await session.commit()
     logger.warning("Nexus webhook secret rotated — update the Nexus webhook capability to match.")
     return secret
+
+
+# ---------------------------------------------------------------------------
+# SonarQube connection (dashboard-managed, same encrypted-at-rest pattern as
+# the Nexus connection above — reuses encrypt_password/decrypt_password
+# rather than a second cipher, since NEXUS_CONFIG_ENCRYPTION_KEY protects any
+# dashboard-entered secret, not only the Nexus password despite its name).
+# ---------------------------------------------------------------------------
+SONAR_CONFIG_KEY = "sonar_connection"
+SONAR_LAST_SUCCESS_KEY = "sonar_last_success"
+
+
+@dataclass
+class SonarConnection:
+    url: str
+    token: str
+
+    def is_configured(self) -> bool:
+        return bool(self.url and self.token)
+
+
+async def get_sonar_connection(session: AsyncSession, settings: Settings) -> SonarConnection:
+    """Dashboard value if present, otherwise the env/bootstrap default."""
+    row = await session.scalar(select(SystemConfig).where(SystemConfig.key == SONAR_CONFIG_KEY))
+    if row is not None:
+        try:
+            data = json.loads(row.value_json)
+            return SonarConnection(
+                url=data.get("url", ""),
+                token=decrypt_password(data.get("token_enc", ""), settings),
+            )
+        except (json.JSONDecodeError, TypeError):
+            logger.warning("Corrupt sonar_connection config row — falling back to env.")
+
+    return SonarConnection(url=settings.SONAR_URL, token=settings.SONAR_ADMIN_TOKEN)
+
+
+async def save_sonar_connection(session: AsyncSession, settings: Settings, url: str, token: str) -> SonarConnection:
+    """Persist the SonarQube connection. ``token`` is stored encrypted."""
+    blob = json.dumps({
+        "url": url.rstrip("/"),
+        "token_enc": encrypt_password(token, settings),
+    })
+    row = await session.scalar(select(SystemConfig).where(SystemConfig.key == SONAR_CONFIG_KEY))
+    if row is None:
+        session.add(SystemConfig(key=SONAR_CONFIG_KEY, value_json=blob))
+    else:
+        row.value_json = blob
+    await session.commit()
+    logger.info("SonarQube connection updated via dashboard.")
+    return SonarConnection(url=url.rstrip("/"), token=token)
+
+
+async def sonar_connection_masked(session: AsyncSession) -> dict:
+    """The connection with the token masked, plus when it was last saved."""
+    row = await session.scalar(select(SystemConfig).where(SystemConfig.key == SONAR_CONFIG_KEY))
+    if row is None:
+        return {"configured": False}
+    try:
+        data = json.loads(row.value_json)
+        return {
+            "configured": True,
+            "url": data.get("url", ""),
+            "token_set": bool(data.get("token_enc")),
+            "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+        }
+    except (json.JSONDecodeError, TypeError):
+        return {"configured": False}
+
+
+async def record_sonar_success(session: AsyncSession) -> None:
+    """Timestamp the most recent successful SonarQube health check.
+
+    Separate from ``updated_at`` on the connection row (which only changes
+    when credentials are saved) — this is what "last successful
+    communication" on the Integrations card actually means: the last time
+    Rotsy proved it could reach Sonar, not the last time someone edited a URL.
+    """
+    import datetime as _dt
+    blob = json.dumps({"at": _dt.datetime.now(_dt.timezone.utc).isoformat()})
+    row = await session.scalar(select(SystemConfig).where(SystemConfig.key == SONAR_LAST_SUCCESS_KEY))
+    if row is None:
+        session.add(SystemConfig(key=SONAR_LAST_SUCCESS_KEY, value_json=blob))
+    else:
+        row.value_json = blob
+    await session.commit()
+
+
+async def get_sonar_last_success(session: AsyncSession) -> str | None:
+    row = await session.scalar(select(SystemConfig).where(SystemConfig.key == SONAR_LAST_SUCCESS_KEY))
+    if row is None:
+        return None
+    try:
+        return json.loads(row.value_json).get("at")
+    except (json.JSONDecodeError, TypeError):
+        return None

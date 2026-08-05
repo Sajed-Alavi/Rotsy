@@ -44,7 +44,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from ...core.cache import Cache
-from ...core.nexus_client import NexusClient
+from .connector import NexusClient
 
 logger = logging.getLogger(__name__)
 

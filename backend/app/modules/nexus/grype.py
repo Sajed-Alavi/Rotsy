@@ -80,7 +80,7 @@ async def run(
         "GRYPE_REGISTRY_AUTH_USERNAME": creds.username,
         "GRYPE_REGISTRY_AUTH_PASSWORD": creds.password,
         "GRYPE_DEFAULT_IMAGE_PULL_SOURCE": "registry",
-        # The database is managed by app.services.scanning.db. Auto-update would
+        # The database is managed by app.modules.nexus.db. Auto-update would
         # fail the scan on a restricted network, and validate-age makes Grype
         # refuse any database older than five days — a slightly stale database
         # is far better than no scan.

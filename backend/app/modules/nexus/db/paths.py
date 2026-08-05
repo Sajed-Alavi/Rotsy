@@ -57,7 +57,7 @@ GRYPE_CACHE_ROOT = Path(os.environ.get("GRYPE_CACHE_DIR") or (Path.home() / ".ca
 # are blocked the databases cannot be pulled at runtime: an operator downloads
 # them on a connected machine, drops the archives into this host folder (mounted
 # by docker-compose) and triggers an import, which extracts them straight into
-# the scanner caches. See :mod:`app.services.scanning.db.offline`.
+# the scanner caches. See :mod:`app.modules.nexus.db.offline`.
 OFFLINE_DB_DIR = Path(os.environ.get("SCANNER_OFFLINE_DIR") or "/app/offline-db")
 
 # A Grype database older than this is reported as stale by ``readiness``.

@@ -133,6 +133,22 @@ async def _seed_bootstrap_admin(
             existing.roles.append(admin_role)
         return
 
+    # A user with this username doesn't exist, but the email might already be
+    # taken by a *different* username (e.g. BOOTSTRAP_ADMIN_USERNAME was
+    # changed without also changing BOOTSTRAP_ADMIN_EMAIL) — email is unique,
+    # so inserting here would otherwise fail with a raw IntegrityError instead
+    # of a message that says what to fix.
+    email_owner = await session.scalar(select(User).where(User.email == settings.BOOTSTRAP_ADMIN_EMAIL))
+    if email_owner is not None:
+        logger.error(
+            "Cannot create bootstrap admin '%s': BOOTSTRAP_ADMIN_EMAIL (%s) is already used by "
+            "user '%s'. Set a unique BOOTSTRAP_ADMIN_EMAIL, or change BOOTSTRAP_ADMIN_USERNAME to "
+            "'%s' to reuse that account.",
+            settings.BOOTSTRAP_ADMIN_USERNAME, settings.BOOTSTRAP_ADMIN_EMAIL, email_owner.username,
+            email_owner.username,
+        )
+        return
+
     user = User(
         username=settings.BOOTSTRAP_ADMIN_USERNAME,
         email=settings.BOOTSTRAP_ADMIN_EMAIL,

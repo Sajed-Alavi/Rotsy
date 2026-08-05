@@ -52,8 +52,17 @@ fixes them:
 
 from __future__ import annotations
 
+from ...core.integrations import ModuleManifest, register_module
 from .base import SEVERITIES, Credentials, ScanOutcome
 from .persistence import apply_outcome, reap_stale_reports, scan_image, severity_from_cvss
+
+register_module(ModuleManifest(
+    # Keyed by kind, not vendor, since "nexus" would otherwise conflate the
+    # vendor name with what the module *is*. This does mean only one
+    # artifact-registry module can be connected until a second one (Harbor,
+    # etc.) is added — accepted for now; see the module registry's docstring.
+    key="artifact_registry", kind="artifact_registry", display_name="Nexus Repository Manager",
+))
 
 __all__ = [
     "SEVERITIES",

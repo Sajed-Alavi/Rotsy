@@ -1,0 +1,107 @@
+"""Project + integration endpoints.
+
+Thin HTTP layer only — all logic lives in ``core/projects.py``. This router
+knows about ``Project``/``Integration``, never about GitHub, GitLab, Sonar or
+Nexus specifics; a module-specific router (e.g. ``routers/github.py``) calls
+into ``core.projects.connect_integration`` the same way this one does.
+"""
+
+from __future__ import annotations
+
+from typing import Annotated
+
+from fastapi import APIRouter, Depends
+from sqlalchemy import desc, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from ..core import projects as projects_core
+from ..core.integrations import get_module
+from ..dependencies import RequirePermission, get_session
+from ..models import Insight
+from ..schemas.project import (
+    InsightOut,
+    IntegrationConnect,
+    IntegrationOut,
+    ProjectCreate,
+    ProjectOut,
+)
+
+router = APIRouter(prefix="/projects", tags=["projects"])
+
+
+@router.get("", response_model=list[ProjectOut],
+            dependencies=[Depends(RequirePermission("projects:read"))])
+async def list_projects(
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> list[ProjectOut]:
+    return await projects_core.list_projects(session)
+
+
+@router.post("", response_model=ProjectOut, status_code=201,
+             dependencies=[Depends(RequirePermission("projects:write"))])
+async def create_project(
+    body: ProjectCreate,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> ProjectOut:
+    return await projects_core.create_project(session, body.name)
+
+
+@router.get("/{project_id}", response_model=ProjectOut,
+            dependencies=[Depends(RequirePermission("projects:read"))])
+async def get_project(
+    project_id: int,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> ProjectOut:
+    return await projects_core.get_project(session, project_id)
+
+
+@router.delete("/{project_id}", status_code=204,
+                dependencies=[Depends(RequirePermission("projects:write"))])
+async def delete_project(
+    project_id: int,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> None:
+    await projects_core.delete_project(session, project_id)
+
+
+@router.get("/{project_id}/integrations", response_model=list[IntegrationOut],
+            dependencies=[Depends(RequirePermission("projects:read"))])
+async def list_integrations(
+    project_id: int,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> list[IntegrationOut]:
+    return await projects_core.list_integrations(session, project_id)
+
+
+@router.post("/{project_id}/integrations", response_model=IntegrationOut, status_code=201,
+             dependencies=[Depends(RequirePermission("projects:write"))])
+async def connect_integration(
+    project_id: int,
+    body: IntegrationConnect,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> IntegrationOut:
+    # connect_integration 400s if the key isn't registered; when it is, the
+    # manifest is always present, so this default is never actually used.
+    manifest = get_module(body.module_key)
+    kind = manifest.kind if manifest else "source"
+    return await projects_core.connect_integration(
+        session, project_id, body.module_key, kind, body.config, body.credential_ref
+    )
+
+
+@router.get("/{project_id}/insights", response_model=list[InsightOut],
+            dependencies=[Depends(RequirePermission("projects:read"))])
+async def list_insights(
+    project_id: int,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> list[Insight]:
+    await projects_core.get_project(session, project_id)  # 404s if missing
+    rows = (
+        await session.execute(
+            select(Insight)
+            .where(Insight.project_id == project_id)
+            .order_by(desc(Insight.created_at))
+            .limit(100)
+        )
+    ).scalars().all()
+    return list(rows)

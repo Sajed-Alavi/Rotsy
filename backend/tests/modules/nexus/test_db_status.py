@@ -1,6 +1,6 @@
 """Vulnerability-database status parsing.
 
-Pure functions from ``app.services.scanning.db.status`` — no scanner binary and
+Pure functions from ``app.modules.nexus.db.status`` — no scanner binary and
 no cache directory needed.
 """
 
@@ -8,8 +8,8 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from app.services.scanning.db import Readiness
-from app.services.scanning.db.status import as_datetime, dir_size, parse_iso
+from app.modules.nexus.db import Readiness
+from app.modules.nexus.db.status import as_datetime, dir_size, parse_iso
 
 
 def test_parse_iso_normalises_z_suffix():

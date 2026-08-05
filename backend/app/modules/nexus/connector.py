@@ -18,7 +18,7 @@ from typing import Any, AsyncIterator
 
 import httpx
 
-from ..config import Settings
+from ...config import Settings
 
 logger = logging.getLogger(__name__)
 

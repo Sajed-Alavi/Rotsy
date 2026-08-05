@@ -73,7 +73,7 @@ async def run(
         "--scanners", "vuln",
         # Read from the registry, never from a local container runtime.
         "--image-src", "remote",
-        # The database is managed by app.services.scanning.db. Without this,
+        # The database is managed by app.modules.nexus.db. Without this,
         # Trivy tries to download it mid-scan and fails the scan when it cannot.
         "--skip-db-update",
         "--cache-dir", str(scanner_db.TRIVY_CACHE_ROOT),

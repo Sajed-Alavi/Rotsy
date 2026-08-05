@@ -22,7 +22,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from ..core.nexus_client import NexusClient
+from .connector import NexusClient
 
 logger = logging.getLogger(__name__)
 

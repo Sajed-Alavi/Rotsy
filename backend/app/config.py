@@ -50,8 +50,26 @@ class Settings(BaseSettings):
     NEXUS_VERIFY_SSL: bool = True
     # NOTE: there is deliberately no Docker registry URL or port setting. Each
     # Docker repository's connector endpoint is discovered from Nexus at scan
-    # time (app/services/scanning/registry.py), so adding repositories or moving a
+    # time (app/modules/nexus/registry.py), so adding repositories or moving a
     # connector port needs no configuration change here or in the UI.
+
+    # --- GitHub App (OPTIONAL — one App backs every connected project) ----
+    # Created once by the operator at github.com/settings/apps; the App id,
+    # its private key (PEM) and the webhook secret configured on the App are
+    # all that's needed. No per-project GitHub config — every project reuses
+    # this one App's installations.
+    GITHUB_APP_ID: str = ""
+    GITHUB_APP_SLUG: str = ""  # used to build the installation URL
+    GITHUB_APP_PRIVATE_KEY: str = ""  # PEM, multi-line
+    GITHUB_WEBHOOK_SECRET: str = ""
+
+    # --- SonarQube (OPTIONAL — the embedded analysis engine) ---------------
+    # A token with "Administer" rights, used to create projects and issue the
+    # per-project analysis tokens sonar-scanner runs with. Operators point
+    # this at a self-hosted SonarQube (Community Edition is sufficient for
+    # the MVP language set); Rotsy never asks the user to open the Sonar UI.
+    SONAR_URL: str = ""
+    SONAR_ADMIN_TOKEN: str = ""
 
     # --- Database (v2 persistence: users/roles/permissions) --------------
     DATABASE_URL: str

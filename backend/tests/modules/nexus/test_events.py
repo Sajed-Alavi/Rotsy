@@ -12,7 +12,7 @@ import hmac
 
 import pytest
 
-from app.services.scanning.events import parse_webhook_payload, verify_webhook_signature
+from app.modules.nexus.events import parse_webhook_payload, verify_webhook_signature
 
 SECRET = "a-shared-webhook-secret"
 BODY = b'{"action":"CREATED"}'

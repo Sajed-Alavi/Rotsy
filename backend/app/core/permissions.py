@@ -27,6 +27,9 @@ PERMISSIONS: list[tuple[str, str]] = [
     # Repositories (Feature F)
     ("repositories:read", "View repositories"),
     ("repositories:write", "Create, configure, invalidate cache, rebuild index"),
+    # Projects & integrations (DevSecOps intelligence platform)
+    ("projects:read", "View projects and their connected integrations"),
+    ("projects:write", "Create/delete projects and connect/disconnect integrations"),
     # Access & webhooks
     ("access:read", "View API tokens, webhooks and anonymous access"),
     ("access:write", "Issue and revoke API tokens, manage webhooks and anonymous access"),
@@ -58,6 +61,7 @@ SYSTEM_ROLE_PERMISSIONS: dict[str, list[str]] = {
         "repositories:read", "scan:read", "scan:execute",
         "metrics:read", "metrics:collect", "jobs:read", "jobs:manage",
         "tasks:control",
+        "projects:read", "projects:write",
         "profile:edit",
     ],
     "viewer": READ_PERMISSION_KEYS + ["profile:edit"],

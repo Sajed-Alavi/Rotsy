@@ -13,7 +13,7 @@ from typing import Any
 
 from .paths import OFFLINE_DB_DIR, TRIVY_DB_DIR, TRIVY_JAVA_DB_DIR, ProgressCallback, which
 from .process import extract, prune_trivy, run_streaming
-from ... import make_detail_emitter
+from ....services import make_detail_emitter
 
 
 def offline_status() -> dict[str, Any]:

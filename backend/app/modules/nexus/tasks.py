@@ -20,7 +20,7 @@ import logging
 from typing import Any
 from urllib.parse import quote
 
-from ..core.nexus_client import NexusClient
+from .connector import NexusClient
 
 logger = logging.getLogger(__name__)
 

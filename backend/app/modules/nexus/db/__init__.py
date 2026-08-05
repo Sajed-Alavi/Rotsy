@@ -25,8 +25,8 @@ Trivy/Grype pair for one concern sits together:
 by default, try to refresh their database when they are asked to scan. On a
 restricted network that download fails and the *scan* fails with it — which is
 exactly how a working scanner ends up reporting ``FAILED``. Scans therefore run
-with auto-update disabled (see :mod:`app.services.scanning.trivy` and
-:mod:`app.services.scanning.grype`) and the database is managed only through
+with auto-update disabled (see :mod:`app.modules.nexus.trivy` and
+:mod:`app.modules.nexus.grype`) and the database is managed only through
 this package. :func:`readiness` is what turns "no database" into an actionable
 message instead of an opaque scanner exit code.
 """

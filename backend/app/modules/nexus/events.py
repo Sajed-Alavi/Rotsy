@@ -38,7 +38,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...core.cache import Cache
 from ...core.jobs import JobQueue
-from ...core.nexus_client import NexusClient
+from .connector import NexusClient
 from ...models import ScannedImage, ScanReport, ScanTarget
 
 logger = logging.getLogger(__name__)

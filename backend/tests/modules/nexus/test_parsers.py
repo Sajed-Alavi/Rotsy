@@ -11,8 +11,8 @@ from __future__ import annotations
 
 import pytest
 
-from app.services.scanning import base, grype, trivy
-from app.services.scanning.persistence import severity_from_cvss
+from app.modules.nexus import base, grype, trivy
+from app.modules.nexus.persistence import severity_from_cvss
 
 
 # --- Trivy -------------------------------------------------------------------
@@ -166,7 +166,7 @@ def test_grype_negligible_maps_to_low():
     Negligible says. Grype 0.116 emits it in volume (109 of 598 on a real image),
     so this is not a corner case.
     """
-    from app.services.scanning.grype import _normalise_severity
+    from app.modules.nexus.grype import _normalise_severity
 
     assert _normalise_severity("Negligible") == "LOW"
     assert _normalise_severity("NEGLIGIBLE") == "LOW"

@@ -35,7 +35,7 @@ from .paths import (
 )
 from .process import extract, oras_pull, proxy_env, prune_trivy, rate, run_streaming
 from .status import as_datetime, dir_size, grype_db_usable, grype_status, status
-from ... import make_detail_emitter
+from ....services import make_detail_emitter
 
 logger = logging.getLogger(__name__)
 

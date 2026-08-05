@@ -4,7 +4,7 @@ Rotsy needs one Nexus account. Everything it does — reading repositories, list
 
 ## Configure the connection
 
-Go to **Settings → Nexus connection**. You need:
+Go to **Settings → Integrations → Nexus** and click **Configure**. You need:
 
 | Field | Notes |
 |---|---|
@@ -29,7 +29,7 @@ The Nexus password is encrypted at rest with a Fernet key derived from `NEXUS_CO
 
 ## Confirm discovery worked
 
-Still in **Settings**, the *Registry discovery* panel lists every Docker repository with the connector endpoint found for it and a reachability check. Anything under "unresolved" tells you what went wrong per repository.
+**Settings → Scanning** has the *Registry discovery* panel, listing every Docker repository with the connector endpoint found for it and a reachability check. Anything under "unresolved" tells you what went wrong per repository.
 
 ## Next
 

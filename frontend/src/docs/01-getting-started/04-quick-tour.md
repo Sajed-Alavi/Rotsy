@@ -6,6 +6,8 @@ A map of the sidebar, and which page answers which question.
 
 **Dashboard** — health, CVE totals, storage, recent jobs. The starting point.
 
+**Projects** — the main DevSecOps view. Each Project ties a GitHub repository, its SonarQube analysis, and (where connected) Nexus artifacts together. Tabs: Overview (health score, latest quality gate, recent insights), Analysis (history + manual Run Analysis), Security and Artifacts (link out to the existing scanning/repository views), and Insights.
+
 **Browse Files** — what a repository actually contains. Two views: *Images* (each image as a folder expanding to its tags, with sizes, push times and a delete action) and *Files* (the raw asset tree, with downloads proxied through the backend so your browser never sees Nexus credentials).
 
 **Storage Analyzer** — where the space went, per repository, streamed live as it walks the assets.
@@ -44,8 +46,8 @@ A map of the sidebar, and which page answers which question.
 
 **Audit Log** — who changed what.
 
-**Settings** — Nexus connection, scanner proxy, webhook secret, your profile and password.
+**Settings** — five tabs: General (your profile and password), Integrations (Nexus, GitHub, SonarQube connection cards), Security (links to Access & Webhooks, Users, Roles), Scanning (registry discovery, scan-on-push webhook, scanner proxy), System (health, jobs, versions).
 
 ## Next
 
-Read [Architecture](/docs/architecture) for how the pieces fit, or jump to [Scanning on push](/docs/scanning-on-push) to get scanning working.
+Read [Architecture](/docs/architecture) for how the pieces fit, [Connecting GitHub](/docs/connecting-github) and [Connecting SonarQube](/docs/connecting-sonarqube) to get automatic analysis working, or [Scanning on push](/docs/scanning-on-push) for image scanning.

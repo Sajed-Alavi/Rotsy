@@ -1,4 +1,21 @@
-# Troubleshooting scans
+# Troubleshooting
+
+A failed report or analysis always carries a reason — Rotsy never shows raw stack traces for external-system failures, only the actionable message. Detailed technical output stays in the backend logs.
+
+## GitHub and SonarQube analysis failures
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| Push doesn't trigger analysis | Repository not mapped to a Project, or the Project has no SonarQube project connected | `GET /api/modules/github/repositories?unmapped=true` to check mapping; connect Sonar via Settings → Integrations |
+| Webhook returns 401 | Signature verification failed | Confirm `GITHUB_WEBHOOK_SECRET` matches what's set on the GitHub App |
+| Duplicate analysis for the same push | Should not happen — deliveries are deduplicated by `X-GitHub-Delivery` and by (repository, commit); if seen, it's a bug worth reporting | Check Background Jobs for two jobs with the same commit sha |
+| "SonarQube is not configured" on a job failure | No connection saved and no `SONAR_URL`/`SONAR_ADMIN_TOKEN` fallback | Settings → Integrations → SonarQube → Configure |
+| "not analyzable without a build step" | Project's language isn't Python/JavaScript/TypeScript | Not supported yet — see [Connecting SonarQube](/docs/connecting-sonarqube) |
+| Clone failure | GitHub App installation token expired, repository deleted, or repository access revoked | Check the job's error message; reinstall/re-authorize the App if needed |
+| Analysis timeout / "waiting for quality gate" for a long time | SonarQube's compute engine is slow, overloaded, or stuck | Check SonarQube's own background task queue; Rotsy gives up after 10 minutes |
+| GitHub rate limiting | Many repositories/pushes against one installation's token budget | GitHub App installation tokens have their own rate limit, separate from personal tokens — this should be rare for normal use |
+
+## Vulnerability scanning failures
 
 A failed report always carries a reason. Start with the report — click the row in **Reports**, or `GET /api/scan/reports/{id}` — then match it below.
 

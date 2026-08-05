@@ -9,7 +9,12 @@ import StorageAnalyzerPage from './features/storage/StorageAnalyzerPage.jsx';
 import MetricsPage from './features/metrics/MetricsPage.jsx';
 import JobsPage from './features/jobs/JobsPage.jsx';
 import AlertsPage from './features/alerts/AlertsPage.jsx';
-import SettingsPage from './features/settings/SettingsPage.jsx';
+import SettingsLayout from './features/settings/SettingsLayout.jsx';
+import SettingsGeneralPage from './features/settings/pages/GeneralPage.jsx';
+import SettingsIntegrationsPage from './features/settings/pages/IntegrationsPage.jsx';
+import SettingsSecurityPage from './features/settings/pages/SecurityPage.jsx';
+import SettingsScanningPage from './features/settings/pages/ScanningPage.jsx';
+import SettingsSystemPage from './features/settings/pages/SystemStatusPage.jsx';
 import UsersPage from './features/users/UsersPage.jsx';
 import RolesPage from './features/roles/RolesPage.jsx';
 import AuditPage from './features/audit/AuditPage.jsx';
@@ -54,7 +59,13 @@ export default function App() {
           <Route path="metrics" element={<MetricsPage />} />
           <Route path="jobs" element={<JobsPage />} />
           <Route path="alerts" element={<AlertsPage />} />
-          <Route path="settings" element={<SettingsPage />} />
+          <Route path="settings" element={<SettingsLayout />}>
+            <Route index element={<SettingsGeneralPage />} />
+            <Route path="integrations" element={<SettingsIntegrationsPage />} />
+            <Route path="security" element={<SettingsSecurityPage />} />
+            <Route path="scanning" element={<SettingsScanningPage />} />
+            <Route path="system" element={<SettingsSystemPage />} />
+          </Route>
           <Route path="retention" element={<RetentionPage />} />
           <Route path="blobstores" element={<BlobstoresPage />} />
           <Route path="system" element={<SystemPage />} />

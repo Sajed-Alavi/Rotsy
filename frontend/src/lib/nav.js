@@ -61,7 +61,19 @@ export const NAV = [
   { to: '/users', label: 'Users', icon: 'users', perm: 'users:manage' },
   { to: '/roles', label: 'Roles & Permissions', icon: 'shield-check', perm: 'roles:manage' },
   { to: '/audit', label: 'Audit Log', icon: 'file', perm: 'roles:manage' },
-  { to: '/settings', label: 'Settings', icon: 'grid', perm: 'profile:edit' },
+  {
+    to: '/settings',
+    label: 'Settings',
+    icon: 'grid',
+    perm: 'profile:edit',
+    children: [
+      { to: '/settings', label: 'General', end: true },
+      { to: '/settings/integrations', label: 'Integrations' },
+      { to: '/settings/security', label: 'Security' },
+      { to: '/settings/scanning', label: 'Scanning' },
+      { to: '/settings/system', label: 'System' },
+    ],
+  },
 
   { section: 'Help' },
   { to: '/docs', label: 'Documentation', icon: 'book' },

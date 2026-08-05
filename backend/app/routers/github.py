@@ -22,7 +22,7 @@ from ..core import projects as projects_core
 from ..core.cache import Cache
 from ..core.jobs import JobQueue
 from ..dependencies import RequirePermission, get_session, get_settings
-from ..models import GitHubInstallation, GitHubRepository
+from ..models import GitHubInstallation, GitHubRepository, Integration
 from ..modules.github.auth import GitHubAuthError, get_installation_token, install_url
 from ..modules.github.provider import GitHubProvider
 from ..modules.github.webhooks import normalize_event, verify_signature
@@ -42,6 +42,19 @@ class RepoOut(BaseModel):
 
 class MapRepoBody(BaseModel):
     project_id: int
+
+
+class InstallationOut(BaseModel):
+    id: int
+    installation_id: int
+    account_login: str
+
+
+@router.get("/installations", response_model=list[InstallationOut],
+            dependencies=[Depends(RequirePermission("projects:read"))])
+async def list_installations(session: Annotated[AsyncSession, Depends(get_session)]) -> list[InstallationOut]:
+    rows = (await session.execute(select(GitHubInstallation))).scalars().all()
+    return [InstallationOut(id=r.id, installation_id=r.installation_id, account_login=r.account_login) for r in rows]
 
 
 @router.get("/repositories", response_model=list[RepoOut],
@@ -97,24 +110,28 @@ async def get_install_url(settings: Annotated[Settings, Depends(get_settings)]) 
 @router.get("/callback", dependencies=[Depends(RequirePermission("projects:write"))])
 async def install_callback(
     installation_id: int,
-    project_id: int,
     session: Annotated[AsyncSession, Depends(get_session)],
     state: Annotated[AppState, Depends(app_state)],
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> dict[str, Any]:
     """GitHub redirects here after the operator installs the App.
 
-    ``project_id`` is threaded through as a query param set by the frontend
-    before redirecting to GitHub, so the installation lands attached to the
-    project the operator was configuring — GitHub's own redirect carries no
-    concept of "which of our projects this was for".
+    GitHub's own redirect only ever carries ``installation_id`` (plus
+    ``setup_action``) — there is no way to thread a specific Project through
+    a plain App-install link. So installation is project-independent: one
+    installation can back repositories that end up mapped to many different
+    Projects. The per-project ``github`` Integration row is created lazily,
+    the first time a repository from this installation is actually mapped
+    to a Project (see :func:`map_repository`), not here.
     """
+    existing = await session.scalar(
+        select(GitHubInstallation).where(GitHubInstallation.installation_id == installation_id)
+    )
+    if existing is not None:
+        return {"installation_id": existing.installation_id, "account_login": existing.account_login}
+
     if state.cache is None:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Cache not initialised")
-
-    integration = await projects_core.connect_integration(
-        session, project_id, "github", "source", config={}, credential_ref=str(installation_id)
-    )
 
     try:
         account_login = await _resolve_account_login(settings, state.cache, installation_id)
@@ -122,21 +139,10 @@ async def install_callback(
         logger.exception("Failed to resolve account login for installation %s", installation_id)
         account_login = ""
 
-    existing = await session.scalar(
-        select(GitHubInstallation).where(GitHubInstallation.installation_id == installation_id)
-    )
-    if existing is None:
-        row = GitHubInstallation(
-            integration_id=integration.id,
-            installation_id=installation_id,
-            account_login=account_login,
-        )
-        session.add(row)
-        await session.commit()
-        await session.refresh(row)
-    else:
-        row = existing
-
+    row = GitHubInstallation(installation_id=installation_id, account_login=account_login)
+    session.add(row)
+    await session.commit()
+    await session.refresh(row)
     return {"installation_id": row.installation_id, "account_login": row.account_login}
 
 
@@ -213,7 +219,23 @@ async def map_repository(
     if repo is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Repository not found")
     await projects_core.get_project(session, body.project_id)  # 404s if missing
+
+    installation = await session.get(GitHubInstallation, repo.installation_id)
     repo.project_id = body.project_id
+
+    # First repository mapped to this project connects the project-scoped
+    # "github" Integration row — installation itself is project-independent
+    # (see models/github.py), so this is the earliest point a Project can
+    # correctly be said to "have" a GitHub integration.
+    existing_integration = await session.scalar(
+        select(Integration).where(Integration.project_id == body.project_id, Integration.module_key == "github")
+    )
+    if existing_integration is None:
+        await projects_core.connect_integration(
+            session, body.project_id, "github", "source", config={},
+            credential_ref=str(installation.installation_id) if installation else None,
+        )
+
     await session.commit()
     await session.refresh(repo)
     return RepoOut(id=repo.id, full_name=repo.full_name, default_branch=repo.default_branch, project_id=repo.project_id)

@@ -3,6 +3,13 @@
 Owned by ``modules/github``. ``github_repositories.project_id`` is a plain FK
 into the core ``projects`` table (mapping happens after discovery, so it's
 nullable); nothing here is referenced by another module's tables.
+
+``GitHubInstallation`` is deliberately **not** tied to a Project: GitHub's own
+install-redirect only ever carries ``installation_id``, never a Project to
+associate it with, and in practice one installation's repositories usually
+end up mapped to several different Projects. The per-project ``github``
+Integration row is created lazily when a repository from an installation is
+actually mapped to a Project (see ``routers/github.py:map_repository``).
 """
 
 from __future__ import annotations
@@ -19,9 +26,6 @@ class GitHubInstallation(Base):
     __tablename__ = "github_installations"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    integration_id: Mapped[int] = mapped_column(
-        ForeignKey("integrations.id", ondelete="CASCADE"), nullable=False, index=True
-    )
     # GitHub's own installation id — what the App auth flow exchanges for a token.
     installation_id: Mapped[int] = mapped_column(BigInteger, nullable=False, unique=True)
     account_login: Mapped[str] = mapped_column(String(255), nullable=False)

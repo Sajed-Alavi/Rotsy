@@ -131,13 +131,26 @@ function NexusCard() {
 function GitHubCard() {
   const [data, setData] = useState(null);
   const [installUrl, setInstallUrl] = useState('');
+  const [installations, setInstallations] = useState([]);
+  const [syncing, setSyncing] = useState(null);
+  const [syncMsg, setSyncMsg] = useState('');
   const [err, setErr] = useState('');
 
   const load = async () => {
     try { setData(await api.get('/modules/github/status')); } catch (e) { setErr(e.message); }
     try { setInstallUrl((await api.get('/modules/github/install-url')).url); } catch (_) { /* App may not be configured yet */ }
+    try { setInstallations(await api.get('/modules/github/installations')); } catch (_) { /* not configured yet */ }
   };
   useEffect(() => { load(); }, []);
+
+  const sync = async (installationId) => {
+    setSyncing(installationId); setSyncMsg(''); setErr('');
+    try {
+      const repos = await api.post(`/modules/github/installations/${installationId}/sync`, {});
+      setSyncMsg(`Found ${repos.length} repositor${repos.length === 1 ? 'y' : 'ies'}. Map one to a Project from that Project's Overview tab.`);
+    } catch (e) { setErr(e.message); }
+    setSyncing(null);
+  };
 
   const status = !data
     ? { tone: 'neutral', label: '…' }
@@ -167,14 +180,33 @@ function GitHubCard() {
       ) : (
         <div className="space-y-3">
           <p className="font-mono text-[11px] text-slate-500 dark:text-slate-500">
-            Install the App on an organization or account to discover its repositories. Once
-            installed, connect individual repositories to a Rotsy Project from that Project's page.
+            Install the App on an organization or account, sync to discover its repositories, then
+            connect individual repositories to a Rotsy Project from that Project's Overview tab.
           </p>
           {installUrl && (
             <a href={installUrl} target="_blank" rel="noreferrer" className="inline-block border border-sky-300 bg-sky-50 px-3 py-1.5 font-mono text-xs uppercase tracking-wider text-sky-700 hover:bg-sky-100 dark:border-sky-700 dark:bg-sky-950/40 dark:text-sky-300 dark:hover:bg-sky-900/40">
               Install GitHub App
             </a>
           )}
+
+          {installations.length > 0 && (
+            <div className="border-t border-slate-100 pt-3 dark:border-slate-800/60">
+              <div className="mb-1 font-mono text-[10px] uppercase tracking-wider text-slate-500">Installations</div>
+              {installations.map((inst) => (
+                <div key={inst.id} className="flex items-center justify-between py-1">
+                  <span className="font-mono text-xs text-slate-700 dark:text-slate-300">{inst.account_login || `#${inst.installation_id}`}</span>
+                  <button
+                    onClick={() => sync(inst.installation_id)}
+                    disabled={syncing === inst.installation_id}
+                    className="border border-slate-300 px-2 py-1 font-mono text-[10px] uppercase tracking-wider text-slate-600 hover:bg-slate-100 disabled:opacity-50 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
+                  >
+                    {syncing === inst.installation_id ? '···' : 'Sync Repositories'}
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+          {syncMsg && <div className="font-mono text-[11px] text-emerald-600 dark:text-emerald-400">{syncMsg}</div>}
         </div>
       )}
       {err && <div className="mt-3 font-mono text-xs text-rose-600 dark:text-rose-400">{err}</div>}

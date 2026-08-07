@@ -45,9 +45,6 @@ export default function JobsPage() {
         <button onClick={() => trigger('/jobs/collect-metrics', 'metric collection')} className="border border-slate-300 px-3 py-1.5 font-mono text-xs uppercase tracking-wider text-slate-600 hover:bg-slate-100 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800">
           Collect metrics
         </button>
-        <button onClick={() => trigger('/jobs/analyze-all', 'analyze all repos')} className="border border-slate-300 px-3 py-1.5 font-mono text-xs uppercase tracking-wider text-slate-600 hover:bg-slate-100 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800">
-          Analyze all
-        </button>
       </div>
 
       {msg && <div className="mb-3 border border-slate-200 bg-slate-50 px-3 py-2 font-mono text-xs text-slate-600 dark:border-slate-800 dark:bg-slate-900/40 dark:text-slate-400">{msg}</div>}

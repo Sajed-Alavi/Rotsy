@@ -299,6 +299,12 @@ async def reconnect_repository(
                              f"Token resolves to {detail['path_with_namespace']!r}, not {repo.full_path!r}")
     repo.gitlab_project_id = detail["id"]
     repo.encrypted_token = encrypt_password(body.token, settings)
+    # A stale webhook_id refers to a webhook on whatever GitLab instance/
+    # project existed before — start webhook registration over, not just
+    # the credential, whenever the project id actually changed.
+    repo.webhook_id = None
+    repo.webhook_secret = None
+    await _try_register_webhook(settings, repo)
     await session.commit()
     await session.refresh(repo)
     return RepoOut(id=repo.id, full_path=repo.full_path, default_branch=repo.default_branch,

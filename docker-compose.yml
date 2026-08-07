@@ -97,6 +97,24 @@ services:
     networks:
       - nexus-net
 
+  # Runs the pytest suite (backend/tests/) against the `test` build stage
+  # (see backend/Dockerfile), which adds pytest/pytest-asyncio/aiosqlite on
+  # top of the runtime image. No Postgres/Redis needed — tests build their
+  # own Settings explicitly and use an in-memory SQLite DB (see
+  # backend/tests/conftest.py), so this needs no env_file, network, or
+  # depends_on. Gated behind the `test` profile so it never starts with a
+  # plain `docker compose up`.
+  #
+  #   docker compose --profile test run --rm backend-test
+  #
+  backend-test:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      target: test
+    profiles:
+      - test
+
   frontend:
     build:
       context: ./frontend

@@ -10,7 +10,9 @@ venv/
 .ruff_cache/
 .coverage
 htmlcov/
-tests/
+# tests/ is NOT excluded: the `test` build stage (backend/Dockerfile) needs
+# it in the build context to COPY it in. The `base`/production stage never
+# copies it, so it still never ends up in the image that actually runs.
 *.md
 Dockerfile
 .dockerignore

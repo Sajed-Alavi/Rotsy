@@ -184,3 +184,24 @@ EXPOSE 8000
 
 # Run migrations + seed + uvicorn.
 CMD ["./entrypoint.sh"]
+
+# ---------------------------------------------------------------------------
+# Test image — adds pytest and its deps on top of the runtime image.
+#
+# Not part of the default `docker compose up` (see the `backend-test` service
+# in docker-compose.yml, gated behind the `test` profile): pytest,
+# pytest-asyncio and aiosqlite have no reason to ship in the image that
+# actually runs in production, the same "don't ship what you don't need"
+# reasoning as the removed curl/gnupg above.
+# ---------------------------------------------------------------------------
+FROM base AS test
+USER root
+COPY requirements-dev.txt .
+RUN pip install --no-cache-dir --retries 6 --timeout 120 -r requirements-dev.txt
+# base never copies these — pytest.ini/tests/ have no reason to be in the
+# production image either, so they're only added here, in the test stage.
+COPY pytest.ini ./
+COPY tests/ ./tests/
+RUN chown -R app:app /app/tests
+USER app
+CMD ["pytest"]

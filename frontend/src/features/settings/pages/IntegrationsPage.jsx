@@ -487,7 +487,7 @@ function GitLabCard() {
               <div key={r.id} className="flex items-center gap-2 py-1">
                 <span className="flex-1 font-mono text-xs text-slate-700 dark:text-slate-300">{r.full_path}</span>
                 <input
-                  type="password"
+                  type="text"
                   placeholder="paste token to reconnect"
                   value={reconnectTokens[r.id] || ''}
                   onChange={(e) => setReconnectTokens((f) => ({ ...f, [r.id]: e.target.value }))}

@@ -305,6 +305,11 @@ async def reconnect_repository(
     try:
         detail = await _fetch_project(repo.gitlab_url, body.token, repo.full_path)
     except GitLabProviderError as exc:
+        # Never log the token itself — a length + prefix is enough to tell
+        # "empty/truncated paste" apart from "correctly-formed but wrong/
+        # revoked token" without the log line itself becoming a credential.
+        logger.warning("GitLab reconnect for repo %s failed: %s (submitted token: len=%d prefix=%r)",
+                        repo_id, exc, len(body.token), body.token[:6])
         message = (f"GitLab rejected this token (401 Unauthorized) — it's either wrong, "
                    f"expired, or revoked. Generate a fresh one and try again."
                    if str(exc).startswith("401") else _UNREACHABLE_MESSAGE)

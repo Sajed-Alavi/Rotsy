@@ -217,7 +217,7 @@ async def check_sonar_updates(
 # ---------------------------------------------------------------------------
 # Project mapping
 # ---------------------------------------------------------------------------
-@router.post("/projects", response_model=SonarProjectOut, status_code=201,
+@router.post("/projects", status_code=201,
              dependencies=[Depends(RequirePermission("projects:write"))])
 async def create_sonar_project(
     body: SonarProjectCreate,
@@ -539,7 +539,7 @@ def _latest_successful_run_ids(sonar_project_id: int | None = None):
     return select(ranked.c.id).where(ranked.c.rn == 1)
 
 
-@router.get("/issues", response_model=SonarIssuePage,
+@router.get("/issues",
             dependencies=[Depends(RequirePermission("projects:read"))])
 async def list_all_issues(
     session: Annotated[AsyncSession, Depends(get_session)],
@@ -576,7 +576,7 @@ async def list_all_issues(
     return SonarIssuePage(items=list(rows), total=total)
 
 
-@router.get("/hotspots", response_model=SonarHotspotPage,
+@router.get("/hotspots",
             dependencies=[Depends(RequirePermission("projects:read"))])
 async def list_all_hotspots(
     session: Annotated[AsyncSession, Depends(get_session)],
@@ -599,7 +599,7 @@ async def list_all_hotspots(
     return SonarHotspotPage(items=list(rows), total=total)
 
 
-@router.get("/analysis-runs/{run_id}/issues", response_model=SonarIssuePage,
+@router.get("/analysis-runs/{run_id}/issues",
             dependencies=[Depends(RequirePermission("projects:read"))])
 async def list_issues(
     run_id: int,
@@ -634,7 +634,7 @@ async def list_issues(
     return SonarIssuePage(items=list(rows), total=total)
 
 
-@router.get("/analysis-runs/{run_id}/hotspots", response_model=SonarHotspotPage,
+@router.get("/analysis-runs/{run_id}/hotspots",
             dependencies=[Depends(RequirePermission("projects:read"))])
 async def list_hotspots(
     run_id: int,

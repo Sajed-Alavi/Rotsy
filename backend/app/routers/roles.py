@@ -45,7 +45,7 @@ async def list_permissions(session: Annotated[AsyncSession, Depends(get_session)
     return list(result.scalars().all())
 
 
-@router.get("/actions", response_model=list[str])
+@router.get("/actions")
 async def list_actions() -> list[str]:
     """The actions an access rule can grant, so the UI need not hardcode them."""
     return list(ACTIONS)

@@ -115,7 +115,7 @@ async def gitlab_status(session: Annotated[AsyncSession, Depends(get_session)]) 
 # ---------------------------------------------------------------------------
 # User-level connection (one PAT -> discover many repositories)
 # ---------------------------------------------------------------------------
-@router.post("/connections", response_model=ConnectionOut, status_code=201,
+@router.post("/connections", status_code=201,
              dependencies=[Depends(RequirePermission("projects:write"))])
 async def create_connection(
     body: ConnectionCreate,
@@ -147,14 +147,14 @@ async def create_connection(
     return ConnectionOut(id=row.id, gitlab_url=row.gitlab_url, account_username=row.account_username)
 
 
-@router.get("/connections", response_model=list[ConnectionOut],
+@router.get("/connections",
             dependencies=[Depends(RequirePermission("projects:read"))])
 async def list_connections(session: Annotated[AsyncSession, Depends(get_session)]) -> list[ConnectionOut]:
     rows = (await session.execute(select(GitLabConnection))).scalars().all()
     return [ConnectionOut(id=r.id, gitlab_url=r.gitlab_url, account_username=r.account_username) for r in rows]
 
 
-@router.post("/connections/{connection_id}/sync", response_model=list[RepoOut],
+@router.post("/connections/{connection_id}/sync",
              dependencies=[Depends(RequirePermission("projects:write"))])
 async def sync_repositories(
     connection_id: int,
@@ -210,7 +210,7 @@ async def sync_repositories(
 # ---------------------------------------------------------------------------
 # Repository-level connection (one PAT for exactly one repository)
 # ---------------------------------------------------------------------------
-@router.post("/repositories", response_model=RepoOut, status_code=201,
+@router.post("/repositories", status_code=201,
              dependencies=[Depends(RequirePermission("projects:write"))])
 async def connect_repository(
     body: RepositoryConnect,
@@ -250,7 +250,7 @@ async def connect_repository(
                     project_id=row.project_id, connection_id=row.connection_id)
 
 
-@router.get("/repositories", response_model=list[RepoOut],
+@router.get("/repositories",
             dependencies=[Depends(RequirePermission("projects:read"))])
 async def list_repositories(
     session: Annotated[AsyncSession, Depends(get_session)],
@@ -290,7 +290,7 @@ class RepoReconnect(_StrippedTokenMixin):
     token: str = Field(..., min_length=1, max_length=256)
 
 
-@router.post("/repositories/{repo_id}/reconnect", response_model=RepoOut,
+@router.post("/repositories/{repo_id}/reconnect",
              dependencies=[Depends(RequirePermission("projects:write"))])
 async def reconnect_repository(
     repo_id: int,
@@ -316,8 +316,8 @@ async def reconnect_repository(
         # revoked token" without the log line itself becoming a credential.
         logger.warning("GitLab reconnect for repo %s failed: %s (submitted token: len=%d prefix=%r)",
                         repo_id, exc, len(body.token), body.token[:6])
-        message = (f"GitLab rejected this token (401 Unauthorized) — it's either wrong, "
-                   f"expired, or revoked. Generate a fresh one and try again."
+        message = ("GitLab rejected this token (401 Unauthorized) — it's either wrong, "
+                   "expired, or revoked. Generate a fresh one and try again."
                    if str(exc).startswith("401") else _UNREACHABLE_MESSAGE)
         raise HTTPException(status.HTTP_400_BAD_REQUEST, message) from exc
     if detail["path_with_namespace"] != repo.full_path:
@@ -400,7 +400,7 @@ async def register_webhook(
     return {"webhook_registered": True, "already_registered": already_registered}
 
 
-@router.post("/repositories/{repo_id}/map", response_model=RepoOut,
+@router.post("/repositories/{repo_id}/map",
              dependencies=[Depends(RequirePermission("projects:write"))])
 async def map_repository(
     repo_id: int,
@@ -495,9 +495,6 @@ async def bulk_map_repositories(
 
         await _try_register_webhook(settings, repo)
 
-        repo_ref = RepoRef(external_id=repo.full_path, name=repo.full_path.rsplit("/", 1)[-1],
-                            default_branch=repo.default_branch, private=True)
-        provider = GitLabProvider(get_session_factory())
         await queue.enqueue("provision_repository", {
             "project_id": body.project_id,
             "source_module": "gitlab",

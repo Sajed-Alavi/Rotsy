@@ -52,12 +52,12 @@ def _me(user: User) -> MeResponse:
     )
 
 
-@router.get("/profile", response_model=MeResponse)
+@router.get("/profile")
 async def get_profile(user: Annotated[User, Depends(get_current_user)]) -> MeResponse:
     return _me(user)
 
 
-@router.patch("/profile", response_model=MeResponse)
+@router.patch("/profile")
 async def update_profile(
     body: ProfileUpdate,
     user: Annotated[User, Depends(get_current_user)],

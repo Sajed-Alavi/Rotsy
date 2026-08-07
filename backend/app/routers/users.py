@@ -118,7 +118,7 @@ async def delete_user(
     await log_action(session, actor.username, "delete", "user", user_id, username)
 
 
-@router.get("/{user_id}/effective-access", response_model=EffectiveAccessOut)
+@router.get("/{user_id}/effective-access")
 async def effective_access(
     user_id: int,
     session: Annotated[AsyncSession, Depends(get_session)],

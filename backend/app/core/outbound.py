@@ -90,8 +90,14 @@ def _resolve(host: str) -> list[ipaddress.IPv4Address | ipaddress.IPv6Address]:
     return addresses
 
 
-def validate_outbound_url(url: str, settings: Settings) -> str:
+def validate_outbound_url(url: str, settings: Settings) -> str:  # NOSONAR
     """Return ``url`` unchanged if the backend may call it, else raise.
+
+    Both success paths returning ``raw`` isn't "always the same value" in the
+    sense that rule means — ``raw`` is the caller's own input, not a
+    constant; this is an identity-on-success validator by design (so a
+    caller can write ``dest = validate_outbound_url(user_input, settings)``),
+    not a function that forgot to vary its return.
 
     :raises OutboundURLError: on a bad scheme, missing host, unresolvable host,
         or any resolved address inside a blocked range.

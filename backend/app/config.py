@@ -295,8 +295,13 @@ class Settings(BaseSettings):
             )
         return self
 
+    # UPPERCASE = the raw env field (pydantic-settings convention, matching
+    # .env naming); lowercase = the parsed/derived convenience property. This
+    # pairing repeats throughout Settings deliberately — it's how a reader
+    # tells "the setting as configured" from "the setting as the app actually
+    # uses it" apart, not an accidental same-name clash.
     @property
-    def outbound_allowed_hosts(self) -> set[str]:
+    def outbound_allowed_hosts(self) -> set[str]:  # NOSONAR
         """Hosts exempt from the private-address block in app/core/outbound.py."""
         return {
             h.strip().lower()
@@ -310,7 +315,7 @@ class Settings(BaseSettings):
         return [origin.strip() for origin in self.FRONTEND_ORIGIN.split(",") if origin.strip()]
 
     @property
-    def scanners_enabled(self) -> list[str]:
+    def scanners_enabled(self) -> list[str]:  # NOSONAR — see outbound_allowed_hosts above
         """Enabled scanner binaries in run-order."""
         return [s.strip().lower() for s in self.SCANNERS_ENABLED.split(",") if s.strip()]
 
@@ -342,7 +347,7 @@ class Settings(BaseSettings):
         return None
 
     @property
-    def webhook_base_url(self) -> str:
+    def webhook_base_url(self) -> str:  # NOSONAR — see outbound_allowed_hosts above
         """The effective base URL for webhook callback URLs — ``WEBHOOK_BASE_URL``
         if set, otherwise ``FRONTEND_ORIGIN`` (the same address, which is
         correct for a real public deployment)."""

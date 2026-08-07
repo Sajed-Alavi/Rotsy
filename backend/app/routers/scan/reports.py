@@ -154,7 +154,7 @@ def _apply_finding_filters(
     return stmt
 
 
-@router.get("/vulnerabilities", response_model=VulnerabilityPage,
+@router.get("/vulnerabilities",
             dependencies=[Depends(RequirePermission("scan:read"))])
 async def list_vulnerabilities(
     session: Annotated[AsyncSession, Depends(get_session)],
@@ -179,7 +179,7 @@ async def list_vulnerabilities(
     return VulnerabilityPage(items=list(rows), total=total)
 
 
-@router.get("/reports/{report_id}/vulnerabilities", response_model=VulnerabilityPage,
+@router.get("/reports/{report_id}/vulnerabilities",
             dependencies=[Depends(RequirePermission("scan:read"))])
 async def report_vulnerabilities(
     report_id: int,

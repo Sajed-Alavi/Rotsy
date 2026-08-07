@@ -86,14 +86,14 @@ class InstallationOut(BaseModel):
     account_login: str
 
 
-@router.get("/installations", response_model=list[InstallationOut],
+@router.get("/installations",
             dependencies=[Depends(RequirePermission("projects:read"))])
 async def list_installations(session: Annotated[AsyncSession, Depends(get_session)]) -> list[InstallationOut]:
     rows = (await session.execute(select(GitHubInstallation))).scalars().all()
     return [InstallationOut(id=r.id, installation_id=r.installation_id, account_login=r.account_login) for r in rows]
 
 
-@router.get("/repositories", response_model=list[RepoOut],
+@router.get("/repositories",
             dependencies=[Depends(RequirePermission("projects:read"))])
 async def list_repositories(
     session: Annotated[AsyncSession, Depends(get_session)],
@@ -355,7 +355,7 @@ async def _resolve_account_login(app_config: GitHubAppConfig, cache: Cache, inst
     return repos[0]["owner"]["login"] if repos else ""
 
 
-@router.post("/installations/{installation_id}/sync", response_model=list[RepoOut],
+@router.post("/installations/{installation_id}/sync",
              dependencies=[Depends(RequirePermission("projects:write"))])
 async def sync_repositories(
     installation_id: int,
@@ -405,7 +405,7 @@ async def sync_repositories(
             for r in rows]
 
 
-@router.post("/repositories/{repo_id}/map", response_model=RepoOut,
+@router.post("/repositories/{repo_id}/map",
              dependencies=[Depends(RequirePermission("projects:write"))])
 async def map_repository(
     repo_id: int,
@@ -583,7 +583,7 @@ async def bulk_connect_public_repositories(
     return {"connected": len(connected), "queued": len(connected), "errors": errors}
 
 
-@router.post("/public-repositories", response_model=RepoOut, status_code=201,
+@router.post("/public-repositories", status_code=201,
              dependencies=[Depends(RequirePermission("projects:write"))])
 async def connect_public_repository(
     body: PublicRepoConnect,

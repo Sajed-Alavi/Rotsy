@@ -31,7 +31,7 @@ from ..schemas.project import (
 router = APIRouter(prefix="/projects", tags=["projects"])
 
 
-@router.get("", response_model=list[ProjectOut],
+@router.get("",
             dependencies=[Depends(RequirePermission("projects:read"))])
 async def list_projects(
     session: Annotated[AsyncSession, Depends(get_session)],
@@ -39,7 +39,7 @@ async def list_projects(
     return await projects_core.list_projects(session)
 
 
-@router.post("", response_model=ProjectOut, status_code=201,
+@router.post("", status_code=201,
              dependencies=[Depends(RequirePermission("projects:write"))])
 async def create_project(
     body: ProjectCreate,
@@ -48,7 +48,7 @@ async def create_project(
     return await projects_core.create_project(session, body.name)
 
 
-@router.get("/{project_id}", response_model=ProjectOut,
+@router.get("/{project_id}",
             dependencies=[Depends(RequirePermission("projects:read"))])
 async def get_project(
     project_id: int,
@@ -66,7 +66,7 @@ async def delete_project(
     await projects_core.delete_project(session, project_id)
 
 
-@router.get("/{project_id}/integrations", response_model=list[IntegrationOut],
+@router.get("/{project_id}/integrations",
             dependencies=[Depends(RequirePermission("projects:read"))])
 async def list_integrations(
     project_id: int,
@@ -75,7 +75,7 @@ async def list_integrations(
     return await projects_core.list_integrations(session, project_id)
 
 
-@router.post("/{project_id}/integrations", response_model=IntegrationOut, status_code=201,
+@router.post("/{project_id}/integrations", status_code=201,
              dependencies=[Depends(RequirePermission("projects:write"))])
 async def connect_integration(
     project_id: int,
@@ -172,7 +172,7 @@ async def list_project_repositories(
     return out
 
 
-@router.get("/{project_id}/health", response_model=HealthScoreOut,
+@router.get("/{project_id}/health",
             dependencies=[Depends(RequirePermission("projects:read"))])
 async def get_health_score(
     project_id: int,

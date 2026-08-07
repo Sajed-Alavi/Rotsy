@@ -8,7 +8,7 @@ a synchronous 'download DB snapshot' endpoint for convenience.
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -73,8 +73,6 @@ async def download_backup(request: Request) -> StreamingResponse:
     version-independent and can be used for migration/recovery.
     """
     from ..services.backup import export_metadata
-    from datetime import datetime
-    import json as _json
 
     nexus = app_state(request).nexus
     if nexus is None:
@@ -84,8 +82,8 @@ async def download_backup(request: Request) -> StreamingResponse:
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, f"Export failed: {exc}") from exc
 
-    filename = f"nexus-export-{datetime.utcnow().strftime('%Y%m%d-%H%M%S')}.json"
-    content = _json.dumps(data, indent=2, default=str).encode()
+    filename = f"nexus-export-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}.json"
+    content = json.dumps(data, indent=2, default=str).encode()
 
     async def gen():
         yield content
@@ -344,7 +342,7 @@ def _schedule_out(schedule: BackupSchedule) -> BackupScheduleOut:
     return BackupScheduleOut.model_validate(schedule)
 
 
-@router.get("/backup/schedules", response_model=list[BackupScheduleOut],
+@router.get("/backup/schedules",
             dependencies=[Depends(RequirePermission("system:read"))])
 async def list_backup_schedules(
     session: Annotated[AsyncSession, Depends(get_session)],
@@ -353,7 +351,7 @@ async def list_backup_schedules(
     return [_schedule_out(r) for r in rows]
 
 
-@router.post("/backup/schedules", response_model=BackupScheduleOut, status_code=status.HTTP_201_CREATED,
+@router.post("/backup/schedules", status_code=status.HTTP_201_CREATED,
              dependencies=[Depends(RequirePermission(_BACKUP_JOB_PERM))])
 async def create_backup_schedule(
     body: BackupScheduleCreate,
@@ -369,7 +367,7 @@ async def create_backup_schedule(
     return _schedule_out(schedule)
 
 
-@router.patch("/backup/schedules/{schedule_id}", response_model=BackupScheduleOut,
+@router.patch("/backup/schedules/{schedule_id}",
               dependencies=[Depends(RequirePermission(_BACKUP_JOB_PERM))])
 async def update_backup_schedule(
     schedule_id: int,

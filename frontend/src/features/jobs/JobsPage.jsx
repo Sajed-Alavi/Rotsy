@@ -1,7 +1,23 @@
 import { useEffect, useState } from 'react';
+import { Link } from 'react-router';
 import { api } from '../../lib/api.js';
 import Badge from '../../components/Badge.jsx';
 import { formatDateTime } from '../../lib/format.js';
+
+// Where each job type's result actually shows up, so a row can link
+// straight to it instead of making you go find the right section yourself.
+const JOB_TYPE_PAGE = {
+  clone_and_analyze: '/code-quality/runs',
+  scan_image: '/scan/images',
+  analyze_repo: '/storage',
+  collect_metrics: '/metrics',
+  run_retention: '/retention',
+  backup: '/system',
+  backup_archive: '/system',
+  run_scheduled_backup: '/system',
+  sync: '/system',
+  provision_repository: '/repositories',
+};
 
 /** Background job manager: list jobs + trigger metric collection / analyze. */
 export default function JobsPage() {
@@ -74,11 +90,18 @@ export default function JobsPage() {
                 <td className="px-3 py-2 font-mono text-xs text-slate-500 dark:text-slate-400">{j.message}</td>
                 <td className="px-3 py-2 font-mono text-xs text-slate-400 dark:text-slate-600">{formatDateTime(new Date(j.created_at * 1000).toISOString())}</td>
                 <td className="px-3 py-2 text-right">
-                  {(j.status === 'running' || j.status === 'pending') && (
-                    <button onClick={() => cancelJob(j.id)} className="border border-rose-200 px-2 py-0.5 font-mono text-[10px] uppercase text-rose-600 hover:bg-rose-50 dark:border-rose-800 dark:text-rose-400 dark:hover:bg-rose-950/40">
-                      cancel
-                    </button>
-                  )}
+                  <div className="flex items-center justify-end gap-1.5">
+                    {JOB_TYPE_PAGE[j.type] && (
+                      <Link to={JOB_TYPE_PAGE[j.type]} className="border border-slate-300 px-2 py-0.5 font-mono text-[10px] uppercase text-slate-600 hover:bg-slate-100 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800">
+                        view
+                      </Link>
+                    )}
+                    {(j.status === 'running' || j.status === 'pending') && (
+                      <button onClick={() => cancelJob(j.id)} className="border border-rose-200 px-2 py-0.5 font-mono text-[10px] uppercase text-rose-600 hover:bg-rose-50 dark:border-rose-800 dark:text-rose-400 dark:hover:bg-rose-950/40">
+                        cancel
+                      </button>
+                    )}
+                  </div>
                 </td>
               </tr>
             ))}

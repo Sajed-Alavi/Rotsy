@@ -37,6 +37,7 @@ export const NAV = [
       { to: '/code-quality', label: 'Overview', end: true },
       { to: '/code-quality/runs', label: 'Analysis Runs' },
       { to: '/code-quality/findings', label: 'Findings' },
+      { to: '/code-quality/settings', label: 'Settings' },
     ],
   },
   {

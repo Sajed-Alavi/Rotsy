@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { Link } from 'react-router';
 import { api } from '../../../lib/api.js';
 import { useAuth } from '../../../context/AuthContext.jsx';
 import { relativeTime } from '../../../lib/format.js';
@@ -474,8 +475,6 @@ function SonarCard() {
   const [form, setForm] = useState({ url: '', token: '' });
   const [testing, setTesting] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [checkingUpdates, setCheckingUpdates] = useState(false);
-  const [updateInfo, setUpdateInfo] = useState(null);
   const [msg, setMsg] = useState('');
   const [err, setErr] = useState('');
 
@@ -508,14 +507,6 @@ function SonarCard() {
       else setErr(r.error || 'Test failed.');
     } catch (e) { setErr(e.message); }
     setTesting(false);
-  };
-
-  const checkUpdates = async () => {
-    setErr(''); setUpdateInfo(null); setCheckingUpdates(true);
-    try {
-      setUpdateInfo(await api.post('/modules/sonar/check-updates', {}));
-    } catch (e) { setErr(e.message); }
-    setCheckingUpdates(false);
   };
 
   const save = async (e) => {
@@ -579,77 +570,16 @@ function SonarCard() {
           </div>
         </form>
         <p className="font-mono text-[11px] text-slate-500 dark:text-slate-500">
-          Once healthy, attach a project to SonarQube analysis below — Rotsy creates the Sonar project and
-          issues its analysis token automatically. No manual SonarQube setup required.
+          Once healthy, connect a repository and run analysis from{' '}
+          <Link to="/code-quality" className="underline">Code Quality</Link> — Rotsy creates the Sonar
+          project and issues its analysis token automatically. No manual SonarQube setup required.
+          Connection health and version checks also live there now, under{' '}
+          <Link to="/code-quality/settings" className="underline">Code Quality → Settings</Link>.
         </p>
-
-        {data?.configured && (
-          <div className="border-t border-slate-100 pt-3 dark:border-slate-800/60">
-            <div className="mb-1 font-mono text-[10px] uppercase tracking-wider text-slate-500">Version</div>
-            <button
-              type="button"
-              onClick={checkUpdates}
-              disabled={checkingUpdates}
-              className="border border-slate-300 px-3 py-1.5 font-mono text-xs uppercase tracking-wider text-slate-600 hover:bg-slate-100 disabled:opacity-50 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
-            >
-              {checkingUpdates ? '···' : 'Check for Updates'}
-            </button>
-            {updateInfo && (
-              <div className="mt-2 font-mono text-[11px] text-slate-600 dark:text-slate-400">
-                {updateInfo.update_available
-                  ? `Update available: ${updateInfo.current_version} → ${updateInfo.latest_version}. Upgrading SonarQube itself is a deployment change Rotsy doesn't perform automatically — see SonarQube's own upgrade guide.`
-                  : `SonarQube ${updateInfo.current_version} is up to date.`}
-              </div>
-            )}
-          </div>
-        )}
-
-        <RunAnalysisTool />
       </div>
       {msg && <div className="border border-emerald-200 bg-emerald-50 px-3 py-2 font-mono text-xs text-emerald-700 dark:border-emerald-800 dark:bg-emerald-950/30 dark:text-emerald-400">{msg}</div>}
       {data?.error && data.compatible !== false && <div className="mt-3 border border-rose-200 bg-rose-50 px-3 py-2 font-mono text-xs text-rose-600 dark:border-rose-800 dark:bg-rose-950/30 dark:text-rose-400">{data.error}</div>}
       {err && <div className="mt-3 font-mono text-xs text-rose-600 dark:text-rose-400">{err}</div>}
     </IntegrationCard>
-  );
-}
-
-/**
- * Minimal manual-trigger tool: run analysis for a project by id. A stopgap
- * until the full Project page (with a proper repository picker) exists —
- * still calls the exact same backend endpoint/job that endpoint will use.
- */
-function RunAnalysisTool() {
-  const [projectId, setProjectId] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [msg, setMsg] = useState('');
-  const [err, setErr] = useState('');
-
-  const run = async (e) => {
-    e.preventDefault();
-    setErr(''); setMsg(''); setBusy(true);
-    try {
-      const r = await api.post(`/modules/sonar/projects/${projectId}/run-analysis`, {});
-      setMsg(`Queued job ${r.job_id} for commit ${r.commit_sha.slice(0, 8)} — see Background Jobs for progress.`);
-    } catch (ex) { setErr(ex.message); }
-    setBusy(false);
-  };
-
-  return (
-    <div className="border-t border-slate-100 pt-3 dark:border-slate-800/60">
-      <div className="mb-1 font-mono text-[10px] uppercase tracking-wider text-slate-500">Run analysis manually</div>
-      <form onSubmit={run} className="flex gap-2">
-        <input
-          value={projectId}
-          onChange={(e) => setProjectId(e.target.value)}
-          placeholder="Project ID"
-          className={`${INPUT} max-w-[10rem]`}
-        />
-        <button type="submit" disabled={busy || !projectId} className="border border-slate-300 px-3 py-1.5 font-mono text-xs uppercase tracking-wider text-slate-600 hover:bg-slate-100 disabled:opacity-50 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800">
-          {busy ? '···' : 'Run Analysis'}
-        </button>
-      </form>
-      {msg && <div className="mt-2 font-mono text-[11px] text-emerald-600 dark:text-emerald-400">{msg}</div>}
-      {err && <div className="mt-2 font-mono text-[11px] text-rose-600 dark:text-rose-400">{err}</div>}
-    </div>
   );
 }

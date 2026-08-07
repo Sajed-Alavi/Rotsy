@@ -35,6 +35,7 @@ import CodeQualityLayout from './features/codeQuality/CodeQualityLayout.jsx';
 import CodeQualityOverviewPage from './features/codeQuality/pages/OverviewPage.jsx';
 import CodeQualityRunsPage from './features/codeQuality/pages/RunsPage.jsx';
 import CodeQualityFindingsPage from './features/codeQuality/pages/FindingsPage.jsx';
+import CodeQualitySettingsPage from './features/codeQuality/pages/SettingsPage.jsx';
 
 import ScanLayout from './features/scan/ScanLayout.jsx';
 import ScanOverviewPage from './features/scan/pages/OverviewPage.jsx';
@@ -101,6 +102,7 @@ export default function App() {
             <Route index element={<CodeQualityOverviewPage />} />
             <Route path="runs" element={<CodeQualityRunsPage />} />
             <Route path="findings" element={<CodeQualityFindingsPage />} />
+            <Route path="settings" element={<CodeQualitySettingsPage />} />
           </Route>
 
           {/* Vulnerability scanning: one section, six views, each linkable. */}

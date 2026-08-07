@@ -55,10 +55,21 @@ Thumbs.db
 # -----------------------------------------------------------------------------
 docker-compose.override.yml
 
-# Local Nexus instance used for development: its compose file, blob store,
-# database and logs. Runtime data, not source — every container start rewrites
-# hundreds of files under nexus-data/.
+# Local Nexus + SonarQube instances used for development: their compose file,
+# blob store, database and logs. Runtime data, not source — every container
+# start rewrites hundreds of files under nexus-data/ and sonarqube-data/.
 docker-compose-nexus/
+
+# Standalone local SonarQube used to develop/verify the Sonar module against
+# something other than a bundled instance. Same reasoning as
+# docker-compose-nexus/ — Elasticsearch indices, Postgres data and logs are
+# runtime state, not source, and are gigabytes of churn per run.
+docker-compose-sonar/
+
+# Local GitLab instance used for development (self-hosted GitLab, for testing
+# the future GitLab module against something other than gitlab.com). Same
+# reasoning as docker-compose-nexus/ — config/logs/data are runtime state.
+docker-compose-gitlab/
 
 # Offline scanner DB archives (large binaries, not source). The directory
 # itself is tracked so the docker-compose bind mount always has a target.

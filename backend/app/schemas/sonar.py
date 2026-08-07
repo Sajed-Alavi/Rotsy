@@ -12,6 +12,16 @@ from ..models.sonar import SUPPORTED_LANGUAGES
 class SonarProjectCreate(BaseModel):
     project_id: int
     language: str = Field(..., description=f"One of: {', '.join(SUPPORTED_LANGUAGES)}")
+    quality_gate: str | None = Field(
+        default=None,
+        description="Name of an existing SonarQube quality gate to assign. Omit to use Rotsy's default gate.",
+    )
+    github_repository_id: int | None = Field(
+        default=None, description="Which repository under the Project this Sonar project is for."
+    )
+    gitlab_repository_id: int | None = Field(
+        default=None, description="Which repository under the Project this Sonar project is for."
+    )
 
 
 class SonarProjectOut(BaseModel):
@@ -19,6 +29,8 @@ class SonarProjectOut(BaseModel):
 
     id: int
     project_id: int
+    github_repository_id: int | None
+    gitlab_repository_id: int | None
     sonar_project_key: str
     language: str
 
@@ -51,3 +63,53 @@ class QualityGateResultOut(BaseModel):
     analysis_run_id: int
     status: str
     conditions: list
+
+
+class SonarIssueOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    analysis_run_id: int
+    issue_key: str
+    rule: str
+    severity: str
+    type: str
+    message: str
+    component: str
+    line: int | None
+    status: str
+    assignee: str
+    author: str
+    tags: list
+    effort: str
+    debt: str
+    clean_code_attribute: str | None
+    creation_date: datetime | None
+    update_date: datetime | None
+
+
+class SonarIssuePage(BaseModel):
+    items: list[SonarIssueOut]
+    total: int
+
+
+class SonarHotspotOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    analysis_run_id: int
+    hotspot_key: str
+    component: str
+    line: int | None
+    message: str
+    status: str
+    vulnerability_probability: str
+    security_category: str
+    author: str
+    creation_date: datetime | None
+    update_date: datetime | None
+
+
+class SonarHotspotPage(BaseModel):
+    items: list[SonarHotspotOut]
+    total: int

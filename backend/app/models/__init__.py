@@ -6,13 +6,14 @@ from .audit import AuditLog
 from .backup import BackupRun
 from .backup_schedule import BackupSchedule
 from .github import GitHubInstallation, GitHubRepository
+from .gitlab import GitLabConnection, GitLabRepository
 from .insight import Insight
 from .integration import Integration
 from .metrics import AlertRule, Metric
 from .project import Project
 from .retention import RetentionPolicy
 from .scans import ScannedImage, ScanReport, ScanTarget, Vulnerability
-from .sonar import AnalysisRun, QualityGateResult, SonarProject
+from .sonar import AnalysisRun, QualityGateResult, SonarHotspot, SonarIssue, SonarProject
 from .system_config import SystemConfig
 from .user import Permission, Role, User
 
@@ -31,7 +32,11 @@ __all__ = [
     "Insight",
     "GitHubInstallation",
     "GitHubRepository",
+    "GitLabConnection",
+    "GitLabRepository",
     "SonarProject",
     "AnalysisRun",
     "QualityGateResult",
+    "SonarIssue",
+    "SonarHotspot",
 ]

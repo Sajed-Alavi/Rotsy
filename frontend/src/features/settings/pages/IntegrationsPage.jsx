@@ -29,6 +29,7 @@ export default function IntegrationsPage() {
     <div className="grid grid-cols-1 gap-6">
       <NexusCard />
       <GitHubCard />
+      <GitLabCard />
       <SonarCard />
     </div>
   );
@@ -134,6 +135,11 @@ function GitHubCard() {
   const [installations, setInstallations] = useState([]);
   const [syncing, setSyncing] = useState(null);
   const [syncMsg, setSyncMsg] = useState('');
+  const [connecting, setConnecting] = useState(false);
+  const [connectMsg, setConnectMsg] = useState('');
+  const [publicForm, setPublicForm] = useState({ full_name: '', project_id: '' });
+  const [publicBusy, setPublicBusy] = useState(false);
+  const [publicMsg, setPublicMsg] = useState('');
   const [err, setErr] = useState('');
 
   const load = async () => {
@@ -141,7 +147,47 @@ function GitHubCard() {
     try { setInstallUrl((await api.get('/modules/github/install-url')).url); } catch (_) { /* App may not be configured yet */ }
     try { setInstallations(await api.get('/modules/github/installations')); } catch (_) { /* not configured yet */ }
   };
-  useEffect(() => { load(); }, []);
+
+  useEffect(() => {
+    load();
+    // GitHub redirects back here (a real page navigation) after the App
+    // Manifest flow finishes — see routers/github.py:manifest_callback.
+    const params = new URLSearchParams(window.location.search);
+    if (params.has('github_connected')) {
+      setConnectMsg('GitHub App created and connected — install it on an account or org below.');
+      window.history.replaceState({}, '', window.location.pathname);
+      load();
+    } else if (params.has('github_installed')) {
+      setConnectMsg('Installation complete — sync repositories below, then connect one to a Project.');
+      window.history.replaceState({}, '', window.location.pathname);
+      load();
+    } else if (params.has('github_error')) {
+      setErr(`GitHub connection failed (${params.get('github_error')}). Try again.`);
+      window.history.replaceState({}, '', window.location.pathname);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const connect = async () => {
+    setErr(''); setConnecting(true);
+    try {
+      const { target_url, manifest, state, warning } = await api.get('/modules/github/manifest-form');
+      if (warning && !window.confirm(`${warning}\n\nContinue creating the App without a webhook?`)) {
+        setConnecting(false);
+        return;
+      }
+      const form = document.createElement('form');
+      form.method = 'post';
+      form.action = `${target_url}?state=${encodeURIComponent(state)}`;
+      const input = document.createElement('input');
+      input.type = 'hidden';
+      input.name = 'manifest';
+      input.value = JSON.stringify(manifest);
+      form.appendChild(input);
+      document.body.appendChild(form);
+      form.submit(); // navigates to github.com — nothing else runs after this
+    } catch (e) { setErr(e.message); setConnecting(false); }
+  };
 
   const sync = async (installationId) => {
     setSyncing(installationId); setSyncMsg(''); setErr('');
@@ -150,6 +196,19 @@ function GitHubCard() {
       setSyncMsg(`Found ${repos.length} repositor${repos.length === 1 ? 'y' : 'ies'}. Map one to a Project from that Project's Overview tab.`);
     } catch (e) { setErr(e.message); }
     setSyncing(null);
+  };
+
+  const connectPublic = async (e) => {
+    e.preventDefault();
+    setErr(''); setPublicMsg(''); setPublicBusy(true);
+    try {
+      const repo = await api.post('/modules/github/public-repositories', {
+        full_name: publicForm.full_name, project_id: Number(publicForm.project_id),
+      });
+      setPublicMsg(`Connected ${repo.full_name} and started its first analysis. Automatic push-triggered analysis isn't available for this repo (no App installation) — use Run Analysis to re-check it.`);
+      setPublicForm({ full_name: '', project_id: '' });
+    } catch (ex) { setErr(ex.message); }
+    setPublicBusy(false);
   };
 
   const status = !data
@@ -168,15 +227,25 @@ function GitHubCard() {
       facts={data?.configured ? [
         { label: 'App', value: data.app_slug || '—' },
         { label: 'Installations', value: data.installations_count },
+        { label: 'Auto-analyze on push', value: data.has_webhook ? 'Yes' : 'No (manual only)' },
       ] : []}
     >
+      {connectMsg && <div className="mb-3 border border-emerald-200 bg-emerald-50 px-3 py-2 font-mono text-xs text-emerald-700 dark:border-emerald-800 dark:bg-emerald-950/30 dark:text-emerald-400">{connectMsg}</div>}
       {!data?.configured ? (
-        <p className="font-mono text-[11px] text-slate-500 dark:text-slate-500">
-          No GitHub App is configured. Create one at github.com/settings/apps and set
-          <code className="mx-1 rounded bg-slate-100 px-1 dark:bg-slate-800">GITHUB_APP_ID</code>,
-          <code className="mx-1 rounded bg-slate-100 px-1 dark:bg-slate-800">GITHUB_APP_PRIVATE_KEY</code>, and
-          <code className="mx-1 rounded bg-slate-100 px-1 dark:bg-slate-800">GITHUB_WEBHOOK_SECRET</code> for this instance.
-        </p>
+        <div className="space-y-3">
+          <p className="font-mono text-[11px] text-slate-500 dark:text-slate-500">
+            Nothing to configure by hand — clicking Connect creates a real GitHub App for this
+            Rotsy instance automatically (GitHub's App Manifest flow) and saves its credentials.
+            The only manual step is GitHub's own confirmation page.
+          </p>
+          <button
+            onClick={connect}
+            disabled={connecting}
+            className="border border-sky-300 bg-sky-50 px-3 py-1.5 font-mono text-xs uppercase tracking-wider text-sky-700 hover:bg-sky-100 disabled:opacity-50 dark:border-sky-700 dark:bg-sky-950/40 dark:text-sky-300 dark:hover:bg-sky-900/40"
+          >
+            {connecting ? 'Redirecting to GitHub…' : 'Connect to GitHub'}
+          </button>
+        </div>
       ) : (
         <div className="space-y-3">
           <p className="font-mono text-[11px] text-slate-500 dark:text-slate-500">
@@ -184,7 +253,10 @@ function GitHubCard() {
             connect individual repositories to a Rotsy Project from that Project's Overview tab.
           </p>
           {installUrl && (
-            <a href={installUrl} target="_blank" rel="noreferrer" className="inline-block border border-sky-300 bg-sky-50 px-3 py-1.5 font-mono text-xs uppercase tracking-wider text-sky-700 hover:bg-sky-100 dark:border-sky-700 dark:bg-sky-950/40 dark:text-sky-300 dark:hover:bg-sky-900/40">
+            // Same tab, not target="_blank": GitHub redirects to our
+            // callback after install, which redirects back to this page —
+            // that chain needs to land in the tab the operator is watching.
+            <a href={installUrl} className="inline-block border border-sky-300 bg-sky-50 px-3 py-1.5 font-mono text-xs uppercase tracking-wider text-sky-700 hover:bg-sky-100 dark:border-sky-700 dark:bg-sky-950/40 dark:text-sky-300 dark:hover:bg-sky-900/40">
               Install GitHub App
             </a>
           )}
@@ -209,6 +281,189 @@ function GitHubCard() {
           {syncMsg && <div className="font-mono text-[11px] text-emerald-600 dark:text-emerald-400">{syncMsg}</div>}
         </div>
       )}
+
+      <div className="mt-4 border-t border-slate-100 pt-3 dark:border-slate-800/60">
+        <div className="mb-1 font-mono text-[10px] uppercase tracking-wider text-slate-500">Connect a public repository by URL</div>
+        <p className="mb-2 font-mono text-[11px] text-slate-500 dark:text-slate-500">
+          For a repo you don't own or administer — no App installation needed. Trade-off: GitHub only
+          sends push events to repos the App is installed on, so this repo won't auto-analyze on push,
+          only when you click Run Analysis.
+        </p>
+        <form onSubmit={connectPublic} className="flex flex-wrap gap-2">
+          <input
+            value={publicForm.full_name}
+            onChange={(e) => setPublicForm({ ...publicForm, full_name: e.target.value })}
+            placeholder="owner/repo"
+            className={`${INPUT} max-w-[14rem]`}
+          />
+          <input
+            value={publicForm.project_id}
+            onChange={(e) => setPublicForm({ ...publicForm, project_id: e.target.value })}
+            placeholder="Project ID"
+            className={`${INPUT} max-w-[8rem]`}
+          />
+          <button
+            type="submit"
+            disabled={publicBusy || !publicForm.full_name || !publicForm.project_id}
+            className="border border-slate-300 px-3 py-1.5 font-mono text-xs uppercase tracking-wider text-slate-600 hover:bg-slate-100 disabled:opacity-50 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
+          >
+            {publicBusy ? '···' : 'Connect'}
+          </button>
+        </form>
+        {publicMsg && <div className="mt-2 font-mono text-[11px] text-emerald-600 dark:text-emerald-400">{publicMsg}</div>}
+      </div>
+
+      {err && <div className="mt-3 font-mono text-xs text-rose-600 dark:text-rose-400">{err}</div>}
+    </IntegrationCard>
+  );
+}
+
+/**
+ * GitLab has no equivalent of GitHub's App Manifest flow — there is no way
+ * to create a scoped credential without the operator generating a Personal
+ * Access Token on GitLab's own side first. Two connection modes, matching
+ * the backend: one PAT for many repos (user-level), or one PAT per single
+ * repo (repository-level, fully independent credentials).
+ */
+function GitLabCard() {
+  const [data, setData] = useState(null);
+  const [mode, setMode] = useState('account'); // 'account' | 'repository'
+  const [accountForm, setAccountForm] = useState({ gitlab_url: 'https://gitlab.com', token: '' });
+  const [repoForm, setRepoForm] = useState({ gitlab_url: 'https://gitlab.com', full_path: '', token: '' });
+  const [syncing, setSyncing] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const [msg, setMsg] = useState('');
+  const [err, setErr] = useState('');
+
+  const load = async () => {
+    try { setData(await api.get('/modules/gitlab/status')); } catch (e) { setErr(e.message); }
+  };
+  useEffect(() => { load(); }, []);
+
+  const connectAccount = async (e) => {
+    e.preventDefault();
+    setErr(''); setMsg(''); setSaving(true);
+    try {
+      await api.post('/modules/gitlab/connections', accountForm);
+      setMsg('Account connected. Sync repositories below, then connect one to a Project.');
+      setAccountForm((f) => ({ ...f, token: '' }));
+      await load();
+    } catch (ex) { setErr(ex.message); }
+    setSaving(false);
+  };
+
+  const connectRepository = async (e) => {
+    e.preventDefault();
+    setErr(''); setMsg(''); setSaving(true);
+    try {
+      await api.post('/modules/gitlab/repositories', repoForm);
+      setMsg(`Connected ${repoForm.full_path}. Attach it to a Project from that Project's Overview tab.`);
+      setRepoForm({ gitlab_url: repoForm.gitlab_url, full_path: '', token: '' });
+    } catch (ex) { setErr(ex.message); }
+    setSaving(false);
+  };
+
+  const sync = async (connectionId) => {
+    setSyncing(connectionId); setMsg(''); setErr('');
+    try {
+      const repos = await api.post(`/modules/gitlab/connections/${connectionId}/sync`, {});
+      setMsg(`Found ${repos.length} repositor${repos.length === 1 ? 'y' : 'ies'}. Connect one to a Project from that Project's Overview tab.`);
+    } catch (e) { setErr(e.message); }
+    setSyncing(null);
+  };
+
+  const status = !data
+    ? { tone: 'neutral', label: '…' }
+    : data.connected
+      ? { tone: 'ok', label: 'Connected' }
+      : { tone: 'warn', label: 'Not Configured' };
+
+  return (
+    <IntegrationCard
+      name="GitLab"
+      description="Source repositories, push events, and commit status — via a Personal Access Token."
+      status={status}
+      facts={data?.connections?.length ? [{ label: 'Accounts', value: data.connections.length }] : []}
+    >
+      <div className="space-y-4">
+        <div className="flex gap-1.5">
+          <button
+            type="button"
+            onClick={() => setMode('account')}
+            className={`border px-2.5 py-1 font-mono text-[10px] uppercase tracking-wider ${mode === 'account' ? 'border-sky-300 bg-sky-50 text-sky-700 dark:border-sky-700 dark:bg-sky-950/40 dark:text-sky-300' : 'border-slate-300 text-slate-500 hover:bg-slate-100 dark:border-slate-700 dark:text-slate-400 dark:hover:bg-slate-800'}`}
+          >
+            Connect an account
+          </button>
+          <button
+            type="button"
+            onClick={() => setMode('repository')}
+            className={`border px-2.5 py-1 font-mono text-[10px] uppercase tracking-wider ${mode === 'repository' ? 'border-sky-300 bg-sky-50 text-sky-700 dark:border-sky-700 dark:bg-sky-950/40 dark:text-sky-300' : 'border-slate-300 text-slate-500 hover:bg-slate-100 dark:border-slate-700 dark:text-slate-400 dark:hover:bg-slate-800'}`}
+          >
+            Connect one repository
+          </button>
+        </div>
+
+        {mode === 'account' ? (
+          <form onSubmit={connectAccount} className="space-y-3">
+            <p className="font-mono text-[11px] text-slate-500 dark:text-slate-500">
+              One token gives Rotsy access to every repository it can see — good for a personal
+              account or a single owner managing several projects.
+            </p>
+            <div>
+              <div className="mb-1 font-mono text-[10px] uppercase tracking-wider text-slate-500">GitLab URL</div>
+              <input value={accountForm.gitlab_url} onChange={(e) => setAccountForm({ ...accountForm, gitlab_url: e.target.value })} className={INPUT} />
+            </div>
+            <div>
+              <div className="mb-1 font-mono text-[10px] uppercase tracking-wider text-slate-500">Personal Access Token (api scope)</div>
+              <input type="password" value={accountForm.token} onChange={(e) => setAccountForm({ ...accountForm, token: e.target.value })} className={INPUT} />
+            </div>
+            <button type="submit" disabled={saving} className="border border-sky-300 bg-sky-50 px-3 py-1.5 font-mono text-xs uppercase tracking-wider text-sky-700 hover:bg-sky-100 disabled:opacity-50 dark:border-sky-700 dark:bg-sky-950/40 dark:text-sky-300 dark:hover:bg-sky-900/40">
+              {saving ? '···' : 'Connect Account'}
+            </button>
+          </form>
+        ) : (
+          <form onSubmit={connectRepository} className="space-y-3">
+            <p className="font-mono text-[11px] text-slate-500 dark:text-slate-500">
+              This token only needs access to one repository — its own independent credential,
+              unrelated to any account-level connection above.
+            </p>
+            <div>
+              <div className="mb-1 font-mono text-[10px] uppercase tracking-wider text-slate-500">GitLab URL</div>
+              <input value={repoForm.gitlab_url} onChange={(e) => setRepoForm({ ...repoForm, gitlab_url: e.target.value })} className={INPUT} />
+            </div>
+            <div>
+              <div className="mb-1 font-mono text-[10px] uppercase tracking-wider text-slate-500">Repository path</div>
+              <input value={repoForm.full_path} onChange={(e) => setRepoForm({ ...repoForm, full_path: e.target.value })} placeholder="group/project" className={INPUT} />
+            </div>
+            <div>
+              <div className="mb-1 font-mono text-[10px] uppercase tracking-wider text-slate-500">Personal Access Token (api scope)</div>
+              <input type="password" value={repoForm.token} onChange={(e) => setRepoForm({ ...repoForm, token: e.target.value })} className={INPUT} />
+            </div>
+            <button type="submit" disabled={saving} className="border border-sky-300 bg-sky-50 px-3 py-1.5 font-mono text-xs uppercase tracking-wider text-sky-700 hover:bg-sky-100 disabled:opacity-50 dark:border-sky-700 dark:bg-sky-950/40 dark:text-sky-300 dark:hover:bg-sky-900/40">
+              {saving ? '···' : 'Connect Repository'}
+            </button>
+          </form>
+        )}
+
+        {data?.connections?.length > 0 && (
+          <div className="border-t border-slate-100 pt-3 dark:border-slate-800/60">
+            <div className="mb-1 font-mono text-[10px] uppercase tracking-wider text-slate-500">Connected accounts</div>
+            {data.connections.map((c) => (
+              <div key={c.id} className="flex items-center justify-between py-1">
+                <span className="font-mono text-xs text-slate-700 dark:text-slate-300">{c.account_username} · {c.gitlab_url}</span>
+                <button
+                  onClick={() => sync(c.id)}
+                  disabled={syncing === c.id}
+                  className="border border-slate-300 px-2 py-1 font-mono text-[10px] uppercase tracking-wider text-slate-600 hover:bg-slate-100 disabled:opacity-50 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
+                >
+                  {syncing === c.id ? '···' : 'Sync Repositories'}
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+      {msg && <div className="mt-3 border border-emerald-200 bg-emerald-50 px-3 py-2 font-mono text-xs text-emerald-700 dark:border-emerald-800 dark:bg-emerald-950/30 dark:text-emerald-400">{msg}</div>}
       {err && <div className="mt-3 font-mono text-xs text-rose-600 dark:text-rose-400">{err}</div>}
     </IntegrationCard>
   );
@@ -219,6 +474,8 @@ function SonarCard() {
   const [form, setForm] = useState({ url: '', token: '' });
   const [testing, setTesting] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [checkingUpdates, setCheckingUpdates] = useState(false);
+  const [updateInfo, setUpdateInfo] = useState(null);
   const [msg, setMsg] = useState('');
   const [err, setErr] = useState('');
 
@@ -251,6 +508,14 @@ function SonarCard() {
       else setErr(r.error || 'Test failed.');
     } catch (e) { setErr(e.message); }
     setTesting(false);
+  };
+
+  const checkUpdates = async () => {
+    setErr(''); setUpdateInfo(null); setCheckingUpdates(true);
+    try {
+      setUpdateInfo(await api.post('/modules/sonar/check-updates', {}));
+    } catch (e) { setErr(e.message); }
+    setCheckingUpdates(false);
   };
 
   const save = async (e) => {
@@ -317,6 +582,28 @@ function SonarCard() {
           Once healthy, attach a project to SonarQube analysis below — Rotsy creates the Sonar project and
           issues its analysis token automatically. No manual SonarQube setup required.
         </p>
+
+        {data?.configured && (
+          <div className="border-t border-slate-100 pt-3 dark:border-slate-800/60">
+            <div className="mb-1 font-mono text-[10px] uppercase tracking-wider text-slate-500">Version</div>
+            <button
+              type="button"
+              onClick={checkUpdates}
+              disabled={checkingUpdates}
+              className="border border-slate-300 px-3 py-1.5 font-mono text-xs uppercase tracking-wider text-slate-600 hover:bg-slate-100 disabled:opacity-50 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
+            >
+              {checkingUpdates ? '···' : 'Check for Updates'}
+            </button>
+            {updateInfo && (
+              <div className="mt-2 font-mono text-[11px] text-slate-600 dark:text-slate-400">
+                {updateInfo.update_available
+                  ? `Update available: ${updateInfo.current_version} → ${updateInfo.latest_version}. Upgrading SonarQube itself is a deployment change Rotsy doesn't perform automatically — see SonarQube's own upgrade guide.`
+                  : `SonarQube ${updateInfo.current_version} is up to date.`}
+              </div>
+            )}
+          </div>
+        )}
+
         <RunAnalysisTool />
       </div>
       {msg && <div className="border border-emerald-200 bg-emerald-50 px-3 py-2 font-mono text-xs text-emerald-700 dark:border-emerald-800 dark:bg-emerald-950/30 dark:text-emerald-400">{msg}</div>}

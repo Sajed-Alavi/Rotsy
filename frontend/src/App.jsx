@@ -12,6 +12,7 @@ import AlertsPage from './features/alerts/AlertsPage.jsx';
 import ProjectsListPage from './features/projects/ProjectsListPage.jsx';
 import ProjectLayout from './features/projects/ProjectLayout.jsx';
 import ProjectOverviewPage from './features/projects/pages/OverviewPage.jsx';
+import ProjectRepositoriesPage from './features/projects/pages/RepositoriesPage.jsx';
 import ProjectAnalysisPage from './features/projects/pages/AnalysisPage.jsx';
 import ProjectSecurityPage from './features/projects/pages/SecurityPage.jsx';
 import ProjectArtifactsPage from './features/projects/pages/ArtifactsPage.jsx';
@@ -69,6 +70,7 @@ export default function App() {
           <Route path="projects" element={<ProjectsListPage />} />
           <Route path="projects/:id" element={<ProjectLayout />}>
             <Route index element={<ProjectOverviewPage />} />
+            <Route path="repositories" element={<ProjectRepositoriesPage />} />
             <Route path="analysis" element={<ProjectAnalysisPage />} />
             <Route path="security" element={<ProjectSecurityPage />} />
             <Route path="artifacts" element={<ProjectArtifactsPage />} />

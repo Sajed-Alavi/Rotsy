@@ -45,6 +45,7 @@ from .routers import (
     auth,
     blobstores,
     github,
+    gitlab,
     health,
     jobs,
     metrics,
@@ -386,6 +387,18 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     except Exception:  # noqa: BLE001 - never block startup on housekeeping
         logger.exception("Could not reap stranded jobs")
 
+    # And the Sonar analysis_runs table specifically: JobQueue.reap_stranded()
+    # above only fixes the Redis job's own status, not this separate DB row
+    # the UI actually reads for "Analysis" tab / Project Overview — without
+    # this an interrupted analysis shows RUNNING forever.
+    try:
+        from .modules.sonar.provisioning import reap_stale_analysis_runs
+        factory = get_session_factory()
+        async with factory() as session:
+            await reap_stale_analysis_runs(session)
+    except Exception:  # noqa: BLE001 - never block startup on housekeeping
+        logger.exception("Could not reap interrupted analysis runs")
+
     # Populate the shared bag for job handlers.
     _lifespan_state.clear()
     _lifespan_state["nexus"] = nexus
@@ -416,6 +429,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     runner.register("scanner_db_import", job_handlers.handle_scanner_db_import)
     from .workers.analysis_worker import handle_clone_and_analyze
     runner.register("clone_and_analyze", handle_clone_and_analyze)
+    from .workers.provisioning_worker import handle_provision_repository
+    runner.register("provision_repository", handle_provision_repository)
     await runner.start()
     app.state.runner = runner
 
@@ -519,6 +534,7 @@ def create_app() -> FastAPI:
     app.include_router(metrics.router, prefix="/api")
     app.include_router(projects.router, prefix="/api")
     app.include_router(github.router, prefix="/api")
+    app.include_router(gitlab.router, prefix="/api")
     app.include_router(sonar.router, prefix="/api")
     app.include_router(jobs.router, prefix="/api")
     app.include_router(prometheus.router)  # no prefix — serves at /metrics/export

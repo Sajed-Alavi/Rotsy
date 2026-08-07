@@ -1,15 +1,21 @@
 """``clone_and_analyze`` job: the push -> Sonar -> dashboard loop.
 
-Triggered by ``routers/github.py``'s webhook receiver. Clones the pushed
-commit via the mapped repo's :class:`GitHubProvider`, runs sonar-scanner
-against it, polls the resulting compute-engine task, and persists an
-``AnalysisRun`` + ``QualityGateResult``. On completion (success or failure)
-it reports a commit status back to GitHub and enqueues insight generation.
+Provider-agnostic: the payload identifies a repository by
+``source_module``/``credential_ref``/``repo_external_id`` rather than a
+GitHub-specific row id, so this one handler serves GitHub pushes, GitLab
+pushes, manual "Run Analysis" clicks, and automatic on-connect analysis alike
+— there is exactly one analysis implementation, not one per source module.
+
+Clones the pushed commit via whichever :class:`SourceProvider` matches
+``source_module``, runs sonar-scanner against it, polls the resulting
+compute-engine task, and persists an ``AnalysisRun`` + ``QualityGateResult``.
+On completion (success or failure) it reports a commit status back to the
+source provider and generates Smart Insights.
 
 Runs outside any request scope, like every other handler in
-``app.services.job_handlers`` — it owns its own DB session and reads shared
-resources (settings, cache) from the lifespan-populated dict rather than
-FastAPI dependency injection.
+``app.services.job_handlers`` — it owns its own DB session(s) and reads
+shared resources (settings, cache) from the lifespan-populated dict rather
+than FastAPI dependency injection.
 """
 
 from __future__ import annotations
@@ -21,24 +27,22 @@ from datetime import datetime, timezone
 from typing import Awaitable, Callable
 
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import Settings
 from ..core.cache import Cache
-from ..core.config_store import get_sonar_connection
+from ..core.config_store import get_github_app_config, get_sonar_connection
 from ..core.insights import evaluate_and_store
 from ..core.jobs import Job
-from ..core.source_provider import RepoRef
+from ..core.source_provider import RepoRef, SourceProvider
 from ..db.session import get_session_factory
-from ..models import AnalysisRun, GitHubInstallation, GitHubRepository, QualityGateResult, SonarProject
+from ..models import AnalysisRun, QualityGateResult, SonarProject
 from ..modules.github.provider import GitHubProvider
+from ..modules.gitlab.provider import GitLabProvider
 from ..modules.sonar.connector import SonarClient, SonarError
-from ..modules.sonar.quality_gates import (
-    QualityGateFailedError,
-    QualityGateTimeoutError,
-    fetch_quality_gate,
-    wait_for_analysis,
-)
-from ..modules.sonar.scanner import ScannerError, UnsupportedLanguageError, run_scanner, validate_language
+from ..modules.sonar.findings import sync_findings
+from ..modules.sonar.quality_gates import fetch_quality_gate, wait_for_analysis
+from ..modules.sonar.scanner import run_scanner, validate_language
 from ..state import lifespan_handles as _lifespan_state
 
 logger = logging.getLogger(__name__)
@@ -58,41 +62,66 @@ def _settings_and_cache() -> tuple[Settings, Cache]:
     return settings, cache
 
 
+async def _build_provider(source_module: str, session: AsyncSession, settings: Settings, cache: Cache) -> SourceProvider:
+    if source_module == "github":
+        app_config = await get_github_app_config(session, settings)
+        return GitHubProvider(app_config, cache)
+    if source_module == "gitlab":
+        return GitLabProvider(get_session_factory())
+    raise ValueError(f"Unknown source_module {source_module!r}")
+
+
 _MEASURE_KEYS = ["bugs", "vulnerabilities", "code_smells", "security_hotspots", "coverage", "duplicated_lines_density"]
 
 
 async def handle_clone_and_analyze(job: Job, progress: ProgressCallback) -> dict:
-    """The one and only analysis workflow — push-triggered and manual runs
-    both enqueue this same job type with the same payload shape (``trigger``
-    is the only thing that differs), so there is exactly one implementation
-    to reason about, test, and fix."""
+    """The one and only analysis workflow — push-triggered, manual, and
+    automatic on-connect runs all enqueue this same job type with the same
+    payload shape (``trigger`` is the only thing that differs), so there is
+    exactly one implementation to reason about, test, and fix."""
     payload = job.payload
     project_id = payload["project_id"]
-    github_repository_id = payload["github_repository_id"]
-    repo_full_name = payload["repo_full_name"]
+    source_module = payload["source_module"]
+    credential_ref = payload["credential_ref"]
+    repo_external_id = payload["repo_external_id"]
+    repo_name = payload.get("repo_name") or repo_external_id.rsplit("/", 1)[-1]
     ref = payload["ref"]
+    # Every enqueuer (routers/sonar.py, modules/sonar/provisioning.py) sets
+    # this; falling back to `ref` only guards a payload from an older worker
+    # version still sitting in the queue across a deploy.
+    default_branch = payload.get("default_branch") or ref
     sha = payload["sha"]
     trigger = payload.get("trigger", "push")
+    github_repository_id = payload.get("github_repository_id")
+    gitlab_repository_id = payload.get("gitlab_repository_id")
 
     settings, cache = _settings_and_cache()
     factory = get_session_factory()
+    repo_ref = RepoRef(external_id=repo_external_id, name=repo_name, default_branch=ref, private=True)
 
     await progress(2, "queued")
     async with factory() as session:
-        github_repo = await session.get(GitHubRepository, github_repository_id)
-        if github_repo is None:
-            raise ValueError(f"GitHubRepository {github_repository_id} not found")
-        installation = await session.get(GitHubInstallation, github_repo.installation_id)
-        if installation is None:
-            raise ValueError(f"GitHubInstallation for repo {github_repository_id} not found")
+        provider = await _build_provider(source_module, session, settings, cache)
 
-        sonar_project = await session.scalar(
-            select(SonarProject).where(SonarProject.project_id == project_id)
-        )
+        # A Project can hold many repositories, each with its own
+        # SonarProject — looked up by *which repository* this job is for,
+        # never just by project_id (that would pick an arbitrary repo's
+        # analysis under the same Project).
+        if github_repository_id:
+            sonar_project = await session.scalar(
+                select(SonarProject).where(SonarProject.github_repository_id == github_repository_id)
+            )
+        elif gitlab_repository_id:
+            sonar_project = await session.scalar(
+                select(SonarProject).where(SonarProject.gitlab_repository_id == gitlab_repository_id)
+            )
+        else:
+            raise ValueError("clone_and_analyze payload is missing github_repository_id/gitlab_repository_id")
+
         if sonar_project is None:
             raise ValueError(
-                f"project {project_id} has no Sonar project configured — "
-                "connect one via POST /api/modules/sonar/projects before pushing"
+                f"{repo_external_id} has no Sonar project configured — "
+                "connect one from the Project page before pushing"
             )
         validate_language(sonar_project.language)
 
@@ -103,7 +132,7 @@ async def handle_clone_and_analyze(job: Job, progress: ProgressCallback) -> dict
             )
 
         # A manual re-run (or a retried webhook delivery that slipped past the
-        # cache-based dedupe in routers/github.py) can target a commit that
+        # cache-based dedupe in the webhook receiver) can target a commit that
         # already has a run — (sonar_project_id, commit_sha) is unique, so
         # reuse and reset that row instead of a second INSERT hitting the
         # constraint.
@@ -122,19 +151,23 @@ async def handle_clone_and_analyze(job: Job, progress: ProgressCallback) -> dict
             run.trigger = trigger
             run.issues_count = run.bugs = run.vulnerabilities = run.code_smells = run.security_hotspots = None
             run.coverage = run.duplication_pct = None
+            # Reset alongside everything else above: `started_at` only gets
+            # its DB-side default on the INSERT path. Left alone here, a
+            # re-run of the same commit kept the *original* run's start
+            # time while `finished_at` moved to whenever this re-run
+            # actually finished — every re-run made "duration" (computed in
+            # the UI as finished_at - started_at) larger and more wrong,
+            # not just stale.
+            run.started_at = datetime.now(timezone.utc)
             run.finished_at = None
             run.error = None
         await session.commit()
         await session.refresh(run)
 
-    provider = GitHubProvider(settings, cache)
-    repo_ref = RepoRef(external_id=repo_full_name, name=repo_full_name.split("/")[-1],
-                        default_branch=ref, private=True)
-
     await progress(10, "cloning repository")
     source_dir = tempfile.mkdtemp(prefix="rotsy-analysis-")
     try:
-        await provider.fetch_source(str(installation.installation_id), repo_ref, ref, source_dir)
+        await provider.fetch_source(credential_ref, repo_ref, ref, source_dir)
 
         await progress(30, "scanner started")
         sonar = SonarClient(sonar_conn.url, sonar_conn.token)
@@ -142,7 +175,7 @@ async def handle_clone_and_analyze(job: Job, progress: ProgressCallback) -> dict
 
         await progress(40, "uploading analysis")
         task_id = await run_scanner(
-            source_dir, sonar_project.sonar_project_key, sonar_conn.url, analysis_token, ref,
+            source_dir, sonar_project.sonar_project_key, sonar_conn.url, analysis_token, ref, default_branch,
         )
 
         await progress(60, "waiting for quality gate")
@@ -182,6 +215,24 @@ async def handle_clone_and_analyze(job: Job, progress: ProgressCallback) -> dict
             session.add(QualityGateResult(
                 analysis_run_id=run.id, status=gate_status, conditions=gate.get("conditions", []),
             ))
+
+            await progress(85, "collecting issues and hotspots")
+            try:
+                issue_count, hotspot_count = await sync_findings(
+                    session, sonar, sonar_project.sonar_project_key, run.id,
+                )
+                logger.info("Stored %d issue(s) and %d hotspot(s) for analysis run %s",
+                            issue_count, hotspot_count, run.id)
+            except SonarError:
+                # Best-effort, like ensure_quality_gate in provisioning.py: the
+                # gate result and aggregate measures above already succeeded
+                # and are what "analysis succeeded" means. Per-issue detail is
+                # supplementary — a hiccup fetching it (a Sonar edition without
+                # the hotspots endpoint, a transient timeout on a huge issue
+                # list) must not undo an otherwise-successful run.
+                logger.warning("Failed to fetch issues/hotspots for analysis run %s — "
+                                "aggregate counts are still recorded.", run.id, exc_info=True)
+
             await session.commit()
             await session.refresh(run)
 
@@ -191,9 +242,9 @@ async def handle_clone_and_analyze(job: Job, progress: ProgressCallback) -> dict
                 logger.info("Generated %d insight(s) for project %s commit %s",
                              len(insights), project_id, sha[:8])
 
-        await progress(95, "updating GitHub status")
+        await progress(95, "updating commit status")
         await provider.report_status(
-            str(installation.installation_id), repo_ref, sha,
+            credential_ref, repo_ref, sha,
             state="success" if gate_status == "OK" else "failure",
             description=f"Quality gate {gate_status.lower()} — {issues_count} issues, coverage {coverage or 0:.0f}%",
             target_url="",
@@ -201,16 +252,27 @@ async def handle_clone_and_analyze(job: Job, progress: ProgressCallback) -> dict
         await progress(100, f"completed — quality gate {gate_status}")
         return {"analysis_run_id": run.id, "quality_gate": gate_status, "issues_count": issues_count}
 
-    except (ScannerError, UnsupportedLanguageError, SonarError,
-            QualityGateFailedError, QualityGateTimeoutError) as exc:
-        await _mark_failed(factory, run.id, str(exc))
+    except Exception as exc:  # noqa: BLE001
+        # Deliberately catches everything, not just the small set of
+        # expected Sonar/scanner exceptions this used to list by name: this
+        # is a background job with no caller waiting to see a traceback, so
+        # any exception outside that narrower list used to skip
+        # _mark_failed entirely and leave the AnalysisRun stuck at "running"
+        # forever — indistinguishable in the UI from a job that's still
+        # genuinely in progress. A bug here (e.g. a missing binary a
+        # dependency change forgot to install into the image) should surface
+        # as a failed run with a real error message, not a silent hang.
+        logger.error("clone_and_analyze failed for analysis run %s (%s@%s): %s",
+                      run.id, repo_external_id, sha, exc, exc_info=True)
+        await _mark_failed(factory, run.id, str(exc) or f"{type(exc).__name__}: analysis failed unexpectedly.")
         try:
             await provider.report_status(
-                str(installation.installation_id), repo_ref, sha,
+                credential_ref, repo_ref, sha,
                 state="error", description=str(exc)[:140], target_url="",
             )
         except Exception:  # noqa: BLE001
-            logger.warning("Failed to report failure status back to GitHub for %s@%s", repo_full_name, sha)
+            logger.warning("Failed to report failure status back to %s for %s@%s",
+                            source_module, repo_external_id, sha)
         raise
     finally:
         shutil.rmtree(source_dir, ignore_errors=True)

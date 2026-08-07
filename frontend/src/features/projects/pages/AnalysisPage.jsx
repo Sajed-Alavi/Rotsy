@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useOutletContext } from 'react-router';
-import { api } from '../../../lib/api.js';
+import { api, API_BASE } from '../../../lib/api.js';
 import DataTable from '../../../components/DataTable.jsx';
 import Badge from '../../../components/Badge.jsx';
 import Modal from '../../../components/Modal.jsx';
@@ -9,6 +9,9 @@ import { formatDateTime, relativeTime } from '../../../lib/format.js';
 
 const GATE_TONE = { OK: 'ok', WARN: 'warn', ERROR: 'bad' };
 const STATUS_TONE = { success: 'ok', failed: 'bad', running: 'info', pending: 'neutral' };
+const ISSUE_SEVERITY_TONE = { BLOCKER: 'bad', CRITICAL: 'bad', MAJOR: 'warn', MINOR: 'info', INFO: 'neutral' };
+const ISSUE_TYPE_TONE = { BUG: 'bad', VULNERABILITY: 'bad', CODE_SMELL: 'neutral' };
+const HOTSPOT_PROBABILITY_TONE = { HIGH: 'bad', MEDIUM: 'warn', LOW: 'info' };
 
 /** Analysis history for this project, plus the manual "Run Analysis" trigger
  * — same backend job as an automatic push, just started on demand. */
@@ -16,6 +19,7 @@ export default function AnalysisPage() {
   const { projectId } = useOutletContext();
   const [runs, setRuns] = useState([]);
   const [gates, setGates] = useState({}); // run_id -> quality gate status
+  const [repoLabels, setRepoLabels] = useState({}); // sonar_project_id -> "owner/repo"
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState('');
   const [running, setRunning] = useState(false);
@@ -25,8 +29,12 @@ export default function AnalysisPage() {
   const load = async () => {
     setLoading(true); setErr('');
     try {
-      const rows = await api.get(`/modules/sonar/projects/${projectId}/analysis-runs`);
+      const [rows, repos] = await Promise.all([
+        api.get(`/modules/sonar/projects/${projectId}/analysis-runs`),
+        api.get(`/projects/${projectId}/repositories`),
+      ]);
       setRuns(rows);
+      setRepoLabels(Object.fromEntries(repos.filter((r) => r.sonar_project_id).map((r) => [r.sonar_project_id, r.full_name])));
       const successful = rows.filter((r) => r.status === 'success');
       const entries = await Promise.all(successful.map(async (r) => {
         try { return [r.id, (await api.get(`/modules/sonar/analysis-runs/${r.id}/quality-gate`)).status]; }
@@ -38,6 +46,10 @@ export default function AnalysisPage() {
   };
   useEffect(() => { load(); }, [projectId]);
 
+  // Convenience trigger for the common single-repository Project. With more
+  // than one repository, which one to analyze is ambiguous — the backend
+  // 400s in that case and this surfaces the message pointing at the
+  // Repositories tab, which has a Run Analysis button per repository.
   const runAnalysis = async () => {
     setRunning(true); setRunMsg(''); setErr('');
     try {
@@ -48,6 +60,7 @@ export default function AnalysisPage() {
   };
 
   const columns = [
+    { key: 'sonar_project_id', header: 'Repository', mono: true, render: (v) => repoLabels[v] || `#${v}` },
     { key: 'commit_sha', header: 'Commit', mono: true, render: (v) => v.slice(0, 8) },
     { key: 'ref', header: 'Branch', mono: true },
     { key: 'trigger', header: 'Trigger', render: (v) => <Badge tone="neutral">{v}</Badge> },
@@ -65,7 +78,9 @@ export default function AnalysisPage() {
     <div className="grid grid-cols-1 gap-4">
       <div className="flex items-center justify-between">
         <p className="font-mono text-[11px] text-slate-500 dark:text-slate-500">
-          Every push to the default branch analyzes automatically. Use Run Analysis to trigger one on demand.
+          Every push to a connected repository's default branch analyzes automatically. Run Analysis here
+          works for a single-repository Project — with more than one repository connected, use the
+          per-repository Run Analysis button on the Repositories tab instead.
         </p>
         <button onClick={runAnalysis} disabled={running} className="flex items-center gap-1.5 border border-sky-300 bg-sky-50 px-3 py-1.5 font-mono text-xs uppercase tracking-wider text-sky-700 hover:bg-sky-100 disabled:opacity-50 dark:border-sky-700 dark:bg-sky-950/40 dark:text-sky-300 dark:hover:bg-sky-900/40">
           <Icon name="play" size={12} /> {running ? '···' : 'Run Analysis'}
@@ -83,31 +98,153 @@ export default function AnalysisPage() {
 }
 
 function AnalysisDetailModal({ run, gate, onClose }) {
+  const [tab, setTab] = useState('overview');
+  const [issues, setIssues] = useState(null); // null = not loaded yet
+  const [hotspots, setHotspots] = useState(null);
+  const [findingsErr, setFindingsErr] = useState('');
+
+  useEffect(() => {
+    setTab('overview');
+    setIssues(null);
+    setHotspots(null);
+    setFindingsErr('');
+  }, [run?.id]);
+
+  useEffect(() => {
+    if (!run || run.status !== 'success') return;
+    if (tab === 'issues' && issues === null) {
+      api.get(`/modules/sonar/analysis-runs/${run.id}/issues?limit=100`)
+        .then(setIssues).catch((e) => setFindingsErr(e.message));
+    }
+    if (tab === 'hotspots' && hotspots === null) {
+      api.get(`/modules/sonar/analysis-runs/${run.id}/hotspots?limit=100`)
+        .then(setHotspots).catch((e) => setFindingsErr(e.message));
+    }
+  }, [run, tab, issues, hotspots]);
+
   if (!run) return null;
   const duration = run.finished_at
     ? `${Math.round((new Date(run.finished_at) - new Date(run.started_at)) / 1000)}s`
     : '—';
+
+  const tabButton = (key, label) => (
+    <button
+      type="button"
+      onClick={() => setTab(key)}
+      className={`border-b-2 px-3 py-1.5 font-mono text-[10px] uppercase tracking-wider ${
+        tab === key
+          ? 'border-sky-500 text-sky-700 dark:text-sky-300'
+          : 'border-transparent text-slate-500 hover:text-slate-700 dark:text-slate-500 dark:hover:text-slate-300'
+      }`}
+    >
+      {label}
+    </button>
+  );
+
   return (
-    <Modal open={!!run} title={`Analysis · ${run.commit_sha.slice(0, 8)}`} onClose={onClose} wide>
-      <dl className="grid grid-cols-2 gap-x-6 gap-y-3 font-mono text-xs">
-        <Field label="Commit" value={run.commit_sha} />
-        <Field label="Branch" value={run.ref} />
-        <Field label="Trigger" value={run.trigger} />
-        <Field label="Status" value={run.status} />
-        <Field label="Quality Gate" value={gate || '—'} />
-        <Field label="Duration" value={duration} />
-        <Field label="Started" value={relativeTime(run.started_at)} />
-        <Field label="Bugs" value={run.bugs ?? '—'} />
-        <Field label="Vulnerabilities" value={run.vulnerabilities ?? '—'} />
-        <Field label="Code Smells" value={run.code_smells ?? '—'} />
-        <Field label="Security Hotspots" value={run.security_hotspots ?? '—'} />
-        <Field label="Coverage" value={run.coverage != null ? `${run.coverage.toFixed(1)}%` : '—'} />
-        <Field label="Duplication" value={run.duplication_pct != null ? `${run.duplication_pct.toFixed(1)}%` : '—'} />
-      </dl>
-      {run.error && (
-        <div className="mt-4 border border-rose-200 bg-rose-50 px-3 py-2 font-mono text-xs text-rose-600 dark:border-rose-800 dark:bg-rose-950/30 dark:text-rose-400">{run.error}</div>
+    <Modal open={!!run} title={`Analysis · ${run.commit_sha.slice(0, 8)}`} onClose={onClose} wide
+      footer={run.status === 'success' && (
+        <a
+          href={`${API_BASE}/modules/sonar/analysis-runs/${run.id}/report.pdf`}
+          target="_blank" rel="noreferrer"
+          className="flex items-center gap-1.5 border border-slate-300 px-3 py-1.5 font-mono text-xs uppercase tracking-wider text-slate-600 hover:bg-slate-100 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
+        >
+          <Icon name="download" size={12} /> Download Report (PDF)
+        </a>
+      )}
+    >
+      <div className="-mt-1 mb-3 flex gap-1 border-b border-slate-200 dark:border-slate-800">
+        {tabButton('overview', 'Overview')}
+        {tabButton('issues', `Issues${run.issues_count != null ? ` (${run.issues_count})` : ''}`)}
+        {tabButton('hotspots', `Hotspots${run.security_hotspots != null ? ` (${run.security_hotspots})` : ''}`)}
+      </div>
+
+      {tab === 'overview' && (
+        <>
+          <dl className="grid grid-cols-2 gap-x-6 gap-y-3 font-mono text-xs">
+            <Field label="Commit" value={run.commit_sha} />
+            <Field label="Branch" value={run.ref} />
+            <Field label="Trigger" value={run.trigger} />
+            <Field label="Status" value={run.status} />
+            <Field label="Quality Gate" value={gate || '—'} />
+            <Field label="Duration" value={duration} />
+            <Field label="Started" value={relativeTime(run.started_at)} />
+            <Field label="Bugs" value={run.bugs ?? '—'} />
+            <Field label="Vulnerabilities" value={run.vulnerabilities ?? '—'} />
+            <Field label="Code Smells" value={run.code_smells ?? '—'} />
+            <Field label="Security Hotspots" value={run.security_hotspots ?? '—'} />
+            <Field label="Coverage" value={run.coverage != null ? `${run.coverage.toFixed(1)}%` : '—'} />
+            <Field label="Duplication" value={run.duplication_pct != null ? `${run.duplication_pct.toFixed(1)}%` : '—'} />
+          </dl>
+          {run.error && (
+            <div className="mt-4 border border-rose-200 bg-rose-50 px-3 py-2 font-mono text-xs text-rose-600 dark:border-rose-800 dark:bg-rose-950/30 dark:text-rose-400">{run.error}</div>
+          )}
+        </>
+      )}
+
+      {tab !== 'overview' && findingsErr && (
+        <div className="border border-rose-200 bg-rose-50 px-3 py-2 font-mono text-xs text-rose-600 dark:border-rose-800 dark:bg-rose-950/30 dark:text-rose-400">{findingsErr}</div>
+      )}
+
+      {tab === 'issues' && (
+        <IssuesTable issues={issues} />
+      )}
+
+      {tab === 'hotspots' && (
+        <HotspotsTable hotspots={hotspots} />
       )}
     </Modal>
+  );
+}
+
+function IssuesTable({ issues }) {
+  if (issues === null) return <p className="font-mono text-[11px] text-slate-500 dark:text-slate-500">loading…</p>;
+  const columns = [
+    { key: 'severity', header: 'Severity', render: (v) => <Badge tone={ISSUE_SEVERITY_TONE[v] || 'neutral'}>{v}</Badge> },
+    { key: 'type', header: 'Type', render: (v) => <Badge tone={ISSUE_TYPE_TONE[v] || 'neutral'}>{v?.replace('_', ' ')}</Badge> },
+    { key: 'rule', header: 'Rule', mono: true },
+    {
+      key: 'component', header: 'File : Line', mono: true,
+      render: (v, row) => v ? `${v}${row.line ? `:${row.line}` : ''}` : '—',
+    },
+    { key: 'message', header: 'Message' },
+    { key: 'effort', header: 'Effort', mono: true, render: (v) => v || '—' },
+  ];
+  return (
+    <div className="space-y-2">
+      <DataTable columns={columns} rows={issues.items} empty="No open issues for this analysis." />
+      {issues.total > issues.items.length && (
+        <p className="font-mono text-[10px] text-slate-400 dark:text-slate-600">
+          Showing {issues.items.length} of {issues.total} — download the full report for the complete list.
+        </p>
+      )}
+    </div>
+  );
+}
+
+function HotspotsTable({ hotspots }) {
+  if (hotspots === null) return <p className="font-mono text-[11px] text-slate-500 dark:text-slate-500">loading…</p>;
+  const columns = [
+    {
+      key: 'vulnerability_probability', header: 'Probability',
+      render: (v) => <Badge tone={HOTSPOT_PROBABILITY_TONE[v] || 'neutral'}>{v || '—'}</Badge>,
+    },
+    {
+      key: 'component', header: 'File : Line', mono: true,
+      render: (v, row) => v ? `${v}${row.line ? `:${row.line}` : ''}` : '—',
+    },
+    { key: 'security_category', header: 'Category', render: (v) => v || '—' },
+    { key: 'message', header: 'Message' },
+  ];
+  return (
+    <div className="space-y-2">
+      <DataTable columns={columns} rows={hotspots.items} empty="No security hotspots for this analysis." />
+      {hotspots.total > hotspots.items.length && (
+        <p className="font-mono text-[10px] text-slate-400 dark:text-slate-600">
+          Showing {hotspots.items.length} of {hotspots.total} — download the full report for the complete list.
+        </p>
+      )}
+    </div>
   );
 }
 

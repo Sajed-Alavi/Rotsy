@@ -5,13 +5,17 @@ One model, chosen and documented here rather than left to drift: a 0-100
 a fixed, published deduction — there is no hidden weighting and nothing here
 calls out to an LLM or any external scoring service.
 
-Current inputs (Sonar-only): the latest successful analysis run's Quality
-Gate, bug/vulnerability counts, coverage, and duplication, plus the
-project's most recent Smart Insights. Trivy/Grype findings are not yet
-folded in — that requires the Project-to-Nexus-artifact correlation from a
-later phase, which does not exist yet. Adding it later means adding terms to
-:data:`SCORING_FACTORS` and :func:`compute_health_score`, not redesigning
-the model.
+Current inputs (Sonar-only): across *every* repository connected to the
+Project (a Project can hold many), each repository's latest successful
+analysis run contributes its Quality Gate, bug/vulnerability counts,
+coverage, and duplication — vulnerabilities and bugs are summed across
+repositories, coverage and duplication are averaged, and the gate status
+used is the worst one seen (a single failing repository's gate failure
+isn't hidden by nine passing ones). Plus the project's most recent Smart
+Insights. Trivy/Grype findings are not yet folded in — that requires the
+Project-to-Nexus-artifact correlation from a later phase, which does not
+exist yet. Adding it later means adding terms to :data:`SCORING_FACTORS`
+and :func:`compute_health_score`, not redesigning the model.
 """
 
 from __future__ import annotations
@@ -53,52 +57,78 @@ class HealthScore:
 
 
 async def compute_health_score(session: AsyncSession, project_id: int) -> HealthScore:
-    sonar_project = await session.scalar(select(SonarProject).where(SonarProject.project_id == project_id))
-    if sonar_project is None:
+    sonar_projects = (
+        await session.execute(
+            select(SonarProject).where(
+                SonarProject.project_id == project_id,
+                # A SonarProject with no linked repository has nothing valid
+                # to score — shouldn't exist after the 20260811 migration,
+                # but skip it defensively rather than crash on it.
+                (SonarProject.github_repository_id.isnot(None)) | (SonarProject.gitlab_repository_id.isnot(None)),
+            )
+        )
+    ).scalars().all()
+    if not sonar_projects:
         return HealthScore(score=0, factors=["No SonarQube project connected yet."], has_data=False)
 
-    latest_run = await session.scalar(
-        select(AnalysisRun)
-        .where(AnalysisRun.sonar_project_id == sonar_project.id, AnalysisRun.status == "success")
-        .order_by(desc(AnalysisRun.started_at))
-        .limit(1)
-    )
-    if latest_run is None:
+    # One latest-successful-run per repository — a Project can hold many.
+    latest_runs: list[AnalysisRun] = []
+    for sonar_project in sonar_projects:
+        run = await session.scalar(
+            select(AnalysisRun)
+            .where(AnalysisRun.sonar_project_id == sonar_project.id, AnalysisRun.status == "success")
+            .order_by(desc(AnalysisRun.started_at))
+            .limit(1)
+        )
+        if run is not None:
+            latest_runs.append(run)
+    if not latest_runs:
         return HealthScore(score=0, factors=["No successful analysis yet."], has_data=False)
 
     score = 100
     factors: list[str] = []
 
-    gate = await session.scalar(
-        select(QualityGateResult).where(QualityGateResult.analysis_run_id == latest_run.id)
-    )
-    if gate is not None and gate.status == "ERROR":
+    # Worst gate status across repositories — one failing repo isn't hidden
+    # by others passing.
+    gate_statuses = []
+    for run in latest_runs:
+        gate = await session.scalar(select(QualityGateResult).where(QualityGateResult.analysis_run_id == run.id))
+        if gate is not None:
+            gate_statuses.append(gate.status)
+    if "ERROR" in gate_statuses:
         score += SCORING_FACTORS["quality_gate_error"]
-        factors.append(f"Quality gate failed ({SCORING_FACTORS['quality_gate_error']})")
-    elif gate is not None and gate.status == "WARN":
+        failing = gate_statuses.count("ERROR")
+        factors.append(f"Quality gate failed on {failing} repositor{'y' if failing == 1 else 'ies'} ({SCORING_FACTORS['quality_gate_error']})")
+    elif "WARN" in gate_statuses:
         score += SCORING_FACTORS["quality_gate_warn"]
         factors.append(f"Quality gate warning ({SCORING_FACTORS['quality_gate_warn']})")
 
-    if latest_run.vulnerabilities:
+    total_vulnerabilities = sum(r.vulnerabilities or 0 for r in latest_runs)
+    if total_vulnerabilities:
         deduction = max(
-            SCORING_FACTORS["per_vulnerability"] * latest_run.vulnerabilities,
+            SCORING_FACTORS["per_vulnerability"] * total_vulnerabilities,
             SCORING_FACTORS["vulnerability_cap"],
         )
         score += deduction
-        factors.append(f"{latest_run.vulnerabilities} vulnerabilit{'y' if latest_run.vulnerabilities == 1 else 'ies'} ({deduction})")
+        factors.append(f"{total_vulnerabilities} vulnerabilit{'y' if total_vulnerabilities == 1 else 'ies'} across repositories ({deduction})")
 
-    if latest_run.bugs:
-        deduction = max(SCORING_FACTORS["per_bug"] * latest_run.bugs, SCORING_FACTORS["bug_cap"])
+    total_bugs = sum(r.bugs or 0 for r in latest_runs)
+    if total_bugs:
+        deduction = max(SCORING_FACTORS["per_bug"] * total_bugs, SCORING_FACTORS["bug_cap"])
         score += deduction
-        factors.append(f"{latest_run.bugs} bug(s) ({deduction})")
+        factors.append(f"{total_bugs} bug(s) across repositories ({deduction})")
 
-    if latest_run.coverage is not None and latest_run.coverage < SCORING_FACTORS["low_coverage_threshold_pct"]:
+    coverages = [r.coverage for r in latest_runs if r.coverage is not None]
+    avg_coverage = sum(coverages) / len(coverages) if coverages else None
+    if avg_coverage is not None and avg_coverage < SCORING_FACTORS["low_coverage_threshold_pct"]:
         score += SCORING_FACTORS["low_coverage_penalty"]
-        factors.append(f"Coverage below {SCORING_FACTORS['low_coverage_threshold_pct']:.0f}% ({SCORING_FACTORS['low_coverage_penalty']})")
+        factors.append(f"Average coverage below {SCORING_FACTORS['low_coverage_threshold_pct']:.0f}% ({SCORING_FACTORS['low_coverage_penalty']})")
 
-    if latest_run.duplication_pct is not None and latest_run.duplication_pct > SCORING_FACTORS["high_duplication_threshold_pct"]:
+    duplications = [r.duplication_pct for r in latest_runs if r.duplication_pct is not None]
+    avg_duplication = sum(duplications) / len(duplications) if duplications else None
+    if avg_duplication is not None and avg_duplication > SCORING_FACTORS["high_duplication_threshold_pct"]:
         score += SCORING_FACTORS["high_duplication_penalty"]
-        factors.append(f"Duplication above {SCORING_FACTORS['high_duplication_threshold_pct']:.0f}% ({SCORING_FACTORS['high_duplication_penalty']})")
+        factors.append(f"Average duplication above {SCORING_FACTORS['high_duplication_threshold_pct']:.0f}% ({SCORING_FACTORS['high_duplication_penalty']})")
 
     recent_insights = (
         await session.execute(

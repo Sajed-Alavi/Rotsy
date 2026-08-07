@@ -8,4 +8,4 @@ here — nothing else in ``core`` changes.
 
 from __future__ import annotations
 
-from . import github, nexus, sonar  # noqa: F401
+from . import github, gitlab, nexus, sonar  # noqa: F401

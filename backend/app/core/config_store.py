@@ -306,3 +306,88 @@ async def get_sonar_last_success(session: AsyncSession) -> str | None:
         return json.loads(row.value_json).get("at")
     except (json.JSONDecodeError, TypeError):
         return None
+
+
+# ---------------------------------------------------------------------------
+# GitHub App (dashboard-managed, same encrypted-at-rest pattern as above).
+#
+# Unlike Nexus/Sonar, this is normally populated by the App Manifest flow
+# (see routers/github.py: create_manifest/manifest_callback), not typed in by
+# hand — clicking "Connect to GitHub" creates a real GitHub App via GitHub's
+# own manifest API and Rotsy saves whatever it returns here. Manual entry
+# (typing an existing App's id/key/secret into a form) is still supported as
+# a fallback for an App created outside that flow, since both end up in the
+# same place.
+# ---------------------------------------------------------------------------
+GITHUB_APP_CONFIG_KEY = "github_app_connection"
+
+
+@dataclass
+class GitHubAppConfig:
+    app_id: str
+    app_slug: str
+    private_key: str
+    # Empty when the App was created without a webhook (e.g. local dev on
+    # localhost, where GitHub cannot deliver webhooks at all) — the App is
+    # still fully usable for cloning, repo access, and commit status; only
+    # automatic push-triggered analysis needs this.
+    webhook_secret: str
+
+    def is_configured(self) -> bool:
+        return bool(self.app_id and self.private_key)
+
+    def has_webhook(self) -> bool:
+        return bool(self.webhook_secret)
+
+
+async def get_github_app_config(session: AsyncSession, settings: Settings) -> GitHubAppConfig:
+    """Dashboard value if present, otherwise the env/bootstrap default."""
+    row = await session.scalar(select(SystemConfig).where(SystemConfig.key == GITHUB_APP_CONFIG_KEY))
+    if row is not None:
+        try:
+            data = json.loads(row.value_json)
+            return GitHubAppConfig(
+                app_id=data.get("app_id", ""),
+                app_slug=data.get("app_slug", ""),
+                private_key=decrypt_password(data.get("private_key_enc", ""), settings),
+                webhook_secret=decrypt_password(data.get("webhook_secret_enc", ""), settings),
+            )
+        except (json.JSONDecodeError, TypeError):
+            logger.warning("Corrupt github_app_connection config row — falling back to env.")
+
+    return GitHubAppConfig(
+        app_id=settings.GITHUB_APP_ID, app_slug=settings.GITHUB_APP_SLUG,
+        private_key=settings.GITHUB_APP_PRIVATE_KEY, webhook_secret=settings.GITHUB_WEBHOOK_SECRET,
+    )
+
+
+async def save_github_app_config(
+    session: AsyncSession, settings: Settings, app_id: str, app_slug: str, private_key: str, webhook_secret: str,
+) -> GitHubAppConfig:
+    """Persist a GitHub App's credentials. The private key and webhook secret
+    are stored encrypted; never returned in the clear (see
+    :func:`github_app_config_masked`)."""
+    blob = json.dumps({
+        "app_id": app_id,
+        "app_slug": app_slug,
+        "private_key_enc": encrypt_password(private_key, settings),
+        "webhook_secret_enc": encrypt_password(webhook_secret, settings),
+    })
+    row = await session.scalar(select(SystemConfig).where(SystemConfig.key == GITHUB_APP_CONFIG_KEY))
+    if row is None:
+        session.add(SystemConfig(key=GITHUB_APP_CONFIG_KEY, value_json=blob))
+    else:
+        row.value_json = blob
+    await session.commit()
+    logger.info("GitHub App connection saved (app_id=%s, slug=%s).", app_id, app_slug)
+    return GitHubAppConfig(app_id=app_id, app_slug=app_slug, private_key=private_key, webhook_secret=webhook_secret)
+
+
+async def github_app_config_masked(session: AsyncSession, settings: Settings) -> dict:
+    """For the Settings -> Integrations -> GitHub card — never the private key or webhook secret."""
+    cfg = await get_github_app_config(session, settings)
+    return {
+        "configured": cfg.is_configured(),
+        "app_id": cfg.app_id or None,
+        "app_slug": cfg.app_slug or None,
+    }

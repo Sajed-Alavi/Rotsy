@@ -356,13 +356,10 @@ than download. The on-demand import always works regardless.
 - A reachable Nexus Repository Manager with at least one **Docker** repository
 - A Nexus account with repository-admin read privileges (for discovery)
 
-For local (non-Docker) development only — Docker deployment needs none of
-these locally, since the images pin their own runtimes:
-
-- Python **3.13** (backend/Dockerfile pins `python:3.13.14-slim-bookworm`)
-- Node.js **24** LTS "Krypton" (frontend/Dockerfile pins `node:24.16.0-alpine`)
-- PostgreSQL 16, Redis 7 (or use the `postgres`/`redis` services in
-  `docker-compose.yml`)
+Nothing else. Python, Node, PostgreSQL and Redis all run inside the compose
+stack with their versions pinned in the Dockerfiles
+(`python:3.13.14-slim-bookworm`, `node:24.16.0-alpine`) — there is no local
+install step for any of them.
 
 ### 1. Configure
 
@@ -595,14 +592,17 @@ There is **no** registry URL or port setting, by design — see
 
 ## Development
 
-```bash
-# backend
-cd backend && pip install -r requirements.txt
-alembic upgrade head
-uvicorn app.main:app --reload
+Everything runs through Docker — there is no local (non-Docker) install path
+for the backend or frontend.
 
-# frontend
-cd frontend && npm install && npm run dev
+```bash
+# rebuild and restart after a code change
+docker compose up --build
+
+# one-off commands inside the running containers
+docker compose exec backend alembic upgrade head
+docker compose exec backend pytest
+docker compose exec frontend npm run build
 ```
 
 ## Security notes

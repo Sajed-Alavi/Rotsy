@@ -36,8 +36,12 @@ class GitHubRepository(Base):
     __tablename__ = "github_repositories"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    installation_id: Mapped[int] = mapped_column(
-        ForeignKey("github_installations.id", ondelete="CASCADE"), nullable=False, index=True
+    # NULL means "connected by URL, no App installation" (see
+    # routers/github.py:connect_public_repository) — only possible for a
+    # public repository, and only manual analysis works for one, since
+    # GitHub has no installation to deliver push webhooks through.
+    installation_id: Mapped[int | None] = mapped_column(
+        ForeignKey("github_installations.id", ondelete="CASCADE"), nullable=True, index=True
     )
     project_id: Mapped[int | None] = mapped_column(
         ForeignKey("projects.id", ondelete="SET NULL"), nullable=True, index=True

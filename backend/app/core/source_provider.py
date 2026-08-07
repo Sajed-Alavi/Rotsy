@@ -43,4 +43,16 @@ class SourceProvider(Protocol):
         """Shallow-clone ``ref`` into ``dest_dir``; return the path checked out to."""
         ...
 
+    async def get_latest_commit_sha(self, credential_ref: str, repo: RepoRef, ref: str) -> str:
+        """Current HEAD sha of ``ref`` — used by manual/"on connect" analysis,
+        which has a branch to analyze but no commit sha handed to it by an event."""
+        ...
+
+    async def get_repository_languages(self, credential_ref: str, repo: RepoRef) -> dict[str, float]:
+        """Provider-reported language breakdown (byte count or percentage,
+        whichever the provider's API returns — callers only compare relative
+        magnitude). Used to auto-pick a Sonar language on first connect
+        without cloning just to inspect files."""
+        ...
+
     async def report_status(self, credential_ref: str, repo: RepoRef, sha: str, state: str, description: str, target_url: str) -> None: ...

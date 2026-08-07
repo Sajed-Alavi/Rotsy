@@ -72,18 +72,34 @@ def redact(args: list[str], secrets: list[str]) -> str:
 
 
 async def exec_scanner(
-    args: list[str], env: dict[str, str], timeout: float = SCAN_TIMEOUT,
+    args: list[str], env: dict[str, str], timeout: float = SCAN_TIMEOUT, cwd: str | None = None,
 ) -> tuple[int, str, str]:
     """Run a scanner, capturing stdout and stderr separately.
 
     stdout carries the JSON report, so unlike the database helpers it must not
     be merged with the log stream.
+
+    ``cwd``: Trivy/Grype scan a remote registry reference and never needed
+    one (``None`` preserves their existing behavior — inherit this process's
+    cwd). sonar-scanner does: its own launcher script sets Java's
+    ``project.home`` from `pwd` at invoke time, independently of
+    ``-Dsonar.sources``, and several sensors (git-dirty-file detection for
+    text/secrets scanning, CPD, others) key off *that*, not the sources path.
+    Leaving this unset when running sonar-scanner had it silently launching
+    from the backend's own ``/app`` working directory instead of the cloned
+    repository: SonarQube still reported "ANALYSIS SUCCESSFUL" and a valid
+    compute-engine task (``sonar.sources`` indexing partly still worked), but
+    almost every sensor found "no files to be analyzed" against the wrong
+    project root — a real repository's analysis silently came back with
+    near-zero bugs/vulnerabilities/code smells, indistinguishable from a
+    successful run of a genuinely clean project.
     """
     proc = await asyncio.create_subprocess_exec(
         *args,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         env={**os.environ, **env},
+        cwd=cwd,
     )
     try:
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)

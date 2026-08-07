@@ -1,11 +1,16 @@
-# Backend image: FastAPI app + Alembic migrations + Trivy + Grype.
+# Backend image: FastAPI app + Alembic migrations + Trivy + Grype + git + sonar-scanner.
 #
 # All configuration is supplied via environment variables (docker-compose
 # env_file). No secrets are baked into the image.
 #
-# The image contains scanner *binaries* only. It has no Docker client, no
-# container runtime and (see docker-compose.yml) no Docker socket: images are
-# read over the registry API and analysed statically, never executed.
+# The image-scanning side (Trivy/Grype) contains scanner *binaries* only. It
+# has no Docker client, no container runtime and (see docker-compose.yml) no
+# Docker socket: Docker images are read over the registry API and analysed
+# statically, never executed. That guarantee is specific to container-image
+# scanning — it does not extend to the separate SonarQube module below, which
+# legitimately needs `git` (to clone a source repository) and a JVM (to run
+# `sonar-scanner`, itself a static source analyzer, same spirit as Trivy/Grype
+# but for source code instead of image layers).
 
 # Scanner versions. Pinned, not floating: a scanner major release can change
 # its database schema, at which point the database on the persisted cache
@@ -44,11 +49,27 @@
 ARG TRIVY_VERSION=0.72.0
 ARG GRYPE_VERSION=v0.116.1
 ARG ORAS_VERSION=v1.3.3
+# sonar-scanner-cli's own image bundles a JRE (~150MB) we don't need — Alpine's
+# own openjdk17-jre-headless (installed below) covers that, so only
+# /opt/sonar-scanner itself (~10MB: the launcher script + sonar-scanner-cli
+# 8.0.1.6346.jar) is copied out of this source stage. Verified 2026-08-06:
+# this distribution has use_embedded_jre=false and its launcher script falls
+# back to `JAVA_HOME/bin/java`, so pairing it with our own JRE instead of its
+# bundled one is the documented, supported way to run it, not a hack.
+#
+# Pinned by digest rather than a version tag: unlike Trivy/Grype/oras (each a
+# single static binary with an obvious `--version` flag), this upstream image
+# doesn't publish an easy-to-script tag list, so a digest pin is what was
+# actually verified here — resolve a new one deliberately (`docker pull
+# sonarsource/sonar-scanner-cli:<tag>` for the tag you want, then
+# `docker inspect --format '{{.RepoDigests}}'`) rather than tracking `latest`.
+ARG SONAR_SCANNER_DIGEST=sha256:23ca0f137965d9dff2198074043fd48d386280bc5d0ccac8c8349cea4cf096a9
 
 # BuildKit workaround: Define helper stages so variable expansion works
 FROM aquasec/trivy:${TRIVY_VERSION} AS trivy-source
 FROM anchore/grype:${GRYPE_VERSION} AS grype-source
 FROM ghcr.io/oras-project/oras:${ORAS_VERSION} AS oras-source
+FROM sonarsource/sonar-scanner-cli@${SONAR_SCANNER_DIGEST} AS sonar-scanner-source
 
 # Pinned to a patch release + suite so the base OS package set — and therefore
 # the image's CVE posture — is reproducible. `python:3.13-alpine` alone
@@ -68,10 +89,18 @@ FROM python:3.13.14-alpine3.23 AS base
 # `apk upgrade` picks up base-OS security updates published after the base
 # image was cut — without it a pinned base tag means pinned known-vulnerable
 # system libraries.
+#
+# `git` and a JRE are added for the Sonar module: `fetch_source` in
+# modules/github/provider.py and modules/gitlab/provider.py shells out to
+# `git clone`, and sonar-scanner (below) is a JVM tool. Neither was needed
+# before that module existed, so neither was in this list — Rotsy's own
+# analysis pipeline could never actually complete a clone or a scan without
+# them, regardless of anything upstream (API auth, project setup) working.
 RUN apk update && apk upgrade --no-cache \
     && apk add --no-cache \
         libpq ca-certificates \
         gcompat libstdc++ libgcc \
+        git openjdk17-jre-headless \
     && rm -rf /var/cache/apk/*
 
 # ---------------------------------------------------------------------------
@@ -84,9 +113,18 @@ COPY --from=trivy-source /usr/local/bin/trivy /usr/local/bin/trivy
 COPY --from=grype-source /grype /usr/local/bin/grype
 # oras: pulls the Trivy database, which ships as a plain OCI artifact.
 COPY --from=oras-source /bin/oras /usr/local/bin/oras
+# sonar-scanner: see the ARG comment above — deliberately not its bundled JRE.
+COPY --from=sonar-scanner-source /opt/sonar-scanner /opt/sonar-scanner
+
+# JAVA_HOME so sonar-scanner's own launcher script (bin/sonar-scanner) finds
+# the JRE installed above via `apk add openjdk17-jre-headless` instead of one
+# it doesn't ship with; PATH so both binaries are runnable by name, matching
+# how trivy/grype/oras already are via /usr/local/bin.
+ENV JAVA_HOME=/usr/lib/jvm/java-17-openjdk
+ENV PATH="/opt/sonar-scanner/bin:${JAVA_HOME}/bin:${PATH}"
 
 # Fail the build now rather than at first scan if a binary did not come through.
-RUN trivy --version && grype version && oras version
+RUN trivy --version && grype version && oras version && git --version && sonar-scanner --version
 
 # ---------------------------------------------------------------------------
 # Application user (non-root) + working directory

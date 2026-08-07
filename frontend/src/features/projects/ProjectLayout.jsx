@@ -23,6 +23,7 @@ export default function ProjectLayout() {
 
   const TABS = [
     { to: `/projects/${id}`, label: 'Overview', end: true },
+    { to: `/projects/${id}/repositories`, label: 'Repositories' },
     { to: `/projects/${id}/analysis`, label: 'Analysis' },
     { to: `/projects/${id}/security`, label: 'Security' },
     { to: `/projects/${id}/artifacts`, label: 'Artifacts' },

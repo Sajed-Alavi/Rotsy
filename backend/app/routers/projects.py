@@ -18,7 +18,7 @@ from ..core import projects as projects_core
 from ..core.health import compute_health_score
 from ..core.integrations import get_module
 from ..dependencies import RequirePermission, get_session
-from ..models import Insight
+from ..models import GitHubRepository, GitLabRepository, Insight, SonarProject
 from ..schemas.project import (
     HealthScoreOut,
     InsightOut,
@@ -107,6 +107,63 @@ async def list_insights(
         )
     ).scalars().all()
     return list(rows)
+
+
+@router.get("/{project_id}/repositories", dependencies=[Depends(RequirePermission("projects:read"))])
+async def list_project_repositories(
+    project_id: int,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> list[dict]:
+    """Every repository connected to this Project — a Project is a grouping,
+    so this can be one repo or a thousand, each independently analyzed and
+    potentially in a different language. The natural data source for the
+    Projects section's repository list/organization view.
+    """
+    await projects_core.get_project(session, project_id)  # 404s if missing
+
+    sonar_by_github: dict[int, SonarProject] = {}
+    sonar_by_gitlab: dict[int, SonarProject] = {}
+    for sp in (await session.execute(select(SonarProject).where(SonarProject.project_id == project_id))).scalars():
+        if sp.github_repository_id:
+            sonar_by_github[sp.github_repository_id] = sp
+        if sp.gitlab_repository_id:
+            sonar_by_gitlab[sp.gitlab_repository_id] = sp
+
+    out: list[dict] = []
+    github_repos = (
+        await session.execute(select(GitHubRepository).where(GitHubRepository.project_id == project_id))
+    ).scalars().all()
+    for r in github_repos:
+        sp = sonar_by_github.get(r.id)
+        out.append({
+            "source_module": "github",
+            "repository_id": r.id,
+            "full_name": r.full_name,
+            "default_branch": r.default_branch,
+            "auto_analyze_on_push": r.installation_id is not None,
+            "sonar_project_id": sp.id if sp else None,
+            "language": sp.language if sp else None,
+            "created_at": r.created_at,
+        })
+
+    gitlab_repos = (
+        await session.execute(select(GitLabRepository).where(GitLabRepository.project_id == project_id))
+    ).scalars().all()
+    for r in gitlab_repos:
+        sp = sonar_by_gitlab.get(r.id)
+        out.append({
+            "source_module": "gitlab",
+            "repository_id": r.id,
+            "full_name": r.full_path,
+            "default_branch": r.default_branch,
+            "auto_analyze_on_push": r.webhook_id is not None,
+            "sonar_project_id": sp.id if sp else None,
+            "language": sp.language if sp else None,
+            "created_at": r.created_at,
+        })
+
+    out.sort(key=lambda row: row["full_name"])
+    return out
 
 
 @router.get("/{project_id}/health", response_model=HealthScoreOut,

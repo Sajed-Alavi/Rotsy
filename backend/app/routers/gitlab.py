@@ -123,7 +123,10 @@ async def create_connection(
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> ConnectionOut:
     gitlab_url = body.gitlab_url.rstrip("/")
-    if not gitlab_url.startswith(("http://", "https://")):
+    # http:// is deliberately accepted, not just https:// — self-managed GitLab on
+    # a trusted internal network (the common case this module is built for) is
+    # routinely plain HTTP; this validates URL *format*, not transport security.
+    if not gitlab_url.startswith(("http://", "https://")):  # NOSONAR
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "GitLab URL must start with http:// or https://")
 
     try:
@@ -215,7 +218,10 @@ async def connect_repository(
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> RepoOut:
     gitlab_url = body.gitlab_url.rstrip("/")
-    if not gitlab_url.startswith(("http://", "https://")):
+    # http:// is deliberately accepted, not just https:// — self-managed GitLab on
+    # a trusted internal network (the common case this module is built for) is
+    # routinely plain HTTP; this validates URL *format*, not transport security.
+    if not gitlab_url.startswith(("http://", "https://")):  # NOSONAR
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "GitLab URL must start with http:// or https://")
 
     try:

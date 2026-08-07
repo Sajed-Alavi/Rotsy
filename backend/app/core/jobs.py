@@ -367,9 +367,12 @@ class JobRunner:
             # expected to have killed any subprocess it owned on its way out
             # (see run_streaming/oras_pull in modules/nexus/db/process.py) —
             # this is only responsible for the terminal job state, not process
-            # cleanup. Deliberately not re-raised: this task is what was
-            # cancelled, and swallowing it here is how that cancellation ends
-            # cleanly instead of surfacing as a "Job ... failed" error log.
+            # cleanup. Re-raised after that cleanup, not swallowed: this task
+            # (created at `asyncio.create_task(self._run_one(...))` above) is
+            # itself what was cancelled and nothing awaits it afterward — its
+            # `add_done_callback` still fires either way — so re-raising here
+            # just lets the task's own final state genuinely be "cancelled"
+            # instead of "finished normally after catching a cancellation".
             logger.info("Job %s cancelled", job_id)
             await r.hset(
                 f"job:{job_id}",
@@ -378,6 +381,7 @@ class JobRunner:
             await JobQueue(self._cache).push_event(
                 job_id, {"type": "phase", "status": "cancelled", "message": "cancelled by user"},
             )
+            raise
         except Exception as exc:  # noqa: BLE001
             logger.exception("Job %s failed", job_id)
             await r.hset(

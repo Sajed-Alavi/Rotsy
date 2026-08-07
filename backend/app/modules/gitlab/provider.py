@@ -14,7 +14,6 @@ the codebase scopes sessions per-operation rather than per-object.
 from __future__ import annotations
 
 import logging
-import subprocess
 from typing import Callable
 from urllib.parse import quote, urlparse
 
@@ -25,6 +24,7 @@ from ...config import get_settings
 from ...core.config_store import decrypt_password
 from ...core.source_provider import RepoRef, WebhookHandle
 from ...models import GitLabRepository
+from ..nexus.base import exec_scanner
 
 logger = logging.getLogger(__name__)
 
@@ -123,9 +123,13 @@ class GitLabProvider:
         host = urlparse(row.gitlab_url).netloc
         clone_url = f"{urlparse(row.gitlab_url).scheme}://oauth2:{quote(token, safe='')}@{host}/{row.full_path}.git"
         cmd = ["git", "clone", "--depth", "1", "--branch", ref, "--single-branch", clone_url, dest_dir]
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)  # noqa: S603
-        if result.returncode != 0:
-            safe_stderr = result.stderr.replace(token, "***")
+        # Async subprocess, not subprocess.run: this runs on the same event
+        # loop as every other job's progress reporting and every request
+        # this worker process serves — a blocking clone would stall all of
+        # it for as long as the clone takes, not just this job.
+        returncode, _stdout, stderr = await exec_scanner(cmd, env={}, timeout=300.0)
+        if returncode != 0:
+            safe_stderr = stderr.replace(token, "***")
             raise GitLabProviderError(f"git clone failed for {row.full_path}@{ref}: {safe_stderr[:500]}")
         return dest_dir
 

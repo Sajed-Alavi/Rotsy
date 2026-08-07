@@ -60,3 +60,11 @@ cryptography==50.0.0
 
 # Host process metrics (dashboard CPU/memory/disk tiles)
 psutil==7.2.2
+
+# Runtime capability (not dev-only): a Python repository's own test suite is
+# run, best-effort, to produce a coverage.xml for SonarQube during Code
+# Quality analysis — see modules/sonar/coverage.py. Needed in the production
+# image for that reason, not just for this repo's own CI.
+pytest==9.1.1
+pytest-asyncio==1.4.0
+pytest-cov==7.0.0

@@ -187,7 +187,8 @@ def grype_db_usable() -> tuple[bool, str]:
         return cached[1], cached[2]
 
     try:
-        proc = subprocess.run(  # noqa: S603 - fixed argv, no shell
+        # Fixed argv, no shell.
+        proc = subprocess.run(  # noqa: S603
             [grype, "db", "status"], capture_output=True, text=True, timeout=30,
         )
         output = f"{proc.stdout}\n{proc.stderr}"

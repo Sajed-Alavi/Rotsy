@@ -14,11 +14,17 @@ export default function Modal({ open, title, onClose, children, footer, wide }) 
   return (
     <div
       className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/40 p-4 pt-16 dark:bg-black/60"
-      onClick={onClose}
+      role="button"
+      tabIndex={-1}
+      aria-label="Close modal"
+      // Closes only when the backdrop itself is the click target, not when a
+      // click inside the panel bubbles up — so the panel below needs no
+      // click handler of its own (nothing to stop from propagating).
+      onClick={(e) => { if (e.target === e.currentTarget) onClose?.(); }}
+      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') onClose?.(); }}
     >
       <div
         className={`w-full ${wide ? 'max-w-2xl' : 'max-w-md'} border border-slate-300 bg-white shadow-xl dark:border-slate-700 dark:bg-slate-900`}
-        onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3 dark:border-slate-800">
           <h2 className="text-sm font-medium text-slate-900 dark:text-slate-100">{title}</h2>

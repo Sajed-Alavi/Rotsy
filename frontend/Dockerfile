@@ -31,14 +31,14 @@ RUN npm run build
 FROM nginx:1.28-alpine-slim AS serve
 
 # Run nginx as a non-root user. The nginx alpine image ships an unprivileged
-# user "nginx"; we listen on port 80 inside the container, which is fine
-# because the container itself runs non-root and is published via compose.
-#
-# Note: binding to port 80 as non-root requires either capability
-# NET_BIND_SERVICE or using a high port. The nginx:alpine image already
-# configures the PID path and worker to support running non-root; to keep the
-# OSS setup simple and portable we publish via compose (host ${FRONTEND_PORT}
-# -> container 80) and document the capability in the README.
+# user "nginx"; the actual `USER nginx` switch happens at the end of this
+# stage, after everything that still needs root (installing packages,
+# chowning files) is done. Listening on 8080 rather than 80 (see nginx.conf)
+# is what makes running as non-root possible at all: binding a port below
+# 1024 needs either the NET_BIND_SERVICE capability or a high port, and a
+# high port needs no compose-level capability grant, so that's what this
+# uses — simpler and more portable than adding cap_add everywhere this image
+# runs.
 
 # Upgrade already-installed OS packages to patch OpenSSL (libcrypto3/libssl3),
 # libxml2, libpng and xz-libs, and remove curl to shrink the attack surface.
@@ -72,7 +72,9 @@ COPY --chown=nginx:nginx nginx-main.conf /etc/nginx/nginx.conf
 # envsubst template directory (the nginx image processes /etc/nginx/templates/*).
 COPY --chown=nginx:nginx nginx.conf /etc/nginx/templates/default.conf.template
 COPY --chown=nginx:nginx --from=build /app/dist /usr/share/nginx/html
-EXPOSE 80
+EXPOSE 8080
+
+USER nginx
 
 # The nginx image's default entrypoint runs envsubst then starts nginx.
 CMD ["nginx", "-g", "daemon off;"]

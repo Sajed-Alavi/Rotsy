@@ -150,7 +150,8 @@ async def _from_repository_settings(nexus: NexusClient, host: str) -> DiscoveryR
     """Step 1: one call for every repository's full configuration."""
     try:
         resp = await nexus.client.get(_SETTINGS_ENDPOINT)
-    except Exception as exc:  # noqa: BLE001 - network/transport, fall through
+    except Exception as exc:  # noqa: BLE001
+        # Network/transport failure — fall through to the per-repository probe.
         logger.debug("repositorySettings unavailable (%s); falling back", exc)
         return None
     if resp.status_code != 200:

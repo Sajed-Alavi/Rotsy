@@ -34,7 +34,8 @@ async def health(
                 f"{nexus_client.settings.NEXUS_URL}/service/rest/v1/status/check"
             )
             nexus_ok = resp.status_code < 500
-        except Exception:  # noqa: BLE001 - reachability probe, never fatal
+        except Exception:  # noqa: BLE001
+            # Reachability probe — never fatal.
             nexus_ok = False
 
     cache = getattr(request.app.state, "cache", None)

@@ -113,7 +113,10 @@ async def test_sonar_config(body: SonarConnectionUpdate) -> dict:
     url = (body.url or "").strip()
     if not url:
         return {"ok": False, "error": "URL is required."}
-    if not url.startswith(("http://", "https://")):
+    # http:// is deliberately accepted — SonarQube on a trusted internal
+    # network (host.docker.internal, this app's own documented setup) is
+    # routinely plain HTTP; this validates URL *format*, not transport security.
+    if not url.startswith(("http://", "https://")):  # NOSONAR
         return {"ok": False, "error": "URL must start with http:// or https://"}
 
     try:

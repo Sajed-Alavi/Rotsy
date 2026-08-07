@@ -134,7 +134,7 @@ services:
     depends_on:
       - backend
     ports:
-      - "${FRONTEND_PORT}:80"
+      - "${FRONTEND_PORT}:8080"
     networks:
       - nexus-net
 

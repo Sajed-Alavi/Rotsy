@@ -179,12 +179,19 @@ async def download_backup_archive(
         filename = output_path.name
 
         async def gen_file():
-            with open(output_path, "rb") as f:
+            # Reads off the event loop via to_thread (same pattern already
+            # used below for shutil.make_archive) — a synchronous read here
+            # would block every other request and job this worker process
+            # is handling for however long each chunk read takes.
+            f = await asyncio.to_thread(open, output_path, "rb")
+            try:
                 while True:
-                    chunk = f.read(1024 * 1024)
+                    chunk = await asyncio.to_thread(f.read, 1024 * 1024)
                     if not chunk:
                         break
                     yield chunk
+            finally:
+                await asyncio.to_thread(f.close)
 
         return StreamingResponse(
             gen_file(), media_type="application/gzip",
@@ -210,14 +217,15 @@ async def download_backup_archive(
         ) from exc
 
     async def gen():
+        f = await asyncio.to_thread(open, zip_path, "rb")
         try:
-            with open(zip_path, "rb") as f:
-                while True:
-                    chunk = f.read(1024 * 1024)
-                    if not chunk:
-                        break
-                    yield chunk
+            while True:
+                chunk = await asyncio.to_thread(f.read, 1024 * 1024)
+                if not chunk:
+                    break
+                yield chunk
         finally:
+            await asyncio.to_thread(f.close)
             zip_path.unlink(missing_ok=True)
 
     return StreamingResponse(

@@ -17,6 +17,7 @@ that may include large Docker layer blobs.
 
 from __future__ import annotations
 
+import asyncio
 import io
 import json
 import logging
@@ -231,10 +232,13 @@ async def create_archive(
                         continue
                     size = 0
                     try:
-                        with open(dest, "wb") as f:
+                        f = await asyncio.to_thread(open, dest, "wb")
+                        try:
                             async for chunk in upstream.aiter_raw():
-                                f.write(chunk)
+                                await asyncio.to_thread(f.write, chunk)
                                 size += len(chunk)
+                        finally:
+                            await asyncio.to_thread(f.close)
                     except PermissionError as exc:
                         raise _permission_error(output_dir, exc)
                 finally:

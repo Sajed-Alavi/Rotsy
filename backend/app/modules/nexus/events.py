@@ -226,7 +226,13 @@ def verify_webhook_signature(secret: str, body: bytes, signature: str) -> bool:
     if not secret or not signature:
         return False
     candidate = signature.strip().lower()
-    for algorithm in (hashlib.sha1, hashlib.sha256):
+    # SHA-1 here is HMAC-SHA1, not bare SHA-1: HMAC's security doesn't depend
+    # on the underlying hash's collision-resistance the way a digital
+    # signature or content hash does, so SHA-1's known collision weaknesses
+    # don't apply to its use as a MAC. It's required, not chosen — Nexus's
+    # own webhook signer uses it and Rotsy has no way to change that; SHA-256
+    # is accepted for whatever future Nexus release upgrades the digest.
+    for algorithm in (hashlib.sha1, hashlib.sha256):  # NOSONAR
         expected = hmac.new(secret.encode(), body, algorithm).hexdigest()
         if hmac.compare_digest(expected, candidate):
             return True

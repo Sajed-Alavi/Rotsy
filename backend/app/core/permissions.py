@@ -7,6 +7,11 @@ all keys listed in :data:`PERMISSIONS` so the DB stays in sync with the code.
 
 from __future__ import annotations
 
+# Every role gets this one — referenced by key below rather than repeating
+# the literal, since "every role can edit its own profile" is a rule about
+# one specific permission, not a coincidence of three separate role configs.
+_PROFILE_EDIT = "profile:edit"
+
 # (key, description) — order matters only for readability in the UI.
 PERMISSIONS: list[tuple[str, str]] = [
     # Storage analyzer (Feature A)
@@ -45,7 +50,7 @@ PERMISSIONS: list[tuple[str, str]] = [
     # Administration (the wrapper itself)
     ("users:manage", "Create, edit, deactivate users and assign roles"),
     ("roles:manage", "Create, edit, delete roles and assign permissions"),
-    ("profile:edit", "Edit own profile and change password"),
+    (_PROFILE_EDIT, "Edit own profile and change password"),
 ]
 
 ALL_PERMISSION_KEYS: list[str] = [key for key, _ in PERMISSIONS]
@@ -62,9 +67,9 @@ SYSTEM_ROLE_PERMISSIONS: dict[str, list[str]] = {
         "metrics:read", "metrics:collect", "jobs:read", "jobs:manage",
         "tasks:control",
         "projects:read", "projects:write",
-        "profile:edit",
+        _PROFILE_EDIT,
     ],
-    "viewer": READ_PERMISSION_KEYS + ["profile:edit"],
+    "viewer": READ_PERMISSION_KEYS + [_PROFILE_EDIT],
 }
 
 

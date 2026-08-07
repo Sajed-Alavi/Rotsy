@@ -27,6 +27,8 @@ SUPPORTED_LANGUAGES = (
     "python", "javascript", "typescript", "go", "php", "ruby", "css", "html",
 )
 
+_ANALYSIS_RUN_FK = "analysis_runs.id"
+
 
 class SonarProject(Base):
     """One per connected *repository*, not one per Rotsy Project.
@@ -104,7 +106,7 @@ class QualityGateResult(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     analysis_run_id: Mapped[int] = mapped_column(
-        ForeignKey("analysis_runs.id", ondelete="CASCADE"), nullable=False, index=True
+        ForeignKey(_ANALYSIS_RUN_FK, ondelete="CASCADE"), nullable=False, index=True
     )
     status: Mapped[str] = mapped_column(String(16), nullable=False)  # OK|ERROR|WARN
     conditions: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
@@ -129,7 +131,7 @@ class SonarIssue(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     analysis_run_id: Mapped[int] = mapped_column(
-        ForeignKey("analysis_runs.id", ondelete="CASCADE"), nullable=False, index=True
+        ForeignKey(_ANALYSIS_RUN_FK, ondelete="CASCADE"), nullable=False, index=True
     )
     issue_key: Mapped[str] = mapped_column(String(64), nullable=False)
     rule: Mapped[str] = mapped_column(String(128), nullable=False, default="")
@@ -162,7 +164,7 @@ class SonarHotspot(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     analysis_run_id: Mapped[int] = mapped_column(
-        ForeignKey("analysis_runs.id", ondelete="CASCADE"), nullable=False, index=True
+        ForeignKey(_ANALYSIS_RUN_FK, ondelete="CASCADE"), nullable=False, index=True
     )
     hotspot_key: Mapped[str] = mapped_column(String(64), nullable=False)
     component: Mapped[str] = mapped_column(String(1024), nullable=False, default="")

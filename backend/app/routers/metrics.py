@@ -21,6 +21,8 @@ from ..services.metrics_collector import blobstore_timeseries, latest_snapshot, 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/metrics", tags=["metrics"])
 
+_NEXUS_CLIENT_NOT_AVAILABLE = "Nexus client not available"
+
 
 @router.get("/overview", dependencies=[Depends(RequirePermission("metrics:read"))])
 async def overview(
@@ -91,7 +93,7 @@ async def health_checks(request: Request) -> dict[str, Any]:
     """
     nexus = app_state(request).nexus
     if nexus is None:
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Nexus client not available")
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, _NEXUS_CLIENT_NOT_AVAILABLE)
     try:
         resp = await nexus.client.get("/service/rest/v1/status/check")
         resp.raise_for_status()
@@ -133,7 +135,7 @@ async def blobstore_stats(request: Request) -> list[dict[str, Any]]:
     """Disk usage for every blobstore (the real "is my disk full?" metric)."""
     nexus = app_state(request).nexus
     if nexus is None:
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Nexus client not available")
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, _NEXUS_CLIENT_NOT_AVAILABLE)
     try:
         resp = await nexus.client.get("/service/rest/v1/blobstores")
         resp.raise_for_status()
@@ -189,7 +191,7 @@ async def system_info(request: Request) -> dict[str, Any]:
     """High-level system info: version, write mode, security warnings."""
     nexus = app_state(request).nexus
     if nexus is None:
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Nexus client not available")
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, _NEXUS_CLIENT_NOT_AVAILABLE)
     out: dict[str, Any] = {"version": None, "writable": None, "edition": None,
                            "anonymous_enabled": None, "warnings": []}
     try:

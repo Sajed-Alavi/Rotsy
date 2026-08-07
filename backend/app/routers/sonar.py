@@ -67,6 +67,7 @@ logger = logging.getLogger(__name__)
 MIN_SUPPORTED_MAJOR = 9
 
 _UNREACHABLE_MESSAGE = "Unable to connect to SonarQube. Verify the server URL, token, and network connectivity."
+_SONAR_PROJECT_NOT_FOUND = "Sonar project not found"
 
 
 def _compatibility(version: str | None) -> tuple[bool, str | None]:
@@ -289,7 +290,7 @@ async def update_sonar_project(
     either setting."""
     sonar_project = await session.get(SonarProject, sonar_project_id)
     if sonar_project is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Sonar project not found")
+        raise HTTPException(status.HTTP_404_NOT_FOUND, _SONAR_PROJECT_NOT_FOUND)
 
     if body.auto_analyze_enabled is not None:
         sonar_project.auto_analyze_enabled = body.auto_analyze_enabled
@@ -399,7 +400,7 @@ async def list_repository_analysis_runs(
     """History for one repository — the primary view, since a Project can
     hold many repositories each with their own independent analysis history."""
     if await session.get(SonarProject, sonar_project_id) is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Sonar project not found")
+        raise HTTPException(status.HTTP_404_NOT_FOUND, _SONAR_PROJECT_NOT_FOUND)
     rows = (
         await session.execute(
             select(AnalysisRun)
@@ -669,7 +670,7 @@ async def download_analysis_report(
     run = await _run_or_404(session, run_id)
     sonar_project = await session.get(SonarProject, run.sonar_project_id)
     if sonar_project is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Sonar project not found")
+        raise HTTPException(status.HTTP_404_NOT_FOUND, _SONAR_PROJECT_NOT_FOUND)
     # Best-effort only — the "Suggested Fixes" section is a bonus, not a
     # requirement, so a missing/unreachable Sonar connection at export time
     # just means that section is skipped, not that the download 502s.
@@ -706,7 +707,7 @@ async def run_repository_analysis(
     """
     sonar_project = await session.get(SonarProject, sonar_project_id)
     if sonar_project is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Sonar project not found")
+        raise HTTPException(status.HTTP_404_NOT_FOUND, _SONAR_PROJECT_NOT_FOUND)
     if state.cache is None:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Job queue is not available")
 

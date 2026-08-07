@@ -33,6 +33,8 @@ router = APIRouter(prefix="/system", tags=["system"])
 
 _SYNC_JOB_PERM = "system:execute"
 _BACKUP_JOB_PERM = "system:execute"
+_CACHE_UNAVAILABLE = "Cache unavailable"
+_BACKUP_SCHEDULE_NOT_FOUND = "Backup schedule not found"
 
 
 # ---------------------------------------------------------------------------
@@ -59,7 +61,7 @@ async def enqueue_backup(request: Request) -> dict[str, str]:
     """Enqueue a background job that triggers the Nexus backup task."""
     cache = app_state(request).cache
     if cache is None:
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Cache unavailable")
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, _CACHE_UNAVAILABLE)
     job_id = await JobQueue(cache).enqueue("backup", {})
     return {"job_id": job_id}
 
@@ -124,7 +126,7 @@ async def enqueue_backup_archive(
     """Enqueue a real byte-level backup (full or selective) to the backup volume."""
     cache = app_state(request).cache
     if cache is None:
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Cache unavailable")
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, _CACHE_UNAVAILABLE)
     payload = body.model_dump()
     payload["triggered_by"] = user.username
     job_id = await JobQueue(cache).enqueue("backup_archive", payload)
@@ -376,7 +378,7 @@ async def update_backup_schedule(
 ) -> BackupScheduleOut:
     schedule = await session.get(BackupSchedule, schedule_id)
     if schedule is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Backup schedule not found")
+        raise HTTPException(status.HTTP_404_NOT_FOUND, _BACKUP_SCHEDULE_NOT_FOUND)
 
     data = body.model_dump(exclude_unset=True)
     schedule_affecting = {
@@ -415,7 +417,7 @@ async def delete_backup_schedule(
 ) -> None:
     schedule = await session.get(BackupSchedule, schedule_id)
     if schedule is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Backup schedule not found")
+        raise HTTPException(status.HTTP_404_NOT_FOUND, _BACKUP_SCHEDULE_NOT_FOUND)
     await session.delete(schedule)
     await session.commit()
 
@@ -429,10 +431,10 @@ async def run_backup_schedule_now(
 ) -> dict[str, str]:
     schedule = await session.get(BackupSchedule, schedule_id)
     if schedule is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Backup schedule not found")
+        raise HTTPException(status.HTTP_404_NOT_FOUND, _BACKUP_SCHEDULE_NOT_FOUND)
     cache = app_state(request).cache
     if cache is None:
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Cache unavailable")
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, _CACHE_UNAVAILABLE)
     job_id = await JobQueue(cache).enqueue("run_scheduled_backup", {"schedule_id": schedule_id})
     return {"job_id": job_id}
 
@@ -449,7 +451,7 @@ async def preview_backup_schedule(
     schedule created)."""
     schedule = await session.get(BackupSchedule, schedule_id)
     if schedule is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Backup schedule not found")
+        raise HTTPException(status.HTTP_404_NOT_FOUND, _BACKUP_SCHEDULE_NOT_FOUND)
     next_run_at = backup_schedule_service.compute_next_run(schedule)
     return {"next_run_at": next_run_at}
 
@@ -501,7 +503,7 @@ async def enqueue_sync(
     """
     cache = app_state(request).cache
     if cache is None:
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Cache unavailable")
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, _CACHE_UNAVAILABLE)
     payload = body.model_dump()
     payload["target_password_enc"] = config_store.encrypt_password(
         payload.pop("target_password"), settings

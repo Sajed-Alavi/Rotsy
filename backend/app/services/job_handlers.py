@@ -44,6 +44,8 @@ logger = logging.getLogger(__name__)
 
 ProgressCallback = Callable[[int, str], Awaitable[None]]
 
+_NEXUS_CLIENT_NOT_AVAILABLE = "Nexus client not available"
+
 
 class _LifespanStateMissing(RuntimeError):
     pass
@@ -66,7 +68,7 @@ async def handle_collect_metrics(job: Job, progress: ProgressCallback) -> dict:
     state = _shared_state()
     nexus = state.nexus
     if nexus is None:
-        raise RuntimeError("Nexus client not available")
+        raise RuntimeError(_NEXUS_CLIENT_NOT_AVAILABLE)
 
     factory = get_session_factory()
     async with factory() as session:
@@ -88,7 +90,7 @@ async def handle_analyze_repo(job: Job, progress: ProgressCallback) -> dict:
     state = _shared_state()
     nexus = state.nexus
     if nexus is None:
-        raise RuntimeError("Nexus client not available")
+        raise RuntimeError(_NEXUS_CLIENT_NOT_AVAILABLE)
     repo = job.payload.get("repo")
     if not repo:
         raise ValueError("payload.repo is required")
@@ -113,7 +115,7 @@ async def handle_run_retention(job: Job, progress: ProgressCallback) -> dict:
     state = _shared_state()
     nexus = state.nexus
     if nexus is None:
-        raise RuntimeError("Nexus client not available")
+        raise RuntimeError(_NEXUS_CLIENT_NOT_AVAILABLE)
     dry_run = bool(job.payload.get("dry_run", False))
     policy_id = job.payload.get("policy_id")
 
@@ -134,7 +136,7 @@ async def handle_backup(job: Job, progress: ProgressCallback) -> dict:
     state = _shared_state()
     nexus = state.nexus
     if nexus is None:
-        raise RuntimeError("Nexus client not available")
+        raise RuntimeError(_NEXUS_CLIENT_NOT_AVAILABLE)
     await progress(10, "triggering backup task")
     result = await trigger_backup(nexus)
     await progress(100, "backup triggered")
@@ -221,7 +223,7 @@ async def handle_backup_archive(job: Job, progress: ProgressCallback) -> dict:
     state = _shared_state()
     nexus = state.nexus
     if nexus is None:
-        raise RuntimeError("Nexus client not available")
+        raise RuntimeError(_NEXUS_CLIENT_NOT_AVAILABLE)
 
     return await _run_backup_archive(
         nexus=nexus,
@@ -249,7 +251,7 @@ async def handle_run_scheduled_backup(job: Job, progress: ProgressCallback) -> d
     state = _shared_state()
     nexus = state.nexus
     if nexus is None:
-        raise RuntimeError("Nexus client not available")
+        raise RuntimeError(_NEXUS_CLIENT_NOT_AVAILABLE)
 
     schedule_id = job.payload.get("schedule_id")
     if schedule_id is None:
@@ -355,7 +357,7 @@ async def handle_scan_image(job: Job, progress: ProgressCallback) -> dict:
     state = _shared_state()
     nexus = state.nexus
     if nexus is None:
-        raise RuntimeError("Nexus client not available")
+        raise RuntimeError(_NEXUS_CLIENT_NOT_AVAILABLE)
     payload = job.payload
     repo, image = payload.get("repo"), payload.get("image")
     if not repo or not image:

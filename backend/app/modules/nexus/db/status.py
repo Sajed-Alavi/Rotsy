@@ -28,6 +28,8 @@ from .paths import (
 _DB_STATUS_CACHE: dict[str, tuple[float, bool, str]] = {}
 _DB_STATUS_TTL = 30.0
 
+_METADATA_FILENAME = "metadata.json"
+
 
 def parse_iso(value: Any) -> str | None:
     """Normalise an RFC3339 timestamp, rejecting Go's zero time."""
@@ -77,7 +79,7 @@ def _grype_built_from_source(source: str) -> str | None:
 
 def _trivy_status() -> dict[str, Any]:
     out: dict[str, Any] = {"installed": which("trivy") is not None, "present": False}
-    meta_file = TRIVY_DB_DIR / "metadata.json"
+    meta_file = TRIVY_DB_DIR / _METADATA_FILENAME
     if not meta_file.is_file():
         out["path"] = str(TRIVY_DB_DIR)
         return out
@@ -96,7 +98,7 @@ def _trivy_status() -> dict[str, Any]:
         "built": built,
         "next_update": parse_iso(meta.get("NextUpdate")),
         "downloaded_at": parse_iso(meta.get("DownloadedAt")),
-        "java_db_present": (TRIVY_JAVA_DB_DIR / "metadata.json").is_file(),
+        "java_db_present": (TRIVY_JAVA_DB_DIR / _METADATA_FILENAME).is_file(),
         "size_bytes": dir_size(TRIVY_CACHE_ROOT),
         "path": str(TRIVY_DB_DIR),
     })
@@ -115,7 +117,7 @@ def grype_status() -> dict[str, Any]:
     #                build date is embedded in the "source" URL.
     db_file = next(GRYPE_CACHE_ROOT.rglob("vulnerability.db"), None)
     out["present"] = db_file is not None
-    v5_meta = next(GRYPE_CACHE_ROOT.rglob("metadata.json"), None)
+    v5_meta = next(GRYPE_CACHE_ROOT.rglob(_METADATA_FILENAME), None)
     v6_meta = next(GRYPE_CACHE_ROOT.rglob("import.json"), None)
 
     if v5_meta is not None and v5_meta.is_file():

@@ -25,6 +25,8 @@ from ..state import app_state, require_nexus
 
 router = APIRouter(prefix="/retention", tags=["retention"])
 
+_POLICY_NOT_FOUND = "Policy not found"
+
 
 def _require_repo_wide(access: AccessResolver, repo: str) -> None:
     """Refuse unless the caller may delete every image in ``repo``.
@@ -112,7 +114,7 @@ async def update_policy(
 ):
     policy = await session.get(RetentionPolicy, policy_id)
     if policy is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Policy not found")
+        raise HTTPException(status.HTTP_404_NOT_FOUND, _POLICY_NOT_FOUND)
     _require_repo_wide(access, policy.repo)
     data = body.model_dump(exclude_unset=True)
     # Repointing a policy needs authority over the destination too.
@@ -139,7 +141,7 @@ async def delete_policy(
 ):
     policy = await session.get(RetentionPolicy, policy_id)
     if policy is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Policy not found")
+        raise HTTPException(status.HTTP_404_NOT_FOUND, _POLICY_NOT_FOUND)
     _require_repo_wide(access, policy.repo)
     await session.delete(policy)
     await session.commit()
@@ -159,7 +161,7 @@ async def preview_policy(
     """
     policy = await session.get(RetentionPolicy, policy_id)
     if policy is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Policy not found")
+        raise HTTPException(status.HTTP_404_NOT_FOUND, _POLICY_NOT_FOUND)
     _require_repo_wide(access, policy.repo)
     return await run_policy(require_nexus(request), session, policy, dry_run=True)
 
@@ -180,7 +182,7 @@ async def run_policy_now(
     """
     policy = await session.get(RetentionPolicy, policy_id)
     if policy is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Policy not found")
+        raise HTTPException(status.HTTP_404_NOT_FOUND, _POLICY_NOT_FOUND)
     _require_repo_wide(access, policy.repo)
     cache = app_state(request).cache
     if cache is None:

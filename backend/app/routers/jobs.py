@@ -27,11 +27,13 @@ from ..state import app_state
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 
+_CACHE_UNAVAILABLE = "Cache unavailable"
+
 
 def _queue(request: Request) -> JobQueue:
     cache = app_state(request).cache
     if cache is None:
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Cache unavailable")
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, _CACHE_UNAVAILABLE)
     return JobQueue(cache)
 
 
@@ -67,7 +69,7 @@ async def cancel_job(request: Request, job_id: str) -> dict[str, Any]:
     """
     cache = app_state(request).cache
     if cache is None or cache.redis is None:
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Cache unavailable")
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, _CACHE_UNAVAILABLE)
     job = await _queue(request).get(job_id)
     if job is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Job not found")
@@ -95,7 +97,7 @@ async def stream_job(request: Request, job_id: str) -> EventSourceResponse:
     """
     cache = app_state(request).cache
     if cache is None or cache.redis is None:
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Cache unavailable")
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, _CACHE_UNAVAILABLE)
     r = cache.redis
     queue = _queue(request)
 

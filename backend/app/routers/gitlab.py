@@ -42,6 +42,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/modules/gitlab", tags=["gitlab"])
 
 _UNREACHABLE_MESSAGE = "Unable to reach GitLab. Verify the server URL, token, and network connectivity."
+_REPOSITORY_NOT_FOUND = "Repository not found"
 
 
 class _StrippedTokenMixin(BaseModel):
@@ -274,7 +275,7 @@ async def list_repository_branches(
     only stores ``default_branch``), so this always calls GitLab live."""
     repo = await session.get(GitLabRepository, repo_id)
     if repo is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Repository not found")
+        raise HTTPException(status.HTTP_404_NOT_FOUND, _REPOSITORY_NOT_FOUND)
 
     provider = GitLabProvider(get_session_factory())
     repo_ref = RepoRef(external_id=repo.full_path, name=repo.full_path.rsplit("/", 1)[-1],
@@ -307,7 +308,7 @@ async def reconnect_repository(
     rather than silently pointing this row somewhere else."""
     repo = await session.get(GitLabRepository, repo_id)
     if repo is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Repository not found")
+        raise HTTPException(status.HTTP_404_NOT_FOUND, _REPOSITORY_NOT_FOUND)
     try:
         detail = await _fetch_project(repo.gitlab_url, body.token, repo.full_path)
     except GitLabProviderError as exc:
@@ -386,7 +387,7 @@ async def register_webhook(
     ``already_registered: true``) if it already has one."""
     repo = await session.get(GitLabRepository, repo_id)
     if repo is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Repository not found")
+        raise HTTPException(status.HTTP_404_NOT_FOUND, _REPOSITORY_NOT_FOUND)
     already_registered = repo.webhook_id is not None
     ok = await _try_register_webhook(settings, repo)
     await session.commit()
@@ -411,7 +412,7 @@ async def map_repository(
 ) -> RepoOut:
     repo = await session.get(GitLabRepository, repo_id)
     if repo is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Repository not found")
+        raise HTTPException(status.HTTP_404_NOT_FOUND, _REPOSITORY_NOT_FOUND)
     await projects_core.get_project(session, body.project_id)  # 404s if missing
 
     repo.project_id = body.project_id

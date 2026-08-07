@@ -52,6 +52,7 @@ router = APIRouter(prefix="/modules/github", tags=["github"])
 
 _MANIFEST_STATE_KEY = "github:manifest_state:{state}"
 _MANIFEST_STATE_TTL_SECONDS = 600
+_CACHE_NOT_INITIALISED = "Cache not initialised"
 
 
 class RepoOut(BaseModel):
@@ -124,7 +125,7 @@ async def list_repository_branches(
     if repo is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Repository not found")
     if state.cache is None:
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Cache not initialised")
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, _CACHE_NOT_INITIALISED)
 
     installation = await session.get(GitHubInstallation, repo.installation_id) if repo.installation_id else None
     credential_ref = str(installation.installation_id) if installation else ""
@@ -183,7 +184,7 @@ async def manifest_form(
     with a one-time ``code`` this backend exchanges for real credentials.
     """
     if state.cache is None:
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Cache not initialised")
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, _CACHE_NOT_INITIALISED)
 
     base = settings.FRONTEND_ORIGIN.rstrip("/")
     # Distinct from `base`: webhook_base is what GitHub's servers need to
@@ -365,7 +366,7 @@ async def sync_repositories(
 ) -> list[RepoOut]:
     """Discover (or refresh) the repositories this installation can see."""
     if state.cache is None:
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Cache not initialised")
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, _CACHE_NOT_INITIALISED)
 
     installation = await session.scalar(
         select(GitHubInstallation).where(GitHubInstallation.installation_id == installation_id)
@@ -468,7 +469,7 @@ async def bulk_map_repositories(
     """
     await projects_core.get_project(session, body.project_id)  # 404s if missing
     if state.cache is None:
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Cache not initialised")
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, _CACHE_NOT_INITIALISED)
 
     queue = JobQueue(state.cache)
     mapped: list[str] = []
@@ -531,7 +532,7 @@ async def bulk_connect_public_repositories(
     """
     await projects_core.get_project(session, body.project_id)  # 404s if missing
     if state.cache is None:
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Cache not initialised")
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, _CACHE_NOT_INITIALISED)
 
     cfg = await get_github_app_config(session, settings)
     provider = GitHubProvider(cfg, state.cache)
@@ -609,7 +610,7 @@ async def connect_public_repository(
 
     cfg = await get_github_app_config(session, settings)
     if state.cache is None:
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Cache not initialised")
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, _CACHE_NOT_INITIALISED)
     provider = GitHubProvider(cfg, state.cache)
     try:
         repo_ref = await provider.get_public_repository(body.full_name)

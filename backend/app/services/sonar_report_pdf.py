@@ -8,6 +8,8 @@ neither report needs anything the other's approach can't already do.
 
 from __future__ import annotations
 
+import logging
+import re
 from datetime import datetime, timezone
 from io import BytesIO
 
@@ -23,6 +25,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..models import (
     AnalysisRun, GitHubRepository, GitLabRepository, QualityGateResult, SonarHotspot, SonarIssue, SonarProject,
 )
+from ..modules.sonar.connector import SonarClient, SonarError
+
+logger = logging.getLogger(__name__)
 
 # Mirrors Badge.jsx's tone palette, recreated as reportlab colors — rose for
 # the two severities that block Rotsy's own Quality Gate (see
@@ -77,6 +82,54 @@ async def _repository_label_and_url(session: AsyncSession, sonar_project: SonarP
     return sonar_project.sonar_project_key, None
 
 
+_HTML_TAG_RE = re.compile(r"<[^>]+>")
+_HTML_WHITESPACE_RE = re.compile(r"\s+")
+_FIX_HINT_MAX_LEN = 220
+
+
+def _short_fix_hint(rule: dict) -> str | None:
+    """A one- or two-sentence, plain-text remediation hint from a Sonar
+    rule's own ``descriptionSections`` — the same "how to fix it" text
+    SonarQube's own UI shows per rule, condensed for a summary table rather
+    than reproduced in full (code samples and all, which the section's raw
+    HTML also contains and which is too long for this table)."""
+    sections = {s.get("key"): s.get("content", "") for s in rule.get("descriptionSections", [])}
+    html = sections.get("how_to_fix") or sections.get("assess_the_problem") or sections.get("root_cause")
+    if not html:
+        return None
+    # Only the text up to the first heading/code block — that's the plain
+    # explanation; headings after it ("Noncompliant code example", ...)
+    # introduce the code samples this hint deliberately leaves out.
+    html = re.split(r"<h[1-6]|<pre", html, maxsplit=1)[0]
+    text = _HTML_WHITESPACE_RE.sub(" ", _HTML_TAG_RE.sub(" ", html)).strip()
+    if not text:
+        return None
+    if len(text) > _FIX_HINT_MAX_LEN:
+        text = text[:_FIX_HINT_MAX_LEN].rsplit(" ", 1)[0] + "…"
+    return text
+
+
+async def _fetch_fix_hints(client: SonarClient | None, rule_keys: set[str]) -> dict[str, str]:
+    """Best-effort: a PDF export shouldn't fail, or lose the rest of its
+    content, just because SonarQube is briefly unreachable or a rule was
+    removed since the analysis ran — so any failure here just means that
+    rule's row is skipped from the Suggested Fixes table, not that the
+    whole report fails."""
+    if client is None:
+        return {}
+    hints: dict[str, str] = {}
+    for rule_key in sorted(rule_keys):
+        try:
+            rule = await client.rule(rule_key)
+        except SonarError:
+            logger.warning("Could not fetch rule %s for PDF fix hints", rule_key, exc_info=True)
+            continue
+        hint = _short_fix_hint(rule)
+        if hint:
+            hints[rule_key] = hint
+    return hints
+
+
 def _numbered_canvas_maker(footer_left: str):
     """Standard reportlab two-pass "Page X of Y" recipe — identical to
     ``scan_report_pdf._numbered_canvas_maker``, duplicated rather than shared
@@ -117,6 +170,7 @@ def _numbered_canvas_maker(footer_left: str):
 
 async def build_analysis_report_pdf(
     session: AsyncSession, run: AnalysisRun, sonar_project: SonarProject,
+    client: SonarClient | None = None,
 ) -> bytes:
     """Render one :class:`AnalysisRun` — metadata, quality gate, metrics,
     every issue, and every hotspot — as a PDF.
@@ -125,6 +179,13 @@ async def build_analysis_report_pdf(
     the export always has the complete finding list even when it exceeds the
     UI's paginated page size — same reasoning as ``build_report_pdf`` for
     vulnerability scans.
+
+    ``client``, if given, is used to pull a short remediation hint per rule
+    from SonarQube itself (the same "how to fix it" text its own UI shows)
+    into a "Suggested Fixes" table — one row per distinct rule, not per
+    issue, since the point is "what to change", not another copy of every
+    finding. Omitted entirely (not an error) when ``client`` is ``None`` or
+    a rule's description can't be fetched.
     """
     repo_label, repo_url = await _repository_label_and_url(session, sonar_project)
     gate = await session.scalar(
@@ -136,6 +197,7 @@ async def build_analysis_report_pdf(
             .order_by(SonarIssue.severity, SonarIssue.component)
         )
     ).scalars().all())
+    fix_hints = await _fetch_fix_hints(client, {i.rule for i in issues if i.rule})
     hotspots = list((
         await session.execute(
             select(SonarHotspot).where(SonarHotspot.analysis_run_id == run.id)
@@ -294,6 +356,34 @@ async def build_analysis_report_pdf(
         story.append(issue_table)
     else:
         story.append(Paragraph("No open issues were recorded for this analysis.", body_style))
+
+    if fix_hints:
+        rules_present = [r for r in dict.fromkeys(i.rule for i in issues if i.rule) if r in fix_hints]
+        story.append(Paragraph(f"Suggested Fixes ({len(rules_present)})", h2_style))
+        fix_rows = [["Rule", "Issues", "How to fix"]]
+        for rule_key in rules_present:
+            count = sum(1 for i in issues if i.rule == rule_key)
+            fix_rows.append([
+                Paragraph(rule_key, cell_style),
+                str(count),
+                Paragraph(fix_hints[rule_key], cell_style),
+            ])
+        fix_table = Table(fix_rows, colWidths=[1.3 * inch, 0.6 * inch, 5.4 * inch], repeatRows=1)
+        fix_table.setStyle(TableStyle([
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("FONTSIZE", (0, 0), (-1, 0), 8),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("BACKGROUND", (0, 0), (-1, 0), _SLATE_900),
+            ("FONTSIZE", (0, 1), (-1, -1), 7.5),
+            ("ALIGN", (1, 0), (1, -1), "CENTER"),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("TOPPADDING", (0, 0), (-1, -1), 4),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+            ("LEFTPADDING", (0, 0), (-1, -1), 5),
+            ("GRID", (0, 0), (-1, -1), 0.4, _SLATE_200),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, _SLATE_50]),
+        ]))
+        story.append(fix_table)
 
     story.append(Paragraph(f"Security Hotspots ({len(hotspots)})", h2_style))
     if hotspots:

@@ -203,6 +203,16 @@ class SonarClient:
             "hotspots",
         )
 
+    async def rule(self, rule_key: str) -> dict:
+        """A rule's full definition — ``/api/rules/show``, notably
+        ``descriptionSections`` (``root_cause``/``how_to_fix``/... as HTML),
+        the same text SonarQube's own UI shows under "What's the risk" /
+        "How can I fix it". Used to surface a short remediation hint per
+        issue in the PDF export without Rotsy maintaining its own copy of
+        every rule's guidance."""
+        resp = await self._request("GET", "/api/rules/show", params={"key": rule_key})
+        return resp.json().get("rule", {})
+
     async def _paginated(self, path: str, params: dict, items_key: str) -> list[dict]:
         items: list[dict] = []
         for page in range(1, self._FINDINGS_PAGE_CAP + 1):

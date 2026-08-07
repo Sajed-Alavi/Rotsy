@@ -658,6 +658,7 @@ async def list_hotspots(
 async def download_analysis_report(
     run_id: int,
     session: Annotated[AsyncSession, Depends(get_session)],
+    settings: Annotated[Settings, Depends(get_settings)],
 ) -> StreamingResponse:
     """Full analysis report as a PDF — metadata, quality gate, metrics, and
     every issue/hotspot — same shape as the vulnerability-scan report export
@@ -666,7 +667,14 @@ async def download_analysis_report(
     sonar_project = await session.get(SonarProject, run.sonar_project_id)
     if sonar_project is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Sonar project not found")
-    pdf_bytes = await build_analysis_report_pdf(session, run, sonar_project)
+    # Best-effort only — the "Suggested Fixes" section is a bonus, not a
+    # requirement, so a missing/unreachable Sonar connection at export time
+    # just means that section is skipped, not that the download 502s.
+    client = None
+    conn = await get_sonar_connection(session, settings)
+    if conn.is_configured():
+        client = SonarClient(conn.url, conn.token)
+    pdf_bytes = await build_analysis_report_pdf(session, run, sonar_project, client)
     filename = f"sonar-analysis-{run.commit_sha[:8]}.pdf"
     return StreamingResponse(
         iter([pdf_bytes]),

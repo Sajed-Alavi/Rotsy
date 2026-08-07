@@ -58,7 +58,7 @@ async def login(
     response.set_cookie(value=access, **settings.access_cookie)
     response.set_cookie(value=refresh, **settings.refresh_cookie)
 
-    perms = await _load_user_permissions(session, user)
+    perms = _load_user_permissions(session, user)
     return _build_me(user, perms)
 
 
@@ -113,7 +113,7 @@ async def refresh(
     response.set_cookie(value=create_access_token(settings, user.id), **settings.access_cookie)
     response.set_cookie(value=create_refresh_token(settings, user.id), **settings.refresh_cookie)
 
-    perms = await _load_user_permissions(session, user)
+    perms = _load_user_permissions(session, user)
     return _build_me(user, perms)
 
 

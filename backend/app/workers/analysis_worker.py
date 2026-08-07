@@ -269,8 +269,8 @@ async def handle_clone_and_analyze(job: Job, progress: ProgressCallback) -> dict
         # genuinely in progress. A bug here (e.g. a missing binary a
         # dependency change forgot to install into the image) should surface
         # as a failed run with a real error message, not a silent hang.
-        logger.error("clone_and_analyze failed for analysis run %s (%s@%s): %s",
-                      run.id, repo_external_id, sha, exc, exc_info=True)
+        logger.exception("clone_and_analyze failed for analysis run %s (%s@%s): %s",
+                          run.id, repo_external_id, sha, exc)
         await _mark_failed(factory, run.id, str(exc) or f"{type(exc).__name__}: analysis failed unexpectedly.")
         try:
             await provider.report_status(

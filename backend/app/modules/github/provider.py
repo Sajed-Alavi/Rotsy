@@ -92,7 +92,7 @@ class GitHubProvider:
         return RepoRef(external_id=data["full_name"], name=data["name"],
                         default_branch=data.get("default_branch", "main"), private=False)
 
-    async def register_webhook(self, credential_ref: str, repo: RepoRef, callback_url: str, secret: str) -> WebhookHandle:
+    async def register_webhook(self, credential_ref: str, repo: RepoRef, callback_url: str, secret: str) -> WebhookHandle:  # NOSONAR — SourceProvider is an async Protocol; GitLabProvider's implementation of this same method genuinely awaits
         if not credential_ref:
             raise GitHubProviderError(
                 f"{repo.external_id} has no GitHub App installation, so GitHub has no reason to send Rotsy "

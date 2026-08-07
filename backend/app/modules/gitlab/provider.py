@@ -107,6 +107,7 @@ class GitLabProvider:
                          private=proj.get("visibility") != "public")]
 
     async def register_webhook(self, credential_ref: str, repo: RepoRef, callback_url: str, secret: str) -> WebhookHandle:
+        del repo  # part of the SourceProvider interface; this implementation resolves everything from credential_ref
         row, token = await self._resolve(credential_ref)
         async with httpx.AsyncClient(base_url=row.gitlab_url, timeout=15.0) as client:
             resp = await client.post(
@@ -119,6 +120,7 @@ class GitLabProvider:
         return WebhookHandle(external_id=str(resp.json()["id"]))
 
     async def fetch_source(self, credential_ref: str, repo: RepoRef, ref: str, dest_dir: str) -> str:
+        del repo  # part of the SourceProvider interface; this implementation resolves everything from credential_ref
         row, token = await self._resolve(credential_ref)
         host = urlparse(row.gitlab_url).netloc
         clone_url = f"{urlparse(row.gitlab_url).scheme}://oauth2:{quote(token, safe='')}@{host}/{row.full_path}.git"
@@ -134,6 +136,7 @@ class GitLabProvider:
         return dest_dir
 
     async def list_branches(self, credential_ref: str, repo: RepoRef) -> list[str]:
+        del repo  # part of the SourceProvider interface; this implementation resolves everything from credential_ref
         row, token = await self._resolve(credential_ref)
         branches: list[str] = []
         page = 1
@@ -156,6 +159,7 @@ class GitLabProvider:
         return branches
 
     async def get_latest_commit_sha(self, credential_ref: str, repo: RepoRef, ref: str) -> str:
+        del repo  # part of the SourceProvider interface; this implementation resolves everything from credential_ref
         row, token = await self._resolve(credential_ref)
         async with httpx.AsyncClient(base_url=row.gitlab_url, timeout=15.0) as client:
             resp = await client.get(
@@ -169,6 +173,7 @@ class GitLabProvider:
         return resp.json()["id"]
 
     async def get_repository_languages(self, credential_ref: str, repo: RepoRef) -> dict[str, float]:
+        del repo  # part of the SourceProvider interface; this implementation resolves everything from credential_ref
         row, token = await self._resolve(credential_ref)
         async with httpx.AsyncClient(base_url=row.gitlab_url, timeout=15.0) as client:
             resp = await client.get(
@@ -180,6 +185,7 @@ class GitLabProvider:
         return {k: float(v) for k, v in resp.json().items()}
 
     async def report_status(self, credential_ref: str, repo: RepoRef, sha: str, state: str, description: str, target_url: str) -> None:
+        del repo  # part of the SourceProvider interface; this implementation resolves everything from credential_ref
         row, token = await self._resolve(credential_ref)
         # GitLab's commit-status states are a stricter enum than GitHub's;
         # map ours onto theirs rather than passing through unchanged.

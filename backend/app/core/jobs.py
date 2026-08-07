@@ -237,12 +237,13 @@ class JobRunner:
         self._handlers[job_type] = handler
         logger.info("Registered job handler: %s", job_type)
 
-    async def start(self) -> None:
+    def start(self) -> None:
         if self._task is not None:
             return
         # Dedicated connection: socket_timeout long enough for BLPOP's own
         # blocking window (plus headroom) so the worker never hits a spurious
-        # timeout reading from an idle queue.
+        # timeout reading from an idle queue. from_url() itself is lazy — it
+        # doesn't connect yet, so nothing here needs to be awaited.
         self._dedicated = aioredis.from_url(
             self._cache._settings.REDIS_URL,
             decode_responses=True,

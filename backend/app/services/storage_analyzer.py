@@ -127,7 +127,7 @@ class StorageAnalyzer:
         lookup — the caller (the frontend) already knows the format from the
         repo listing it used to populate the selector.
         """
-        async def _noop(_event: dict[str, Any]) -> None:  # pragma: no cover
+        async def _noop(_event: dict[str, Any]) -> None:  # pragma: no cover  # NOSONAR — must stay async: it's awaited below as a stand-in for a real on_progress callback
             return None
 
         emit = on_progress or _noop

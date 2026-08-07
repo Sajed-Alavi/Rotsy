@@ -61,8 +61,12 @@ class NexusClient:
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
-    async def start(self) -> None:
-        """Create the underlying ``httpx.AsyncClient``. Call once at startup."""
+    def start(self) -> None:
+        """Create the underlying ``httpx.AsyncClient``. Call once at startup.
+
+        Constructing an ``httpx.AsyncClient`` is itself synchronous — nothing
+        here actually awaits.
+        """
         if self._client is not None:
             return
         self._client = httpx.AsyncClient(

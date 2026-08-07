@@ -65,6 +65,7 @@ def _shared_state() -> dict:
 
 async def handle_collect_metrics(job: Job, progress: ProgressCallback) -> dict:
     """Collect a metric snapshot for every repo and evaluate alert rules."""
+    del job  # every JobHandler takes (job, progress); this one needs no payload
     state = _shared_state()
     nexus = state.nexus
     if nexus is None:
@@ -133,6 +134,7 @@ async def handle_run_retention(job: Job, progress: ProgressCallback) -> dict:
 
 async def handle_backup(job: Job, progress: ProgressCallback) -> dict:
     """Trigger a Nexus backup task."""
+    del job  # every JobHandler takes (job, progress); this one needs no payload
     state = _shared_state()
     nexus = state.nexus
     if nexus is None:
@@ -327,7 +329,13 @@ async def handle_sync(job: Job, progress: ProgressCallback) -> dict:
         source_repo = mapping["source_repo"]
         target_repo = mapping["target_repo"]
 
-        async def on_progress(percent: int, message: str, i=i) -> None:
+        # i, source_repo and target_repo all captured as defaults, not read
+        # from the enclosing scope directly: Python closures bind by name, not
+        # by value, so without this every on_progress would see whatever the
+        # loop variables hold *when called*, not when defined — correct today
+        # only because sync_repository calls back synchronously before the
+        # next iteration reassigns them; capturing removes that fragility.
+        async def on_progress(percent: int, message: str, i=i, source_repo=source_repo, target_repo=target_repo) -> None:
             # Scale this repo's own 0-100 progress into its slice of the batch.
             scaled = int((i + percent / 100) / total * 100)
             await progress(scaled, f"[{source_repo} -> {target_repo}] {message}")
@@ -442,6 +450,7 @@ async def handle_scanner_db_import(job: Job, progress: ProgressCallback) -> dict
     Docker Hub / ghcr.io. The operator drops the archives into the mounted
     offline directory; this extracts/imports them into the scanner caches.
     """
+    del job  # every JobHandler takes (job, progress); this one needs no payload
     scanners = _default_scanners()
     await progress(2, f"importing offline databases: {', '.join(scanners)}",
                    {"stage": "importing", "scanners": scanners})

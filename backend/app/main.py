@@ -344,7 +344,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     nexus = NexusClient(settings)
     cache = Cache(settings)
-    await nexus.start()
+    nexus.start()
     await cache.start()
 
     # Load the Nexus connection from the dashboard DB if an admin has saved
@@ -431,7 +431,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     runner.register("clone_and_analyze", handle_clone_and_analyze)
     from .workers.provisioning_worker import handle_provision_repository
     runner.register("provision_repository", handle_provision_repository)
-    await runner.start()
+    runner.start()
     app.state.runner = runner
 
     # Start the periodic metric-collection loop.

@@ -26,11 +26,11 @@ __all__ = [
 ]
 
 
-async def _load_user_permissions(session: AsyncSession, user: User) -> list[str]:
+def _load_user_permissions(session: AsyncSession, user: User) -> list[str]:
     """Flatten + dedupe the permission keys across all of a user's roles.
 
     Roles and permissions are eager-loaded (``selectin``) on the :class:`User`,
-    so this is computed in-memory without an extra query.
+    so this is computed in-memory without an extra query — no ``async`` needed.
     """
     del session  # unused — kept in signature for symmetry with other deps
     keys: set[str] = set()
@@ -101,7 +101,7 @@ async def get_current_user(
         await session.commit()
 
     # Stash effective permissions on the instance for downstream access.
-    user._effective_permissions = await _load_user_permissions(session, user)  # type: ignore[attr-defined]
+    user._effective_permissions = _load_user_permissions(session, user)  # type: ignore[attr-defined]
     return user
 
 

@@ -186,19 +186,24 @@ async def manifest_form(
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Cache not initialised")
 
     base = settings.FRONTEND_ORIGIN.rstrip("/")
+    # Distinct from `base`: webhook_base is what GitHub's servers need to
+    # reach, which is not necessarily the same address a human's browser
+    # uses (see Settings.webhook_base_url). Only the webhook delivery URL
+    # below uses it — redirect_url/setup_url/url further down are browser
+    # navigations (the operator's own browser hitting its own localhost
+    # works fine) and were never actually the problem.
+    webhook_base = settings.webhook_base_url
 
-    # Only the webhook delivery URL needs to be reachable *from GitHub's
-    # servers* — redirect_url/setup_url/url below are browser navigations
-    # (the operator's own browser hitting its own localhost works fine) and
-    # were never actually the problem. So on an unreachable origin (typical
-    # local dev), the App is still created — just without a webhook — rather
-    # than blocking the whole flow. The trade-off: automatic push-triggered
-    # analysis needs a real webhook, so it won't work until FRONTEND_ORIGIN
-    # is genuinely public; everything else (install, discover repos, clone,
-    # Sonar provisioning, manual "Run Analysis") works immediately.
+    # So on an unreachable origin (typical local dev, or WEBHOOK_BASE_URL
+    # left unset with a non-public FRONTEND_ORIGIN), the App is still
+    # created — just without a webhook — rather than blocking the whole
+    # flow. The trade-off: automatic push-triggered analysis needs a real
+    # webhook, so it won't work until GitHub's servers can actually reach
+    # this backend; everything else (install, discover repos, clone, Sonar
+    # provisioning, manual "Run Analysis") works immediately.
     webhook_reachable = True
     try:
-        validate_outbound_url(f"{base}/api/modules/github/webhooks", settings)
+        validate_outbound_url(f"{webhook_base}/api/modules/github/webhooks", settings)
     except OutboundURLError:
         webhook_reachable = False
 
@@ -222,7 +227,7 @@ async def manifest_form(
         "default_permissions": {"contents": "read", "statuses": "write", "metadata": "read"},
     }
     if webhook_reachable:
-        manifest["hook_attributes"] = {"url": f"{base}/api/modules/github/webhooks"}
+        manifest["hook_attributes"] = {"url": f"{webhook_base}/api/modules/github/webhooks"}
         # "pull_requests: read" is required to subscribe to the pull_request
         # event at all — GitHub rejects the event without it.
         manifest["default_permissions"]["pull_requests"] = "read"

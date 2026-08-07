@@ -268,6 +268,99 @@ async def list_repository_branches(
     return {"branches": branches, "default_branch": repo.default_branch}
 
 
+class RepoReconnect(BaseModel):
+    token: str = Field(..., min_length=1, max_length=256)
+
+
+@router.post("/repositories/{repo_id}/reconnect", response_model=RepoOut,
+             dependencies=[Depends(RequirePermission("projects:write"))])
+async def reconnect_repository(
+    repo_id: int,
+    body: RepoReconnect,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> RepoOut:
+    """Refresh an existing repository's stored token (and, since GitLab's
+    numeric project id isn't stable across a from-scratch reinstall,
+    ``gitlab_project_id`` too) without dropping the row — preserves its
+    ``project_id`` mapping and any linked ``SonarProject`` (which cascades
+    on delete). Validates the new token against the same ``full_path``
+    before storing it, so a token for a different project is rejected
+    rather than silently pointing this row somewhere else."""
+    repo = await session.get(GitLabRepository, repo_id)
+    if repo is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Repository not found")
+    try:
+        detail = await _fetch_project(repo.gitlab_url, body.token, repo.full_path)
+    except GitLabProviderError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, _UNREACHABLE_MESSAGE) from exc
+    if detail["path_with_namespace"] != repo.full_path:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST,
+                             f"Token resolves to {detail['path_with_namespace']!r}, not {repo.full_path!r}")
+    repo.gitlab_project_id = detail["id"]
+    repo.encrypted_token = encrypt_password(body.token, settings)
+    await session.commit()
+    await session.refresh(repo)
+    return RepoOut(id=repo.id, full_path=repo.full_path, default_branch=repo.default_branch,
+                    project_id=repo.project_id, connection_id=repo.connection_id)
+
+
+async def _try_register_webhook(settings: Settings, repo: GitLabRepository) -> bool:
+    """Register ``repo``'s per-repository webhook if it doesn't have one
+    yet. Returns ``True`` if a webhook now exists (already did, or just
+    registered), ``False`` if registration was attempted and failed —
+    logged, not raised, so every caller (initial connect, bulk-map, and the
+    explicit retry endpoint below) treats "no webhook yet" as recoverable,
+    not fatal. The most common real-world failure: GitLab's own SSRF
+    protection rejects a callback URL pointing at ``localhost`` outright
+    ("Invalid url given") — see ``Settings.webhook_base_url``.
+    """
+    if repo.webhook_id is not None:
+        return True
+    provider = GitLabProvider(get_session_factory())
+    repo_ref = RepoRef(external_id=repo.full_path, name=repo.full_path.rsplit("/", 1)[-1],
+                        default_branch=repo.default_branch, private=True)
+    secret = secrets.token_hex(24)
+    callback_url = f"{settings.webhook_base_url}/api/modules/gitlab/webhooks/{repo.id}"
+    try:
+        handle = await provider.register_webhook(str(repo.id), repo_ref, callback_url, secret)
+        repo.webhook_id = int(handle.external_id)
+        repo.webhook_secret = secret
+        return True
+    except GitLabProviderError:
+        logger.warning("Failed to register a GitLab webhook for %s; automatic push analysis "
+                        "will not trigger until this succeeds.", repo.full_path, exc_info=True)
+        return False
+
+
+@router.post("/repositories/{repo_id}/register-webhook",
+             dependencies=[Depends(RequirePermission("projects:write"))])
+async def register_webhook(
+    repo_id: int,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> dict:
+    """Retry webhook registration for a repository whose automatic
+    registration failed at connect time (a misconfigured
+    ``WEBHOOK_BASE_URL``, GitLab briefly unreachable, ...) — recoverable
+    without disconnecting and reconnecting the repository. A no-op (200,
+    ``already_registered: true``) if it already has one."""
+    repo = await session.get(GitLabRepository, repo_id)
+    if repo is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Repository not found")
+    already_registered = repo.webhook_id is not None
+    ok = await _try_register_webhook(settings, repo)
+    await session.commit()
+    if not ok:
+        raise HTTPException(
+            status.HTTP_502_BAD_GATEWAY,
+            f"Failed to register a webhook for {repo.full_path} — verify GitLab can reach "
+            f"{settings.webhook_base_url} and, if that address is on a local/private network, "
+            f"that GitLab's outbound-request settings allow local-network webhook URLs.",
+        )
+    return {"webhook_registered": True, "already_registered": already_registered}
+
+
 @router.post("/repositories/{repo_id}/map", response_model=RepoOut,
              dependencies=[Depends(RequirePermission("projects:write"))])
 async def map_repository(
@@ -296,19 +389,9 @@ async def map_repository(
                         default_branch=repo.default_branch, private=True)
     provider = GitLabProvider(get_session_factory())
 
-    # Register the per-repository webhook if this repo doesn't have one yet
-    # (idempotent re-mapping — e.g. moving a repo to a different project —
-    # must not create a second webhook).
-    if repo.webhook_id is None:
-        secret = secrets.token_hex(24)
-        callback_url = f"{settings.FRONTEND_ORIGIN.rstrip('/')}/api/modules/gitlab/webhooks/{repo.id}"
-        try:
-            handle = await provider.register_webhook(str(repo.id), repo_ref, callback_url, secret)
-            repo.webhook_id = int(handle.external_id)
-            repo.webhook_secret = secret
-        except GitLabProviderError:
-            logger.warning("Failed to auto-register a GitLab webhook for %s; automatic push analysis "
-                            "will not trigger until a webhook is added manually.", repo.full_path, exc_info=True)
+    # Idempotent — a repo being re-mapped (e.g. moved to a different
+    # Project) that already has a webhook must not get a second one.
+    await _try_register_webhook(settings, repo)
 
     await session.commit()
     await session.refresh(repo)
@@ -371,20 +454,11 @@ async def bulk_map_repositories(
             )
             integration_connected = True
 
+        await _try_register_webhook(settings, repo)
+
         repo_ref = RepoRef(external_id=repo.full_path, name=repo.full_path.rsplit("/", 1)[-1],
                             default_branch=repo.default_branch, private=True)
         provider = GitLabProvider(get_session_factory())
-        if repo.webhook_id is None:
-            secret = secrets.token_hex(24)
-            callback_url = f"{settings.FRONTEND_ORIGIN.rstrip('/')}/api/modules/gitlab/webhooks/{repo.id}"
-            try:
-                handle = await provider.register_webhook(str(repo.id), repo_ref, callback_url, secret)
-                repo.webhook_id = int(handle.external_id)
-                repo.webhook_secret = secret
-            except GitLabProviderError:
-                logger.warning("Failed to auto-register a GitLab webhook for %s during bulk map.",
-                                repo.full_path, exc_info=True)
-
         await queue.enqueue("provision_repository", {
             "project_id": body.project_id,
             "source_module": "gitlab",

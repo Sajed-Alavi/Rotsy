@@ -93,6 +93,19 @@ class Settings(BaseSettings):
     # behind TLS. Allow false for local HTTP testing.
     COOKIE_SECURE: bool
     FRONTEND_ORIGIN: str  # used for CORS + cookie domain scoping
+    # Optional: base URL other services (GitHub, GitLab) use to reach this
+    # backend for webhook delivery — distinct from FRONTEND_ORIGIN, which is
+    # what a *human's browser* uses. The two are the same address for a real
+    # public deployment, but diverge for a local dev GitLab: a self-hosted
+    # GitLab container can reach this backend via
+    # ``http://host.docker.internal:<BACKEND_PORT>`` even though a human's
+    # browser reaches the app at ``http://localhost:<FRONTEND_PORT>`` —
+    # GitLab's own SSRF protection rejects webhook URLs pointing at
+    # localhost outright ("Invalid url given"), so using FRONTEND_ORIGIN
+    # there silently breaks every webhook registration in exactly that
+    # (common) local-dev shape. Empty (the default) falls back to
+    # FRONTEND_ORIGIN, so a real public deployment needs no change.
+    WEBHOOK_BASE_URL: str = ""
 
     # --- Bootstrap admin (created on first startup) ----------------------
     BOOTSTRAP_ADMIN_USERNAME: str
@@ -327,6 +340,13 @@ class Settings(BaseSettings):
         except (ValueError, AttributeError):
             pass
         return None
+
+    @property
+    def webhook_base_url(self) -> str:
+        """The effective base URL for webhook callback URLs — ``WEBHOOK_BASE_URL``
+        if set, otherwise ``FRONTEND_ORIGIN`` (the same address, which is
+        correct for a real public deployment)."""
+        return (self.WEBHOOK_BASE_URL or self.FRONTEND_ORIGIN).rstrip("/")
 
     @property
     def access_cookie(self) -> dict:

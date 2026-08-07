@@ -20,7 +20,7 @@ from urllib.parse import quote
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -44,7 +44,19 @@ router = APIRouter(prefix="/modules/gitlab", tags=["gitlab"])
 _UNREACHABLE_MESSAGE = "Unable to reach GitLab. Verify the server URL, token, and network connectivity."
 
 
-class ConnectionCreate(BaseModel):
+class _StrippedTokenMixin(BaseModel):
+    """Copy-pasting a token from a GitLab page routinely drags in a
+    trailing newline or space (triple-click select, some browsers' "Copy"
+    button); GitLab rejects that as an invalid token with an opaque 401,
+    which looks identical to actually typing the wrong token. Strip it at
+    the boundary so that class of mistake can't happen."""
+    @field_validator("token", mode="before", check_fields=False)
+    @classmethod
+    def _strip_token(cls, v: str) -> str:
+        return v.strip() if isinstance(v, str) else v
+
+
+class ConnectionCreate(_StrippedTokenMixin):
     gitlab_url: str = Field(..., min_length=1, max_length=512)
     token: str = Field(..., min_length=1, max_length=256)
 
@@ -67,7 +79,7 @@ class MapRepoBody(BaseModel):
     project_id: int
 
 
-class RepositoryConnect(BaseModel):
+class RepositoryConnect(_StrippedTokenMixin):
     """Repository-level mode: one PAT for exactly one repository, managed
     independently of any user-level connection."""
     gitlab_url: str = Field(..., min_length=1, max_length=512)
@@ -268,7 +280,7 @@ async def list_repository_branches(
     return {"branches": branches, "default_branch": repo.default_branch}
 
 
-class RepoReconnect(BaseModel):
+class RepoReconnect(_StrippedTokenMixin):
     token: str = Field(..., min_length=1, max_length=256)
 
 
@@ -293,7 +305,10 @@ async def reconnect_repository(
     try:
         detail = await _fetch_project(repo.gitlab_url, body.token, repo.full_path)
     except GitLabProviderError as exc:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, _UNREACHABLE_MESSAGE) from exc
+        message = (f"GitLab rejected this token (401 Unauthorized) — it's either wrong, "
+                   f"expired, or revoked. Generate a fresh one and try again."
+                   if str(exc).startswith("401") else _UNREACHABLE_MESSAGE)
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, message) from exc
     if detail["path_with_namespace"] != repo.full_path:
         raise HTTPException(status.HTTP_400_BAD_REQUEST,
                              f"Token resolves to {detail['path_with_namespace']!r}, not {repo.full_path!r}")

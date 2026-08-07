@@ -246,6 +246,28 @@ async def list_repositories(
                      project_id=r.project_id, connection_id=r.connection_id) for r in rows]
 
 
+@router.get("/repositories/{repo_id}/branches", dependencies=[Depends(RequirePermission("projects:read"))])
+async def list_repository_branches(
+    repo_id: int,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict:
+    """Every branch on a discovered repository — for the Code Quality
+    branch picker. No persisted branch cache exists (``GitLabRepository``
+    only stores ``default_branch``), so this always calls GitLab live."""
+    repo = await session.get(GitLabRepository, repo_id)
+    if repo is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Repository not found")
+
+    provider = GitLabProvider(get_session_factory())
+    repo_ref = RepoRef(external_id=repo.full_path, name=repo.full_path.rsplit("/", 1)[-1],
+                        default_branch=repo.default_branch, private=True)
+    try:
+        branches = await provider.list_branches(str(repo.id), repo_ref)
+    except GitLabProviderError as exc:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(exc)) from exc
+    return {"branches": branches, "default_branch": repo.default_branch}
+
+
 @router.post("/repositories/{repo_id}/map", response_model=RepoOut,
              dependencies=[Depends(RequirePermission("projects:write"))])
 async def map_repository(

@@ -37,6 +37,14 @@ class SourceProvider(Protocol):
 
     async def list_repositories(self, credential_ref: str) -> list[RepoRef]: ...
 
+    async def list_branches(self, credential_ref: str, repo: RepoRef) -> list[str]:
+        """Every branch name on ``repo`` — no persisted cache exists (see
+        ``models.github``/``models.gitlab``, which only store
+        ``default_branch``), so this always hits the provider's live API.
+        Used by the Code Quality repo/branch picker, not by analysis itself
+        (which only ever needs one commit sha on one ref at a time)."""
+        ...
+
     async def register_webhook(self, credential_ref: str, repo: RepoRef, callback_url: str, secret: str) -> WebhookHandle: ...
 
     async def fetch_source(self, credential_ref: str, repo: RepoRef, ref: str, dest_dir: str) -> str:

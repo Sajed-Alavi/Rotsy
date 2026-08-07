@@ -37,14 +37,14 @@ from ..core.source_provider import RepoRef
 from ..db.session import get_session_factory
 from ..dependencies import RequirePermission, get_session, get_settings
 from ..models import (
-    AnalysisRun, GitHubInstallation, GitHubRepository, GitLabRepository, QualityGateResult,
+    AnalysisRun, GitHubInstallation, GitHubRepository, GitLabRepository, Project, QualityGateResult,
     SonarHotspot, SonarIssue, SonarProject,
 )
 from ..models.sonar import SUPPORTED_LANGUAGES
 from ..modules.github.provider import GitHubProvider
 from ..modules.gitlab.provider import GitLabProvider
 from ..modules.sonar.connector import SonarClient, SonarError
-from ..modules.sonar.provisioning import create_sonar_project_row
+from ..modules.sonar.provisioning import create_sonar_project_row, pick_supported_language
 from ..schemas.sonar import (
     AnalysisRunOut,
     QualityGateResultOut,
@@ -289,6 +289,69 @@ async def list_quality_gates(
 
 
 # ---------------------------------------------------------------------------
+# Global repository listing — the Code Quality section's repo picker draws
+# from this rather than any one Project's tab, since analysis is no longer
+# scoped to a single Project (see routers/projects.py's
+# list_project_repositories for the per-Project version this mirrors).
+# ---------------------------------------------------------------------------
+@router.get("/repositories", dependencies=[Depends(RequirePermission("projects:read"))])
+async def list_all_repositories(
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> list[dict]:
+    """Every repository mapped to a Project, across every Project. A
+    repository must belong to a Project before it can be analyzed —
+    ``SonarProject.project_id`` is non-nullable — so unmapped repositories
+    (not yet attached anywhere) are excluded, same as the per-Project view."""
+    sonar_by_github: dict[int, SonarProject] = {}
+    sonar_by_gitlab: dict[int, SonarProject] = {}
+    for sp in (await session.execute(select(SonarProject))).scalars():
+        if sp.github_repository_id:
+            sonar_by_github[sp.github_repository_id] = sp
+        if sp.gitlab_repository_id:
+            sonar_by_gitlab[sp.gitlab_repository_id] = sp
+
+    project_names = dict((await session.execute(select(Project.id, Project.name))).all())
+
+    out: list[dict] = []
+    github_repos = (
+        await session.execute(select(GitHubRepository).where(GitHubRepository.project_id.isnot(None)))
+    ).scalars().all()
+    for r in github_repos:
+        sp = sonar_by_github.get(r.id)
+        out.append({
+            "source_module": "github",
+            "repository_id": r.id,
+            "full_name": r.full_name,
+            "default_branch": r.default_branch,
+            "auto_analyze_on_push": r.installation_id is not None,
+            "sonar_project_id": sp.id if sp else None,
+            "language": sp.language if sp else None,
+            "project_id": r.project_id,
+            "project_name": project_names.get(r.project_id),
+        })
+
+    gitlab_repos = (
+        await session.execute(select(GitLabRepository).where(GitLabRepository.project_id.isnot(None)))
+    ).scalars().all()
+    for r in gitlab_repos:
+        sp = sonar_by_gitlab.get(r.id)
+        out.append({
+            "source_module": "gitlab",
+            "repository_id": r.id,
+            "full_name": r.full_path,
+            "default_branch": r.default_branch,
+            "auto_analyze_on_push": r.webhook_id is not None,
+            "sonar_project_id": sp.id if sp else None,
+            "language": sp.language if sp else None,
+            "project_id": r.project_id,
+            "project_name": project_names.get(r.project_id),
+        })
+
+    out.sort(key=lambda row: row["full_name"])
+    return out
+
+
+# ---------------------------------------------------------------------------
 # Analysis history / detail
 # ---------------------------------------------------------------------------
 @router.get("/repositories/{sonar_project_id}/analysis-runs", response_model=list[AnalysisRunOut],
@@ -337,6 +400,22 @@ async def list_analysis_runs(
     return list(rows)
 
 
+@router.get("/analysis-runs", response_model=list[AnalysisRunOut],
+            dependencies=[Depends(RequirePermission("projects:read"))])
+async def list_all_analysis_runs(
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> list[AnalysisRun]:
+    """Recent analysis activity across every repository, every Project — the
+    Code Quality section's global run history (unlike the two endpoints
+    above, not scoped to one repository or one Project)."""
+    rows = (
+        await session.execute(
+            select(AnalysisRun).order_by(desc(AnalysisRun.started_at)).limit(200)
+        )
+    ).scalars().all()
+    return list(rows)
+
+
 @router.get("/analysis-runs/{run_id}", response_model=AnalysisRunOut,
             dependencies=[Depends(RequirePermission("projects:read"))])
 async def get_analysis_run(
@@ -380,6 +459,12 @@ _ISSUE_SORT_COLUMNS = {
     "rule": SonarIssue.rule,
 }
 
+# Same reasoning as _ISSUE_SEVERITY_RANK — plain string ordering puts HIGH
+# after MEDIUM alphabetically.
+_HOTSPOT_PROBABILITY_RANK = case(
+    {"HIGH": 0, "MEDIUM": 1, "LOW": 2}, value=SonarHotspot.vulnerability_probability, else_=3,
+)
+
 
 def _ordered_issues(stmt, sort: str = "severity", order: str = "desc"):
     if sort not in _ISSUE_SORT_COLUMNS or sort == "severity":
@@ -393,6 +478,89 @@ async def _run_or_404(session: AsyncSession, run_id: int) -> AnalysisRun:
     if run is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Analysis run not found")
     return run
+
+
+def _latest_successful_run_ids(sonar_project_id: int | None = None):
+    """Subquery: one ``AnalysisRun.id`` per ``sonar_project_id`` — its most
+    recent successful run. Unlike vulnerability scans (roughly one report per
+    distinct image, rarely repeated), Sonar analysis repeats on the *same*
+    repository across commits, and old runs/issues are never deleted — only
+    a re-run of the *same* commit replaces its own rows (see
+    ``modules/sonar/findings.py``). A global findings view without this
+    scoping would pile up stale issues from every historical commit of every
+    repository; scoping to "latest successful run per repo" is what makes
+    "Findings" mean *current* state rather than *history*. The existing
+    per-run drill-down (``/analysis-runs/{id}/issues``) is unaffected."""
+    rn = func.row_number().over(
+        partition_by=AnalysisRun.sonar_project_id, order_by=desc(AnalysisRun.started_at),
+    )
+    ranked = select(AnalysisRun.id, AnalysisRun.sonar_project_id, rn.label("rn")).where(
+        AnalysisRun.status == "success"
+    )
+    if sonar_project_id is not None:
+        ranked = ranked.where(AnalysisRun.sonar_project_id == sonar_project_id)
+    ranked = ranked.subquery()
+    return select(ranked.c.id).where(ranked.c.rn == 1)
+
+
+@router.get("/issues", response_model=SonarIssuePage,
+            dependencies=[Depends(RequirePermission("projects:read"))])
+async def list_all_issues(
+    session: Annotated[AsyncSession, Depends(get_session)],
+    sonar_project_id: Annotated[int | None, Query(description="Narrow to one repository")] = None,
+    severity: Annotated[str | None, Query(description="Comma-separated, e.g. BLOCKER,CRITICAL")] = None,
+    type_: Annotated[str | None, Query(alias="type", description="Comma-separated, e.g. BUG,VULNERABILITY,CODE_SMELL")] = None,
+    q: Annotated[str | None, Query(description="Free-text match against rule, message, or file")] = None,
+    sort: Annotated[str, Query(description="severity | type | component | rule")] = "severity",
+    order: Annotated[str, Query(description="asc | desc")] = "desc",
+    limit: Annotated[int, Query(ge=1, le=500)] = 200,
+    offset: Annotated[int, Query(ge=0)] = 0,
+) -> SonarIssuePage:
+    """Every open issue from each repository's *latest successful* analysis —
+    the Code Quality section's global Findings view. Use
+    ``/analysis-runs/{id}/issues`` for one specific historical run instead."""
+    stmt = select(SonarIssue).where(
+        SonarIssue.analysis_run_id.in_(_latest_successful_run_ids(sonar_project_id))
+    )
+    if severity:
+        values = [s.strip().upper() for s in severity.split(",") if s.strip()]
+        if values:
+            stmt = stmt.where(SonarIssue.severity.in_(values))
+    if type_:
+        values = [t.strip().upper() for t in type_.split(",") if t.strip()]
+        if values:
+            stmt = stmt.where(SonarIssue.type.in_(values))
+    if q:
+        like = f"%{q}%"
+        stmt = stmt.where(or_(
+            SonarIssue.rule.ilike(like), SonarIssue.message.ilike(like), SonarIssue.component.ilike(like),
+        ))
+    total = (await session.execute(select(func.count()).select_from(stmt.subquery()))).scalar_one()
+    rows = (await session.execute(_ordered_issues(stmt, sort, order).limit(limit).offset(offset))).scalars().all()
+    return SonarIssuePage(items=list(rows), total=total)
+
+
+@router.get("/hotspots", response_model=SonarHotspotPage,
+            dependencies=[Depends(RequirePermission("projects:read"))])
+async def list_all_hotspots(
+    session: Annotated[AsyncSession, Depends(get_session)],
+    sonar_project_id: Annotated[int | None, Query(description="Narrow to one repository")] = None,
+    limit: Annotated[int, Query(ge=1, le=500)] = 200,
+    offset: Annotated[int, Query(ge=0)] = 0,
+) -> SonarHotspotPage:
+    """Every security hotspot from each repository's *latest successful*
+    analysis — same "current state, not history" scoping as ``/issues``."""
+    stmt = select(SonarHotspot).where(
+        SonarHotspot.analysis_run_id.in_(_latest_successful_run_ids(sonar_project_id))
+    )
+    total = (await session.execute(select(func.count()).select_from(stmt.subquery()))).scalar_one()
+    rows = (
+        await session.execute(
+            stmt.order_by(_HOTSPOT_PROBABILITY_RANK, desc(SonarHotspot.creation_date))
+            .limit(limit).offset(offset)
+        )
+    ).scalars().all()
+    return SonarHotspotPage(items=list(rows), total=total)
 
 
 @router.get("/analysis-runs/{run_id}/issues", response_model=SonarIssuePage,
@@ -445,7 +613,7 @@ async def list_hotspots(
     total = (await session.execute(select(func.count()).select_from(stmt.subquery()))).scalar_one()
     rows = (
         await session.execute(
-            stmt.order_by(desc(SonarHotspot.vulnerability_probability), desc(SonarHotspot.creation_date))
+            stmt.order_by(_HOTSPOT_PROBABILITY_RANK, desc(SonarHotspot.creation_date))
             .limit(limit).offset(offset)
         )
     ).scalars().all()
@@ -578,12 +746,133 @@ async def run_analysis(
     return await run_repository_analysis(sonar_projects[0].id, session, settings, state, None)
 
 
+class AnalyzeRequest(BaseModel):
+    source_module: str = Field(..., description="'github' or 'gitlab'")
+    repository_id: int
+    branch: str | None = Field(default=None, description="Defaults to the repository's default branch")
+
+
+@router.post("/analyze", status_code=status.HTTP_202_ACCEPTED,
+             dependencies=[Depends(RequirePermission("projects:write"))])
+async def analyze_repository(
+    body: AnalyzeRequest,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    settings: Annotated[Settings, Depends(get_settings)],
+    state: Annotated[AppState, Depends(app_state)],
+) -> dict:
+    """One action for the global Code Quality section: pick a repository,
+    pick a branch, run analysis. Auto-provisions a ``SonarProject`` first if
+    this repository doesn't have one yet — detecting a supported language the
+    same way automatic on-connect provisioning does
+    (``modules/sonar/provisioning.py:auto_provision_and_analyze``) — so the
+    "Connect Sonar" step the per-Project Repositories tab still exposes isn't
+    a prerequisite here. Enqueues the exact same ``clone_and_analyze`` job
+    every other analysis trigger does.
+    """
+    if body.source_module not in ("github", "gitlab"):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "source_module must be 'github' or 'gitlab'")
+    github_repository_id = body.repository_id if body.source_module == "github" else None
+    gitlab_repository_id = body.repository_id if body.source_module == "gitlab" else None
+
+    source_module, provider, credential_ref, repo_ref, repo_ids, project_id = await _resolve_repo_by_ids(
+        session, settings, state, github_repository_id, gitlab_repository_id,
+    )
+    if project_id is None:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "This repository isn't mapped to a Project yet — connect it from a Project's "
+            "Repositories tab first, then it can be analyzed from Code Quality.",
+        )
+
+    sonar_project = await session.scalar(
+        select(SonarProject).where(
+            SonarProject.github_repository_id == github_repository_id
+            if github_repository_id else SonarProject.gitlab_repository_id == gitlab_repository_id
+        )
+    )
+    if sonar_project is None:
+        try:
+            languages = await provider.get_repository_languages(credential_ref, repo_ref)
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(
+                status.HTTP_502_BAD_GATEWAY,
+                f"Unable to reach {source_module.title()} to detect {repo_ref.external_id}'s language: {exc}",
+            ) from exc
+        language = pick_supported_language(languages)
+        if language is None:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                f"{repo_ref.external_id} has no auto-detectable supported language "
+                f"({', '.join(SUPPORTED_LANGUAGES)}) — it can't be analyzed without a build step.",
+            )
+        try:
+            sonar_project = await create_sonar_project_row(
+                session, settings, project_id, repo_ref.external_id, language,
+                github_repository_id=github_repository_id, gitlab_repository_id=gitlab_repository_id,
+            )
+        except SonarError as exc:
+            if "not configured" in str(exc):
+                raise HTTPException(
+                    status.HTTP_400_BAD_REQUEST,
+                    "SonarQube is not configured. Set it up in Settings -> Integrations -> SonarQube first.",
+                ) from exc
+            raise HTTPException(status.HTTP_502_BAD_GATEWAY, _UNREACHABLE_MESSAGE) from exc
+
+    branch = body.branch or repo_ref.default_branch
+    try:
+        sha = await provider.get_latest_commit_sha(credential_ref, repo_ref, branch)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Failed to resolve latest commit for %s@%s: %s", repo_ref.external_id, branch, exc)
+        detail = str(exc).strip() or (
+            f"Unable to reach {source_module.title()} to find the latest commit on {branch!r}. Verify the connection."
+        )
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, detail) from exc
+
+    if state.cache is None:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Job queue is not available")
+    queue = JobQueue(state.cache)
+    job_id = await queue.enqueue(
+        "clone_and_analyze",
+        {
+            "project_id": project_id,
+            "source_module": source_module,
+            "credential_ref": credential_ref,
+            "repo_external_id": repo_ref.external_id,
+            "repo_name": repo_ref.name,
+            "default_branch": repo_ref.default_branch,
+            "ref": branch,
+            "sha": sha,
+            "trigger": "manual",
+            "github_repository_id": repo_ids[0],
+            "gitlab_repository_id": repo_ids[1],
+        },
+    )
+    return {"job_id": job_id, "commit_sha": sha, "ref": branch, "sonar_project_id": sonar_project.id}
+
+
 async def _resolve_repo(session: AsyncSession, settings: Settings, state: AppState, sonar_project: SonarProject):
     """Provider/credential/RepoRef for whichever repository a SonarProject
     belongs to, plus its (github_repository_id, gitlab_repository_id) pair
     for re-threading into the job payload."""
-    if sonar_project.github_repository_id:
-        github_repo = await session.get(GitHubRepository, sonar_project.github_repository_id)
+    (source_module, provider, credential_ref, repo_ref, repo_ids, _project_id) = await _resolve_repo_by_ids(
+        session, settings, state, sonar_project.github_repository_id, sonar_project.gitlab_repository_id,
+    )
+    return source_module, provider, credential_ref, repo_ref, repo_ids
+
+
+async def _resolve_repo_by_ids(
+    session: AsyncSession, settings: Settings, state: AppState,
+    github_repository_id: int | None, gitlab_repository_id: int | None,
+):
+    """Lower-level version of :func:`_resolve_repo`, identified directly by
+    a (github_repository_id, gitlab_repository_id) pair rather than an
+    existing ``SonarProject`` — what ``/analyze`` uses, since a repository
+    picked from the global Code Quality section may not have a
+    ``SonarProject`` yet. Also returns the repository's ``project_id`` (the
+    Rotsy Project it's mapped to), needed to provision one.
+    """
+    if github_repository_id:
+        github_repo = await session.get(GitHubRepository, github_repository_id)
         if github_repo is None:
             raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, "Connected GitHub repository is missing")
         # installation_id is NULL for a repo connected by URL (public, no App
@@ -602,16 +891,16 @@ async def _resolve_repo(session: AsyncSession, settings: Settings, state: AppSta
         repo_ref = RepoRef(external_id=github_repo.full_name, name=github_repo.full_name.rsplit("/", 1)[-1],
                             default_branch=github_repo.default_branch, private=installation is not None)
         credential_ref = str(installation.installation_id) if installation else ""
-        return "github", provider, credential_ref, repo_ref, (github_repo.id, None)
+        return "github", provider, credential_ref, repo_ref, (github_repo.id, None), github_repo.project_id
 
-    if sonar_project.gitlab_repository_id:
-        gitlab_repo = await session.get(GitLabRepository, sonar_project.gitlab_repository_id)
+    if gitlab_repository_id:
+        gitlab_repo = await session.get(GitLabRepository, gitlab_repository_id)
         if gitlab_repo is None:
             raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, "Connected GitLab repository is missing")
         provider = GitLabProvider(get_session_factory())
         repo_ref = RepoRef(external_id=gitlab_repo.full_path, name=gitlab_repo.full_path.rsplit("/", 1)[-1],
                             default_branch=gitlab_repo.default_branch, private=True)
-        return "gitlab", provider, str(gitlab_repo.id), repo_ref, (None, gitlab_repo.id)
+        return "gitlab", provider, str(gitlab_repo.id), repo_ref, (None, gitlab_repo.id), gitlab_repo.project_id
 
     raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR,
-                         "Sonar project has no linked GitHub or GitLab repository")
+                         "Repository is missing both a GitHub and GitLab id")

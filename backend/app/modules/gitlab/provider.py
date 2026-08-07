@@ -129,6 +129,28 @@ class GitLabProvider:
             raise GitLabProviderError(f"git clone failed for {row.full_path}@{ref}: {safe_stderr[:500]}")
         return dest_dir
 
+    async def list_branches(self, credential_ref: str, repo: RepoRef) -> list[str]:
+        row, token = await self._resolve(credential_ref)
+        branches: list[str] = []
+        page = 1
+        async with httpx.AsyncClient(base_url=row.gitlab_url, timeout=15.0) as client:
+            while True:
+                resp = await client.get(
+                    f"/api/v4/projects/{row.gitlab_project_id}/repository/branches",
+                    params={"per_page": 100, "page": page},
+                    headers={**_HEADERS_ACCEPT, "PRIVATE-TOKEN": token},
+                )
+                if resp.status_code >= 400:
+                    raise GitLabProviderError(f"Failed to list branches for {row.full_path}: {resp.status_code} {resp.text[:300]}")
+                data = resp.json()
+                if not data:
+                    break
+                branches.extend(b["name"] for b in data)
+                if len(data) < 100:
+                    break
+                page += 1
+        return branches
+
     async def get_latest_commit_sha(self, credential_ref: str, repo: RepoRef, ref: str) -> str:
         row, token = await self._resolve(credential_ref)
         async with httpx.AsyncClient(base_url=row.gitlab_url, timeout=15.0) as client:

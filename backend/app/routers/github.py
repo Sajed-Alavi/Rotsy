@@ -41,7 +41,7 @@ from ..core.source_provider import RepoRef
 from ..dependencies import RequirePermission, get_session, get_settings
 from ..models import GitHubInstallation, GitHubRepository, Integration
 from ..modules.github.auth import GitHubAuthError, get_installation_token, install_url
-from ..modules.github.provider import GitHubProvider
+from ..modules.github.provider import GitHubProvider, GitHubProviderError
 from ..modules.github.webhooks import normalize_event, verify_signature
 from ..modules.sonar.provisioning import auto_provision_and_analyze
 from ..state import app_state, AppState
@@ -108,6 +108,35 @@ async def list_repositories(
     rows = (await session.execute(stmt)).scalars().all()
     return [RepoOut(id=r.id, full_name=r.full_name, default_branch=r.default_branch, project_id=r.project_id)
             for r in rows]
+
+
+@router.get("/repositories/{repo_id}/branches", dependencies=[Depends(RequirePermission("projects:read"))])
+async def list_repository_branches(
+    repo_id: int,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    settings: Annotated[Settings, Depends(get_settings)],
+    state: Annotated[AppState, Depends(app_state)],
+) -> dict:
+    """Every branch on a discovered repository — for the Code Quality
+    branch picker. No persisted branch cache exists (``GitHubRepository``
+    only stores ``default_branch``), so this always calls GitHub live."""
+    repo = await session.get(GitHubRepository, repo_id)
+    if repo is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Repository not found")
+    if state.cache is None:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Cache not initialised")
+
+    installation = await session.get(GitHubInstallation, repo.installation_id) if repo.installation_id else None
+    credential_ref = str(installation.installation_id) if installation else ""
+    app_config = await get_github_app_config(session, settings)
+    provider = GitHubProvider(app_config, state.cache)
+    repo_ref = RepoRef(external_id=repo.full_name, name=repo.full_name.rsplit("/", 1)[-1],
+                        default_branch=repo.default_branch, private=installation is not None)
+    try:
+        branches = await provider.list_branches(credential_ref, repo_ref)
+    except GitHubProviderError as exc:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(exc)) from exc
+    return {"branches": branches, "default_branch": repo.default_branch}
 
 
 @router.get("/status", dependencies=[Depends(RequirePermission("projects:read"))])

@@ -119,6 +119,19 @@ class GitHubProvider:
             raise GitHubProviderError(f"git clone failed for {repo.external_id}@{ref}: {safe_stderr[:500]}")
         return dest_dir
 
+    async def list_branches(self, credential_ref: str, repo: RepoRef) -> list[str]:
+        headers = await self._headers(credential_ref)
+        branches: list[str] = []
+        url = f"{_GITHUB_API}/repos/{repo.external_id}/branches?per_page=100"
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            while url:
+                resp = await client.get(url, headers=headers)
+                if resp.status_code >= 400:
+                    raise GitHubProviderError(f"Failed to list branches for {repo.external_id}: {resp.status_code} {resp.text[:300]}")
+                branches.extend(b["name"] for b in resp.json())
+                url = resp.links.get("next", {}).get("url")
+        return branches
+
     async def get_latest_commit_sha(self, credential_ref: str, repo: RepoRef, ref: str) -> str:
         """The current HEAD sha of ``ref`` — used by the manual "Run Analysis"
         trigger, which has a branch to analyze but (unlike a push webhook) no

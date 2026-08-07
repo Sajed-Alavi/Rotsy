@@ -52,6 +52,11 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
+      # Explicit: without this, Docker defaults to the *last* stage in the
+      # Dockerfile, which since the `test` stage was appended is no longer
+      # `base` — an unpinned target here would silently build (and run) the
+      # pytest image instead of the app.
+      target: base
     restart: unless-stopped
     env_file:
       - .env

@@ -3,15 +3,18 @@ import { useOutletContext } from 'react-router';
 import { api } from '../../../lib/api.js';
 import Badge from '../../../components/Badge.jsx';
 import DataTable from '../../../components/DataTable.jsx';
+import Modal from '../../../components/Modal.jsx';
 
 const INPUT = 'w-full border border-slate-300 bg-white px-2 py-1.5 font-mono text-sm text-slate-900 outline-none focus:border-sky-500 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100';
-const SONAR_LANGUAGES = ['python', 'javascript', 'typescript', 'go', 'php', 'ruby', 'css', 'html'];
 
 /**
  * Repositories: the "put 17, or 1000, repositories into this Project" view.
  * A Project is a grouping, not a 1:1 wrapper around a single repo — each row
- * here is independently connected, independently language-detected, and
- * independently analyzed. Deliberately separate from Settings -> Integrations
+ * here is independently connected and independently language-detected.
+ * Deliberately read-only about analysis: connecting Sonar and running
+ * analysis both happen from the global Code Quality section now (pick any
+ * synced repo + branch from there), not per-Project — this page only shows
+ * what's synced and lets you add more, matching Settings -> Integrations
  * (which manages the GitHub App / GitLab tokens themselves, not what's
  * attached to which Project).
  */
@@ -19,8 +22,6 @@ export default function RepositoriesPage() {
   const { projectId } = useOutletContext();
   const [repos, setRepos] = useState([]);
   const [err, setErr] = useState('');
-  const [busyRepoId, setBusyRepoId] = useState(null);
-  const [msg, setMsg] = useState('');
 
   const load = async () => {
     setErr('');
@@ -28,16 +29,6 @@ export default function RepositoriesPage() {
     catch (e) { setErr(e.message); }
   };
   useEffect(() => { load(); }, [projectId]);
-
-  const runAnalysis = async (repo) => {
-    if (!repo.sonar_project_id) return;
-    setBusyRepoId(repo.repository_id); setMsg(''); setErr('');
-    try {
-      const r = await api.post(`/modules/sonar/repositories/${repo.sonar_project_id}/run-analysis`, {});
-      setMsg(`Queued analysis for ${repo.full_name} (commit ${r.commit_sha.slice(0, 8)}).`);
-    } catch (e) { setErr(e.message); }
-    setBusyRepoId(null);
-  };
 
   const columns = [
     {
@@ -49,81 +40,77 @@ export default function RepositoriesPage() {
         </span>
       ),
     },
-    { key: 'default_branch', header: 'Branch', mono: true },
+    { key: 'default_branch', header: 'Default branch', mono: true },
     {
-      key: 'language', header: 'Language',
-      render: (v) => v ? <Badge tone="info">{v}</Badge> : <span className="font-mono text-[10px] text-slate-400">not connected</span>,
+      key: 'branches', header: 'Branches', className: 'text-right',
+      render: (_v, row) => <BranchesButton repo={row} />,
+    },
+    {
+      key: 'language', header: 'Sonar language',
+      render: (v) => v ? <Badge tone="info">{v}</Badge> : <span className="font-mono text-[10px] text-slate-400">not analyzed yet</span>,
     },
     {
       key: 'auto_analyze_on_push', header: 'Auto-analyze',
       render: (v) => <Badge tone={v ? 'ok' : 'warn'}>{v ? 'on push' : 'manual only'}</Badge>,
-    },
-    {
-      key: 'actions', header: '', className: 'text-right',
-      render: (_v, row) => (
-        row.sonar_project_id ? (
-          <button
-            onClick={() => runAnalysis(row)}
-            disabled={busyRepoId === row.repository_id}
-            className="border border-slate-300 px-2 py-1 font-mono text-[10px] uppercase tracking-wider text-slate-600 hover:bg-slate-100 disabled:opacity-50 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
-          >
-            {busyRepoId === row.repository_id ? '···' : 'Run Analysis'}
-          </button>
-        ) : (
-          <ConnectSonarButton repo={row} projectId={projectId} onDone={load} />
-        )
-      ),
     },
   ];
 
   return (
     <div className="grid grid-cols-1 gap-6">
       {err && <div className="border border-rose-200 bg-rose-50 px-3 py-2 font-mono text-xs text-rose-600 dark:border-rose-800 dark:bg-rose-950/30 dark:text-rose-400">{err}</div>}
-      {msg && <div className="border border-emerald-200 bg-emerald-50 px-3 py-2 font-mono text-xs text-emerald-700 dark:border-emerald-800 dark:bg-emerald-950/30 dark:text-emerald-400">{msg}</div>}
 
       <DataTable columns={columns} rows={repos} empty="No repositories connected yet — add some below." />
+      <p className="font-mono text-[11px] text-slate-500 dark:text-slate-500">
+        Run analysis from the Code Quality section — pick any repository connected here and a branch to analyze.
+      </p>
 
       <AddRepositories projectId={projectId} connectedFullNames={repos.map((r) => r.full_name)} onDone={load} />
     </div>
   );
 }
 
-function ConnectSonarButton({ repo, projectId, onDone }) {
+/** Lazy-fetched on open, not eagerly per row — a Project with many
+ * repositories would otherwise fire one branch-listing call per row on
+ * every page load, for data most visits never look at. */
+function BranchesButton({ repo }) {
   const [open, setOpen] = useState(false);
-  const [language, setLanguage] = useState(SONAR_LANGUAGES[0]);
-  const [busy, setBusy] = useState(false);
+  const [branches, setBranches] = useState(null);
   const [err, setErr] = useState('');
 
-  const connect = async () => {
-    setBusy(true); setErr('');
-    try {
-      const repoIdField = repo.source_module === 'github' ? 'github_repository_id' : 'gitlab_repository_id';
-      await api.post('/modules/sonar/projects', {
-        project_id: projectId, language, [repoIdField]: repo.repository_id,
-      });
-      setOpen(false);
-      onDone();
-    } catch (e) { setErr(e.message); }
-    setBusy(false);
+  const openModal = () => {
+    setOpen(true);
+    if (branches === null && !err) {
+      api.get(`/modules/${repo.source_module}/repositories/${repo.repository_id}/branches`)
+        .then((r) => setBranches(r.branches))
+        .catch((e) => setErr(e.message));
+    }
   };
 
-  if (!open) {
-    return (
-      <button onClick={() => setOpen(true)} className="border border-sky-300 bg-sky-50 px-2 py-1 font-mono text-[10px] uppercase tracking-wider text-sky-700 hover:bg-sky-100 dark:border-sky-700 dark:bg-sky-950/40 dark:text-sky-300">
-        Connect Sonar
-      </button>
-    );
-  }
   return (
-    <span className="flex items-center justify-end gap-1.5">
-      <select value={language} onChange={(e) => setLanguage(e.target.value)} className="border border-slate-300 bg-white px-1.5 py-1 font-mono text-[10px] text-slate-700 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-300">
-        {SONAR_LANGUAGES.map((l) => <option key={l} value={l}>{l}</option>)}
-      </select>
-      <button onClick={connect} disabled={busy} className="border border-sky-300 bg-sky-50 px-2 py-1 font-mono text-[10px] uppercase tracking-wider text-sky-700 hover:bg-sky-100 disabled:opacity-50 dark:border-sky-700 dark:bg-sky-950/40 dark:text-sky-300">
-        {busy ? '···' : 'Go'}
+    <>
+      <button
+        onClick={openModal}
+        className="border border-slate-300 px-2 py-1 font-mono text-[10px] uppercase tracking-wider text-slate-600 hover:bg-slate-100 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
+      >
+        View
       </button>
-      {err && <span className="font-mono text-[10px] text-rose-600 dark:text-rose-400">{err}</span>}
-    </span>
+      <Modal open={open} title={`Branches · ${repo.full_name}`} onClose={() => setOpen(false)}>
+        {err ? (
+          <p className="font-mono text-xs text-rose-600 dark:text-rose-400">{err}</p>
+        ) : branches === null ? (
+          <p className="font-mono text-[11px] text-slate-500 dark:text-slate-500">loading…</p>
+        ) : (
+          <ul className="max-h-64 space-y-1 overflow-y-auto font-mono text-xs text-slate-700 dark:text-slate-300">
+            {branches.map((b) => (
+              <li key={b} className="flex items-center justify-between border-b border-slate-100 py-1 last:border-0 dark:border-slate-800/60">
+                {b}
+                {b === repo.default_branch && <Badge tone="info">default</Badge>}
+              </li>
+            ))}
+          </ul>
+        )}
+      </Modal>
+    </>
   );
 }
 

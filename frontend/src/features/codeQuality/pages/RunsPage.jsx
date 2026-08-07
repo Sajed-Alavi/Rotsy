@@ -1,6 +1,5 @@
 import { useEffect, useState } from 'react';
-import { useOutletContext } from 'react-router';
-import { api, API_BASE } from '../../../lib/api.js';
+import { codeQualityApi } from '../api.js';
 import DataTable from '../../../components/DataTable.jsx';
 import Badge from '../../../components/Badge.jsx';
 import Modal from '../../../components/Modal.jsx';
@@ -13,51 +12,35 @@ const ISSUE_SEVERITY_TONE = { BLOCKER: 'bad', CRITICAL: 'bad', MAJOR: 'warn', MI
 const ISSUE_TYPE_TONE = { BUG: 'bad', VULNERABILITY: 'bad', CODE_SMELL: 'neutral' };
 const HOTSPOT_PROBABILITY_TONE = { HIGH: 'bad', MEDIUM: 'warn', LOW: 'info' };
 
-/** Analysis history for this project, plus the manual "Run Analysis" trigger
- * — same backend job as an automatic push, just started on demand. */
-export default function AnalysisPage() {
-  const { projectId } = useOutletContext();
+/** Global analysis run history — every repository, every Project. Triggering
+ * a new run happens on the Overview tab; this is history + drill-down only. */
+export default function RunsPage() {
   const [runs, setRuns] = useState([]);
   const [gates, setGates] = useState({}); // run_id -> quality gate status
   const [repoLabels, setRepoLabels] = useState({}); // sonar_project_id -> "owner/repo"
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState('');
-  const [running, setRunning] = useState(false);
-  const [runMsg, setRunMsg] = useState('');
   const [detail, setDetail] = useState(null);
 
   const load = async () => {
     setLoading(true); setErr('');
     try {
       const [rows, repos] = await Promise.all([
-        api.get(`/modules/sonar/projects/${projectId}/analysis-runs`),
-        api.get(`/projects/${projectId}/repositories`),
+        codeQualityApi.analysisRuns(),
+        codeQualityApi.repositories(),
       ]);
       setRuns(rows);
       setRepoLabels(Object.fromEntries(repos.filter((r) => r.sonar_project_id).map((r) => [r.sonar_project_id, r.full_name])));
       const successful = rows.filter((r) => r.status === 'success');
       const entries = await Promise.all(successful.map(async (r) => {
-        try { return [r.id, (await api.get(`/modules/sonar/analysis-runs/${r.id}/quality-gate`)).status]; }
+        try { return [r.id, (await codeQualityApi.qualityGate(r.id)).status]; }
         catch (_) { return [r.id, null]; }
       }));
       setGates(Object.fromEntries(entries));
     } catch (e) { setErr(e.message); }
     setLoading(false);
   };
-  useEffect(() => { load(); }, [projectId]);
-
-  // Convenience trigger for the common single-repository Project. With more
-  // than one repository, which one to analyze is ambiguous — the backend
-  // 400s in that case and this surfaces the message pointing at the
-  // Repositories tab, which has a Run Analysis button per repository.
-  const runAnalysis = async () => {
-    setRunning(true); setRunMsg(''); setErr('');
-    try {
-      const r = await api.post(`/modules/sonar/projects/${projectId}/run-analysis`, {});
-      setRunMsg(`Queued — analyzing commit ${r.commit_sha.slice(0, 8)}. Refresh in a moment to see it.`);
-    } catch (e) { setErr(e.message); }
-    setRunning(false);
-  };
+  useEffect(() => { load(); }, []);
 
   const columns = [
     { key: 'sonar_project_id', header: 'Repository', mono: true, render: (v) => repoLabels[v] || `#${v}` },
@@ -76,21 +59,9 @@ export default function AnalysisPage() {
 
   return (
     <div className="grid grid-cols-1 gap-4">
-      <div className="flex items-center justify-between">
-        <p className="font-mono text-[11px] text-slate-500 dark:text-slate-500">
-          Every push to a connected repository's default branch analyzes automatically. Run Analysis here
-          works for a single-repository Project — with more than one repository connected, use the
-          per-repository Run Analysis button on the Repositories tab instead.
-        </p>
-        <button onClick={runAnalysis} disabled={running} className="flex items-center gap-1.5 border border-sky-300 bg-sky-50 px-3 py-1.5 font-mono text-xs uppercase tracking-wider text-sky-700 hover:bg-sky-100 disabled:opacity-50 dark:border-sky-700 dark:bg-sky-950/40 dark:text-sky-300 dark:hover:bg-sky-900/40">
-          <Icon name="play" size={12} /> {running ? '···' : 'Run Analysis'}
-        </button>
-      </div>
-
-      {runMsg && <div className="border border-emerald-200 bg-emerald-50 px-3 py-2 font-mono text-xs text-emerald-700 dark:border-emerald-800 dark:bg-emerald-950/30 dark:text-emerald-400">{runMsg}</div>}
       {err && <div className="border border-rose-200 bg-rose-50 px-3 py-2 font-mono text-xs text-rose-600 dark:border-rose-800 dark:bg-rose-950/30 dark:text-rose-400">{err}</div>}
 
-      <DataTable columns={columns} rows={runs} empty={loading ? 'loading…' : 'No analysis runs yet.'} onRowClick={setDetail} />
+      <DataTable columns={columns} rows={runs} empty={loading ? 'loading…' : 'No analysis runs yet — run one from Overview.'} onRowClick={setDetail} />
 
       <AnalysisDetailModal run={detail} gate={detail ? gates[detail.id] : null} onClose={() => setDetail(null)} />
     </div>
@@ -113,11 +84,11 @@ function AnalysisDetailModal({ run, gate, onClose }) {
   useEffect(() => {
     if (!run || run.status !== 'success') return;
     if (tab === 'issues' && issues === null) {
-      api.get(`/modules/sonar/analysis-runs/${run.id}/issues?limit=100`)
+      codeQualityApi.issuesForRun(run.id, new URLSearchParams({ limit: '100' }))
         .then(setIssues).catch((e) => setFindingsErr(e.message));
     }
     if (tab === 'hotspots' && hotspots === null) {
-      api.get(`/modules/sonar/analysis-runs/${run.id}/hotspots?limit=100`)
+      codeQualityApi.hotspotsForRun(run.id, new URLSearchParams({ limit: '100' }))
         .then(setHotspots).catch((e) => setFindingsErr(e.message));
     }
   }, [run, tab, issues, hotspots]);
@@ -145,7 +116,7 @@ function AnalysisDetailModal({ run, gate, onClose }) {
     <Modal open={!!run} title={`Analysis · ${run.commit_sha.slice(0, 8)}`} onClose={onClose} wide
       footer={run.status === 'success' && (
         <a
-          href={`${API_BASE}/modules/sonar/analysis-runs/${run.id}/report.pdf`}
+          href={codeQualityApi.reportUrl(run.id)}
           target="_blank" rel="noreferrer"
           className="flex items-center gap-1.5 border border-slate-300 px-3 py-1.5 font-mono text-xs uppercase tracking-wider text-slate-600 hover:bg-slate-100 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
         >

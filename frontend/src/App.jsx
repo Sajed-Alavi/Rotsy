@@ -13,7 +13,6 @@ import ProjectsListPage from './features/projects/ProjectsListPage.jsx';
 import ProjectLayout from './features/projects/ProjectLayout.jsx';
 import ProjectOverviewPage from './features/projects/pages/OverviewPage.jsx';
 import ProjectRepositoriesPage from './features/projects/pages/RepositoriesPage.jsx';
-import ProjectAnalysisPage from './features/projects/pages/AnalysisPage.jsx';
 import ProjectSecurityPage from './features/projects/pages/SecurityPage.jsx';
 import ProjectArtifactsPage from './features/projects/pages/ArtifactsPage.jsx';
 import ProjectInsightsPage from './features/projects/pages/InsightsPage.jsx';
@@ -31,6 +30,11 @@ import SystemPage from './features/system/SystemPage.jsx';
 import BlobstoresPage from './features/blobstores/BlobstoresPage.jsx';
 import RepositoriesPage from './features/repositories/RepositoriesPage.jsx';
 import TasksPage from './features/tasks/TasksPage.jsx';
+
+import CodeQualityLayout from './features/codeQuality/CodeQualityLayout.jsx';
+import CodeQualityOverviewPage from './features/codeQuality/pages/OverviewPage.jsx';
+import CodeQualityRunsPage from './features/codeQuality/pages/RunsPage.jsx';
+import CodeQualityFindingsPage from './features/codeQuality/pages/FindingsPage.jsx';
 
 import ScanLayout from './features/scan/ScanLayout.jsx';
 import ScanOverviewPage from './features/scan/pages/OverviewPage.jsx';
@@ -71,7 +75,6 @@ export default function App() {
           <Route path="projects/:id" element={<ProjectLayout />}>
             <Route index element={<ProjectOverviewPage />} />
             <Route path="repositories" element={<ProjectRepositoriesPage />} />
-            <Route path="analysis" element={<ProjectAnalysisPage />} />
             <Route path="security" element={<ProjectSecurityPage />} />
             <Route path="artifacts" element={<ProjectArtifactsPage />} />
             <Route path="insights" element={<ProjectInsightsPage />} />
@@ -91,6 +94,14 @@ export default function App() {
           <Route path="users" element={<UsersPage />} />
           <Route path="roles" element={<RolesPage />} />
           <Route path="audit" element={<AuditPage />} />
+
+          {/* Code quality: global, not Project-scoped — mirrors the vulnerability
+              scanning section below (pick a repo/branch, run, browse results). */}
+          <Route path="code-quality" element={<CodeQualityLayout />}>
+            <Route index element={<CodeQualityOverviewPage />} />
+            <Route path="runs" element={<CodeQualityRunsPage />} />
+            <Route path="findings" element={<CodeQualityFindingsPage />} />
+          </Route>
 
           {/* Vulnerability scanning: one section, six views, each linkable. */}
           <Route path="scan" element={<ScanLayout />}>

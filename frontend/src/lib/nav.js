@@ -29,6 +29,17 @@ export const NAV = [
 
   { section: 'Security' },
   {
+    to: '/code-quality',
+    label: 'Code Quality',
+    icon: 'check',
+    perm: 'projects:read',
+    children: [
+      { to: '/code-quality', label: 'Overview', end: true },
+      { to: '/code-quality/runs', label: 'Analysis Runs' },
+      { to: '/code-quality/findings', label: 'Findings' },
+    ],
+  },
+  {
     to: '/scan',
     label: 'Vulnerability Scanning',
     icon: 'bug',

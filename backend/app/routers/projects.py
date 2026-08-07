@@ -140,9 +140,13 @@ async def list_project_repositories(
             "repository_id": r.id,
             "full_name": r.full_name,
             "default_branch": r.default_branch,
-            "auto_analyze_on_push": r.installation_id is not None,
+            # A repo needs both the delivery mechanism (App installation)
+            # and the per-repository toggle on to actually auto-analyze.
+            "auto_analyze_on_push": r.installation_id is not None and (sp is None or sp.auto_analyze_enabled),
             "sonar_project_id": sp.id if sp else None,
             "language": sp.language if sp else None,
+            "auto_analyze_enabled": sp.auto_analyze_enabled if sp else None,
+            "auto_analyze_branches": sp.auto_analyze_branches if sp else None,
             "created_at": r.created_at,
         })
 
@@ -156,9 +160,11 @@ async def list_project_repositories(
             "repository_id": r.id,
             "full_name": r.full_path,
             "default_branch": r.default_branch,
-            "auto_analyze_on_push": r.webhook_id is not None,
+            "auto_analyze_on_push": r.webhook_id is not None and (sp is None or sp.auto_analyze_enabled),
             "sonar_project_id": sp.id if sp else None,
             "language": sp.language if sp else None,
+            "auto_analyze_enabled": sp.auto_analyze_enabled if sp else None,
+            "auto_analyze_branches": sp.auto_analyze_branches if sp else None,
             "created_at": r.created_at,
         })
 

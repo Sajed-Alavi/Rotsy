@@ -39,7 +39,7 @@ from ..core.jobs import JobQueue
 from ..core.outbound import OutboundURLError, validate_outbound_url
 from ..core.source_provider import RepoRef
 from ..dependencies import RequirePermission, get_session, get_settings
-from ..models import GitHubInstallation, GitHubRepository, Integration
+from ..models import GitHubInstallation, GitHubRepository, Integration, SonarProject
 from ..modules.github.auth import GitHubAuthError, get_installation_token, install_url
 from ..modules.github.provider import GitHubProvider, GitHubProviderError
 from ..modules.github.webhooks import normalize_event, verify_signature
@@ -681,6 +681,21 @@ async def github_webhook(
         # Discovered-but-unmapped, or not discovered yet — nothing to analyze
         # against. Not an error: the operator hasn't mapped this repo yet.
         return {"status": "unmapped"}
+
+    sonar_project = await session.scalar(
+        select(SonarProject).where(SonarProject.github_repository_id == repo.id)
+    )
+    if sonar_project is None:
+        # No Sonar project connected yet — same "nothing to analyze against"
+        # reasoning as the unmapped case above, not an error.
+        return {"status": "no_sonar_project"}
+    if not sonar_project.auto_analyze_enabled:
+        return {"status": "auto_analyze_disabled"}
+    # Empty list = "default branch only" (see models/sonar.py) — otherwise
+    # the push must match one of the explicitly watched branches.
+    watched = sonar_project.auto_analyze_branches or [repo.default_branch]
+    if event.ref not in watched:
+        return {"status": "branch_not_watched"}
 
     if state.cache is None:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Job queue cache not initialised")

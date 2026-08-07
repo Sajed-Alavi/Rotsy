@@ -51,7 +51,7 @@ export default function RepositoriesPage() {
     },
     {
       key: 'auto_analyze_on_push', header: 'Auto-analyze',
-      render: (v) => <Badge tone={v ? 'ok' : 'warn'}>{v ? 'on push' : 'manual only'}</Badge>,
+      render: (v, row) => <AutoAnalyzeCell repo={row} enabled={v} onDone={load} />,
     },
   ];
 
@@ -109,6 +109,121 @@ function BranchesButton({ repo }) {
             ))}
           </ul>
         )}
+      </Modal>
+    </>
+  );
+}
+
+/**
+ * Auto-analyze badge + (once a Sonar project exists) an edit control:
+ * turn push-triggered analysis on/off, and pick which branches a push must
+ * match to trigger it. Nothing to edit until a repository has been
+ * analyzed at least once (from Code Quality) — there's no Sonar project to
+ * attach the setting to yet, same reasoning as the Language column showing
+ * "not analyzed yet" instead of an editable field.
+ */
+function AutoAnalyzeCell({ repo, enabled, onDone }) {
+  const [open, setOpen] = useState(false);
+  const [branches, setBranches] = useState(null);
+  const [branchesErr, setBranchesErr] = useState('');
+  const [autoEnabled, setAutoEnabled] = useState(repo.auto_analyze_enabled ?? true);
+  const [watched, setWatched] = useState(new Set(repo.auto_analyze_branches || []));
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+
+  const openModal = () => {
+    setOpen(true);
+    setAutoEnabled(repo.auto_analyze_enabled ?? true);
+    setWatched(new Set(repo.auto_analyze_branches || []));
+    setErr('');
+    if (branches === null) {
+      api.get(`/modules/${repo.source_module}/repositories/${repo.repository_id}/branches`)
+        .then((r) => setBranches(r.branches))
+        .catch((e) => setBranchesErr(e.message));
+    }
+  };
+
+  const toggleBranch = (b) => {
+    setWatched((cur) => {
+      const next = new Set(cur);
+      next.has(b) ? next.delete(b) : next.add(b);
+      return next;
+    });
+  };
+
+  const save = async () => {
+    setBusy(true); setErr('');
+    try {
+      await api.patch(`/modules/sonar/projects/${repo.sonar_project_id}`, {
+        auto_analyze_enabled: autoEnabled,
+        auto_analyze_branches: Array.from(watched),
+      });
+      setOpen(false);
+      onDone();
+    } catch (e) { setErr(e.message); }
+    setBusy(false);
+  };
+
+  if (!repo.sonar_project_id) {
+    return <Badge tone="warn">manual only</Badge>;
+  }
+
+  return (
+    <>
+      <button
+        onClick={openModal}
+        className="border-0 bg-transparent p-0"
+        title="Edit auto-analyze settings"
+      >
+        <Badge tone={enabled ? 'ok' : 'warn'}>{enabled ? 'on push' : 'disabled'}</Badge>
+      </button>
+      <Modal
+        open={open}
+        title={`Auto-analyze · ${repo.full_name}`}
+        onClose={() => setOpen(false)}
+        footer={(
+          <>
+            <button onClick={() => setOpen(false)} className="border border-slate-300 px-3 py-1.5 font-mono text-xs uppercase tracking-wider text-slate-600 hover:bg-slate-100 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800">
+              Cancel
+            </button>
+            <button onClick={save} disabled={busy} className="border border-sky-300 bg-sky-50 px-3 py-1.5 font-mono text-xs uppercase tracking-wider text-sky-700 hover:bg-sky-100 disabled:opacity-50 dark:border-sky-700 dark:bg-sky-950/40 dark:text-sky-300">
+              {busy ? '···' : 'Save'}
+            </button>
+          </>
+        )}
+      >
+        <div className="space-y-3">
+          <label className="flex items-center gap-2 font-mono text-xs text-slate-700 dark:text-slate-300">
+            <input type="checkbox" checked={autoEnabled} onChange={(e) => setAutoEnabled(e.target.checked)} className="accent-sky-500" />
+            Analyze automatically on push
+          </label>
+
+          {autoEnabled && (
+            <div>
+              <p className="mb-1 font-mono text-[10px] uppercase tracking-wider text-slate-500">
+                Watched branches — none selected means "{repo.default_branch} only"
+              </p>
+              {branchesErr ? (
+                <p className="font-mono text-xs text-rose-600 dark:text-rose-400">{branchesErr}</p>
+              ) : branches === null ? (
+                <p className="font-mono text-[11px] text-slate-500 dark:text-slate-500">loading branches…</p>
+              ) : (
+                <div className="max-h-48 space-y-1 overflow-y-auto border border-slate-200 p-2 dark:border-slate-800">
+                  {branches.map((b) => (
+                    <label key={b} className="flex items-center gap-2 font-mono text-xs text-slate-700 dark:text-slate-300">
+                      <input type="checkbox" checked={watched.has(b)} onChange={() => toggleBranch(b)} className="accent-sky-500" />
+                      {b}
+                      {b === repo.default_branch && <Badge tone="info">default</Badge>}
+                      {b !== repo.default_branch && <span className="font-mono text-[10px] text-amber-600 dark:text-amber-400">requires Developer Edition+</span>}
+                    </label>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          {err && <p className="font-mono text-xs text-rose-600 dark:text-rose-400">{err}</p>}
+        </div>
       </Modal>
     </>
   );

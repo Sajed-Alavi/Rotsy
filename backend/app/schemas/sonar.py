@@ -33,6 +33,19 @@ class SonarProjectOut(BaseModel):
     gitlab_repository_id: int | None
     sonar_project_key: str
     language: str
+    auto_analyze_enabled: bool
+    auto_analyze_branches: list[str]
+
+
+class SonarProjectUpdate(BaseModel):
+    auto_analyze_enabled: bool | None = Field(
+        default=None, description="Whether a push should trigger analysis at all for this repository.",
+    )
+    auto_analyze_branches: list[str] | None = Field(
+        default=None,
+        description="Branch names a push must match to trigger analysis. Empty list means "
+                    "\"the repository's default branch only\". Omit to leave unchanged.",
+    )
 
 
 class AnalysisRunOut(BaseModel):

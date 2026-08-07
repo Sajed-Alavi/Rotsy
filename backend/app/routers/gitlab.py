@@ -31,7 +31,7 @@ from ..core.jobs import JobQueue
 from ..core.source_provider import RepoRef
 from ..db.session import get_session_factory
 from ..dependencies import RequirePermission, get_session, get_settings
-from ..models import GitLabConnection, GitLabRepository, Integration
+from ..models import GitLabConnection, GitLabRepository, Integration, SonarProject
 from ..modules.gitlab.provider import GitLabProvider, GitLabProviderError
 from ..modules.gitlab.webhooks import normalize_push_event, verify_token
 from ..modules.sonar.provisioning import auto_provision_and_analyze
@@ -430,6 +430,18 @@ async def gitlab_webhook(
 
     if repo.project_id is None:
         return {"status": "unmapped"}
+
+    sonar_project = await session.scalar(
+        select(SonarProject).where(SonarProject.gitlab_repository_id == repo.id)
+    )
+    if sonar_project is None:
+        return {"status": "no_sonar_project"}
+    if not sonar_project.auto_analyze_enabled:
+        return {"status": "auto_analyze_disabled"}
+    watched = sonar_project.auto_analyze_branches or [repo.default_branch]
+    if event.ref not in watched:
+        return {"status": "branch_not_watched"}
+
     if state.cache is None:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Job queue cache not initialised")
 

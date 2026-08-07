@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, Float, ForeignKey, Integer, JSON, String, Text, UniqueConstraint, func
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, JSON, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from ..db.base import Base
@@ -52,6 +52,21 @@ class SonarProject(Base):
     )
     sonar_project_key: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
     language: Mapped[str] = mapped_column(String(16), nullable=False)
+    # Whether a push (via GitHub App webhook / GitLab per-repo webhook)
+    # triggers analysis at all for this repository. Independent of whether
+    # the webhook mechanism itself exists (a GitHub App installation, or a
+    # registered GitLab webhook) — that only says a push *can* be delivered,
+    # this says whether Rotsy should act on it. Defaults on so existing
+    # behavior (every push analyzed) doesn't change for anyone who never
+    # touches this setting.
+    auto_analyze_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default="true")
+    # Branch names a push must match to trigger analysis. Empty list means
+    # "the repository's own default branch only" — the safe default: every
+    # other branch requires SonarQube Developer Edition+ (see scanner.py),
+    # so defaulting to "watch everything" would silently start failing
+    # analysis runs for anyone on Community Edition the first time a
+    # feature branch was pushed.
+    auto_analyze_branches: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 

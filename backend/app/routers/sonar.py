@@ -52,6 +52,7 @@ from ..schemas.sonar import (
     SonarIssuePage,
     SonarProjectCreate,
     SonarProjectOut,
+    SonarProjectUpdate,
 )
 from ..services.sonar_report_pdf import build_analysis_report_pdf
 from ..state import app_state, AppState
@@ -269,6 +270,34 @@ async def create_sonar_project(
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, _UNREACHABLE_MESSAGE) from exc
 
 
+@router.patch("/projects/{sonar_project_id}", response_model=SonarProjectOut,
+              dependencies=[Depends(RequirePermission("projects:write"))])
+async def update_sonar_project(
+    sonar_project_id: int,
+    body: SonarProjectUpdate,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> SonarProject:
+    """Edit a connected repository's push-triggered analysis behavior:
+    whether it's on at all, and which branches it watches. Independent of
+    whether the webhook mechanism (GitHub App installation / GitLab webhook)
+    exists — that only says a push notification *can* arrive, this says
+    whether Rotsy should act on it. Manual analysis (Code Quality's "Run
+    Analysis", or the per-repository endpoint below) is never affected by
+    either setting."""
+    sonar_project = await session.get(SonarProject, sonar_project_id)
+    if sonar_project is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Sonar project not found")
+
+    if body.auto_analyze_enabled is not None:
+        sonar_project.auto_analyze_enabled = body.auto_analyze_enabled
+    if body.auto_analyze_branches is not None:
+        sonar_project.auto_analyze_branches = body.auto_analyze_branches
+
+    await session.commit()
+    await session.refresh(sonar_project)
+    return sonar_project
+
+
 @router.get("/quality-gates", dependencies=[Depends(RequirePermission("projects:read"))])
 async def list_quality_gates(
     session: Annotated[AsyncSession, Depends(get_session)],
@@ -323,9 +352,11 @@ async def list_all_repositories(
             "repository_id": r.id,
             "full_name": r.full_name,
             "default_branch": r.default_branch,
-            "auto_analyze_on_push": r.installation_id is not None,
+            "auto_analyze_on_push": r.installation_id is not None and (sp is None or sp.auto_analyze_enabled),
             "sonar_project_id": sp.id if sp else None,
             "language": sp.language if sp else None,
+            "auto_analyze_enabled": sp.auto_analyze_enabled if sp else None,
+            "auto_analyze_branches": sp.auto_analyze_branches if sp else None,
             "project_id": r.project_id,
             "project_name": project_names.get(r.project_id),
         })
@@ -340,9 +371,11 @@ async def list_all_repositories(
             "repository_id": r.id,
             "full_name": r.full_path,
             "default_branch": r.default_branch,
-            "auto_analyze_on_push": r.webhook_id is not None,
+            "auto_analyze_on_push": r.webhook_id is not None and (sp is None or sp.auto_analyze_enabled),
             "sonar_project_id": sp.id if sp else None,
             "language": sp.language if sp else None,
+            "auto_analyze_enabled": sp.auto_analyze_enabled if sp else None,
+            "auto_analyze_branches": sp.auto_analyze_branches if sp else None,
             "project_id": r.project_id,
             "project_name": project_names.get(r.project_id),
         })

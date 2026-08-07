@@ -381,9 +381,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Same for the job queue: a job whose worker died stays "running" forever,
     # so the UI shows a database update that can never finish.
     try:
-        if cache is not None:
-            from .core.jobs import JobQueue
-            await JobQueue(cache).reap_stranded()
+        # cache was constructed unconditionally above (Cache(settings)), never
+        # reassigned since — always non-None here, unlike the module-scoped
+        # `_lifespan_state.get("cache")` used elsewhere in this file.
+        from .core.jobs import JobQueue
+        await JobQueue(cache).reap_stranded()
     except Exception:  # noqa: BLE001 - never block startup on housekeeping
         logger.exception("Could not reap stranded jobs")
 

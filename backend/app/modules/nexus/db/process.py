@@ -122,7 +122,12 @@ async def oras_pull(
     span = high - low
     real_total = int(total_bytes) if total_bytes else 0
     estimated = real_total <= 0
-    display_total = real_total if real_total > 0 else (int(expected_mb * 1e6) if expected_mb else 0)
+    if real_total > 0:
+        display_total = real_total
+    elif expected_mb:
+        display_total = int(expected_mb * 1e6)
+    else:
+        display_total = 0
     display_mb = display_total / 1e6
     deadline = time.monotonic() + timeout
     await emit(low, f"{label}: connecting to the registry",

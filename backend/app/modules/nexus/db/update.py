@@ -167,10 +167,10 @@ async def _oras_pull_retrying(*, retries: int = 2, backoff: float = 5.0, **kwarg
     attempt = 0
     while True:
         attempt += 1
-        try:
-            ok = await oras_pull(**kwargs)
-        except asyncio.CancelledError:
-            raise
+        # No try/except here: nothing in this loop catches Exception broadly,
+        # so a CancelledError from oras_pull already propagates out on its
+        # own — no need to catch and immediately re-raise it.
+        ok = await oras_pull(**kwargs)
         if ok or attempt > retries:
             return ok
         label = kwargs.get("label", "download")

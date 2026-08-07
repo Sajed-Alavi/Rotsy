@@ -102,7 +102,7 @@ def _join_or_start(
         _inflight[repo] = entry
 
         async def broadcast(ev: dict[str, Any]) -> None:
-            for q in list(entry.subscribers):
+            for q in list(entry.subscribers):  # NOSONAR — a real copy, not redundant: awaiting q.put() below yields control, during which a subscriber can detach and mutate entry.subscribers concurrently
                 await q.put(dict(ev))
 
         async def run() -> None:
@@ -111,13 +111,13 @@ def _join_or_start(
                 # Cache once here, regardless of how many subscribers are still
                 # attached — a disconnect must not discard a completed run.
                 await cache.set_json(_result_cache_key(repo), result)
-                for q in list(entry.subscribers):
+                for q in list(entry.subscribers):  # NOSONAR — a real copy, not redundant: awaiting q.put() below yields control, during which a subscriber can detach and mutate entry.subscribers concurrently
                     await q.put({"__result__": result})
             except Exception as exc:  # noqa: BLE001
-                for q in list(entry.subscribers):
+                for q in list(entry.subscribers):  # NOSONAR — a real copy, not redundant: awaiting q.put() below yields control, during which a subscriber can detach and mutate entry.subscribers concurrently
                     await q.put({"__error__": exc})
             finally:
-                for q in list(entry.subscribers):
+                for q in list(entry.subscribers):  # NOSONAR — a real copy, not redundant: awaiting q.put() below yields control, during which a subscriber can detach and mutate entry.subscribers concurrently
                     await q.put({"__done__": True})
                 _inflight.pop(repo, None)
 

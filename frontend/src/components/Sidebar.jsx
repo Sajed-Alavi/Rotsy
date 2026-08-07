@@ -33,11 +33,11 @@ export default function Sidebar() {
       </div>
 
       <nav className="flex-1 overflow-y-auto py-2 text-sm">
-        {NAV.map((item, idx) => {
+        {NAV.map((item) => {
           if (item.section) {
             return (
               <div
-                key={`s-${idx}`}
+                key={`s-${item.section}`}
                 className="px-4 pb-1 pt-4 font-mono text-[10px] uppercase tracking-wider text-slate-400 dark:text-slate-600"
               >
                 {item.section}

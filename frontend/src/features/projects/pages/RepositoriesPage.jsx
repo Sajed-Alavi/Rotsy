@@ -343,7 +343,7 @@ function AddRepositories({ projectId, connectedFullNames, onDone }) {
           {(result.mapped ?? result.connected)} connected, {result.queued} queued for Sonar provisioning.
           {result.errors?.length > 0 && (
             <ul className="mt-1 list-disc pl-4 text-rose-600 dark:text-rose-400">
-              {result.errors.map((e, i) => <li key={i}>{e}</li>)}
+              {result.errors.map((e) => <li key={e}>{e}</li>)}
             </ul>
           )}
         </div>

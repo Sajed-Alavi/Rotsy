@@ -49,10 +49,10 @@ export default function TimeSeriesChart({ data, valueKey, kind = 'bytes', height
     <div className="border border-slate-200 p-3 dark:border-slate-800">
       <svg viewBox="0 0 100 100" preserveAspectRatio="none" style={{ height }} className="w-full">
         {/* gridlines */}
-        {ticks.map((t, i) => {
+        {ticks.map((t) => {
           const y = 100 - ((t - minY) / (maxY - minY || 1)) * 100;
           return (
-            <line key={i} x1="0" x2="100" y1={y} y2={y}
+            <line key={t} x1="0" x2="100" y1={y} y2={y}
               stroke="currentColor" strokeWidth="0.3" className="text-slate-200 dark:text-slate-800" />
           );
         })}
@@ -64,8 +64,8 @@ export default function TimeSeriesChart({ data, valueKey, kind = 'bytes', height
         </defs>
         <path d={area} fill="url(#tsc-fill)" className="text-sky-500" />
         <path d={path} fill="none" stroke="currentColor" strokeWidth="1" className="text-sky-500" />
-        {points.map((p, i) => (
-          <circle key={i} cx={p.x} cy={p.y} r="0.8" fill="currentColor" className="text-sky-500">
+        {points.map((p) => (
+          <circle key={p.raw.timestamp} cx={p.x} cy={p.y} r="0.8" fill="currentColor" className="text-sky-500">
             <title>{`${new Date(p.raw.timestamp).toLocaleString()}: ${fmt(Number(p.raw[valueKey]) || 0)}`}</title>
           </circle>
         ))}

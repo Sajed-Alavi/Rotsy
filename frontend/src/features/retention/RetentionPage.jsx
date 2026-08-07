@@ -216,8 +216,8 @@ function PreviewModal({ preview, onClose }) {
             <div className="mb-1 font-mono text-[10px] uppercase tracking-wider text-rose-700 dark:text-rose-400">
               {preview.failed_count} delete{preview.failed_count === 1 ? '' : 's'} failed
             </div>
-            {(preview.failures || []).map((f, i) => (
-              <div key={i} className="font-mono text-[11px] text-rose-700 dark:text-rose-300">
+            {(preview.failures || []).map((f) => (
+              <div key={`${f.name}:${f.version}`} className="font-mono text-[11px] text-rose-700 dark:text-rose-300">
                 {f.name}:{f.version} — {f.reason}
               </div>
             ))}

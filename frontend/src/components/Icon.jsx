@@ -53,8 +53,8 @@ export default function Icon({ name, size = 16, className = '' }) {
       className={className}
       aria-hidden="true"
     >
-      {paths.map((d, i) => (
-        <path key={i} d={d} />
+      {paths.map((d) => (
+        <path key={d} d={d} />
       ))}
     </svg>
   );

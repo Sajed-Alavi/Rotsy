@@ -156,7 +156,7 @@ function WebhookSection() {
         </dd>
       </dl>
       <ol className="mb-3 list-decimal space-y-0.5 pl-5 font-mono text-[11px] text-slate-600 dark:text-slate-400">
-        {(info.instructions || []).map((step, i) => <li key={i}>{step}</li>)}
+        {(info.instructions || []).map((step) => <li key={step}>{step}</li>)}
       </ol>
       <button onClick={rotate} className="border border-slate-300 px-3 py-1.5 font-mono text-xs uppercase tracking-wider text-slate-600 hover:bg-slate-100 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800">Rotate secret</button>
       {err && <div className="mt-2 font-mono text-xs text-rose-600 dark:text-rose-400">{err}</div>}

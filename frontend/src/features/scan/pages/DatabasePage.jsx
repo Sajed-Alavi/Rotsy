@@ -118,7 +118,10 @@ export default function DatabasePage() {
 
           {log.length > 0 && (
             <div ref={logRef} className="mt-3 max-h-48 overflow-y-auto border border-slate-200 bg-slate-50 p-2 font-mono text-[10px] leading-relaxed text-slate-600 dark:border-slate-800 dark:bg-slate-900/40 dark:text-slate-400">
-              {log.map((line, i) => <div key={i}>{line}</div>)}
+              {/* index is a safe key here: log only ever grows by appending
+                  streamed lines, never reordered/filtered — and line text
+                  alone isn't unique (repeated progress messages happen). */}
+              {log.map((line, i) => <div key={i}>{line}</div>)} {/* NOSONAR */}
             </div>
           )}
         </Section>

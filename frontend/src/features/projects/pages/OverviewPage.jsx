@@ -92,7 +92,7 @@ export default function OverviewPage() {
         <section className="border border-slate-200 p-4 dark:border-slate-800">
           <h2 className="mb-2 font-mono text-[10px] uppercase tracking-wider text-slate-500">Health factors</h2>
           <ul className="list-disc space-y-0.5 pl-5 font-mono text-[11px] text-slate-600 dark:text-slate-400">
-            {health.factors.map((f, i) => <li key={i}>{f}</li>)}
+            {health.factors.map((f) => <li key={f}>{f}</li>)}
           </ul>
         </section>
       )}

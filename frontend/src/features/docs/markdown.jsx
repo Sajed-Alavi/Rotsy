@@ -13,6 +13,12 @@ import { Link } from 'react-router';
  * text rather than parsed. The docs are trusted content, but a renderer that
  * cannot inject markup cannot become an XSS vector if that ever stops being
  * true — and React escapes everything we emit as text anyway.
+ *
+ * Positional keys below (table rows/cells, list items) are intentional, not
+ * an oversight: every tree here is parsed once from a static doc string and
+ * never reordered, filtered or mutated afterward — the one case where an
+ * index is a perfectly stable React key, since "which markdown source line
+ * is this" and "what's its position" are the same fact.
  */
 
 /** Inline formatting: `code`, **bold**, *italic*, [text](href). */

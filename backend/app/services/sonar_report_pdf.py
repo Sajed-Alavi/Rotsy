@@ -57,14 +57,24 @@ _HOTSPOT_PROBABILITY_RANK = case(
 )
 
 
-async def _repository_label(session: AsyncSession, sonar_project: SonarProject) -> str:
+async def _repository_label_and_url(session: AsyncSession, sonar_project: SonarProject) -> tuple[str, str | None]:
     if sonar_project.github_repository_id:
         repo = await session.get(GitHubRepository, sonar_project.github_repository_id)
-        return repo.full_name if repo else sonar_project.sonar_project_key
+        if repo is None:
+            return sonar_project.sonar_project_key, None
+        return repo.full_name, f"https://github.com/{repo.full_name}"
     if sonar_project.gitlab_repository_id:
         repo = await session.get(GitLabRepository, sonar_project.gitlab_repository_id)
-        return repo.full_path if repo else sonar_project.sonar_project_key
-    return sonar_project.sonar_project_key
+        if repo is None:
+            return sonar_project.sonar_project_key, None
+        # ``gitlab_url`` is the server-to-server address the backend uses to
+        # reach GitLab (e.g. host.docker.internal in this dev compose setup)
+        # — not resolvable from whatever machine opens this PDF. Swap in the
+        # same browser-facing host a human already uses to sign into GitLab
+        # itself, mirroring the WEBHOOK_BASE_URL split in config.py.
+        browser_url = repo.gitlab_url.replace("host.docker.internal", "localhost")
+        return repo.full_path, f"{browser_url.rstrip('/')}/{repo.full_path}"
+    return sonar_project.sonar_project_key, None
 
 
 def _numbered_canvas_maker(footer_left: str):
@@ -116,7 +126,7 @@ async def build_analysis_report_pdf(
     UI's paginated page size — same reasoning as ``build_report_pdf`` for
     vulnerability scans.
     """
-    repo_label = await _repository_label(session, sonar_project)
+    repo_label, repo_url = await _repository_label_and_url(session, sonar_project)
     gate = await session.scalar(
         select(QualityGateResult).where(QualityGateResult.analysis_run_id == run.id)
     )
@@ -146,6 +156,7 @@ async def build_analysis_report_pdf(
     subtitle_style = ParagraphStyle("RotsySubtitle", parent=styles["Normal"], fontSize=9, textColor=_SLATE_500, spaceAfter=14)
     h2_style = ParagraphStyle("RotsyH2", parent=styles["Heading2"], fontSize=12, textColor=_SLATE_900, spaceBefore=14, spaceAfter=6)
     body_style = ParagraphStyle("RotsyBody", parent=styles["Normal"], fontSize=9.5, textColor=_SLATE_900, leading=13)
+    link_style = ParagraphStyle("RotsyLink", parent=styles["Normal"], fontSize=9, textColor=colors.HexColor("#0369a1"), spaceBefore=16)
     cell_style = ParagraphStyle("RotsyCell", parent=styles["Normal"], fontSize=8, textColor=_SLATE_900, leading=10)
 
     story = []
@@ -315,6 +326,9 @@ async def build_analysis_report_pdf(
         story.append(hotspot_table)
     else:
         story.append(Paragraph("No security hotspots were recorded for this analysis.", body_style))
+
+    if repo_url:
+        story.append(Paragraph(f'Repository: <link href="{repo_url}">{repo_url}</link>', link_style))
 
     footer_left = f"Rotsy · {repo_label}"
     doc.build(story, canvasmaker=_numbered_canvas_maker(footer_left))

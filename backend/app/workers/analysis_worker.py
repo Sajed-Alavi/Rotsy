@@ -41,6 +41,7 @@ from ..modules.github.provider import GitHubProvider
 from ..modules.gitlab.provider import GitLabProvider
 from ..modules.sonar.connector import SonarClient, SonarError
 from ..modules.sonar.findings import sync_findings
+from ..modules.sonar.provisioning import ensure_branch_project, sonar_branch_project_key
 from ..modules.sonar.quality_gates import fetch_quality_gate, wait_for_analysis
 from ..modules.sonar.scanner import run_scanner, validate_language
 from ..state import lifespan_handles as _lifespan_state
@@ -171,19 +172,25 @@ async def handle_clone_and_analyze(job: Job, progress: ProgressCallback) -> dict
 
         await progress(30, "scanner started")
         sonar = SonarClient(sonar_conn.url, sonar_conn.token)
-        analysis_token = await sonar.issue_analysis_token(sonar_project.sonar_project_key)
+        # SonarQube Community Edition has no native multi-branch analysis
+        # (see scanner.py) — every branch other than the repository's own
+        # default gets its own independent Sonar project instead, created
+        # here on first use. The default branch keeps the repo's own base
+        # key, already provisioned at connect time — nothing new to create.
+        sonar_project_key = sonar_branch_project_key(sonar_project.sonar_project_key, ref, default_branch)
+        if sonar_project_key != sonar_project.sonar_project_key:
+            await ensure_branch_project(sonar, sonar_project_key, f"{repo_external_id} ({ref})")
+        analysis_token = await sonar.issue_analysis_token(sonar_project_key)
 
         await progress(40, "uploading analysis")
-        task_id = await run_scanner(
-            source_dir, sonar_project.sonar_project_key, sonar_conn.url, analysis_token, ref, default_branch,
-        )
+        task_id = await run_scanner(source_dir, sonar_project_key, sonar_conn.url, analysis_token)
 
         await progress(60, "waiting for quality gate")
         await wait_for_analysis(sonar, task_id)
 
         await progress(80, "collecting results")
-        gate = await fetch_quality_gate(sonar, sonar_project.sonar_project_key)
-        measures = await sonar.measures(sonar_project.sonar_project_key, _MEASURE_KEYS)
+        gate = await fetch_quality_gate(sonar, sonar_project_key)
+        measures = await sonar.measures(sonar_project_key, _MEASURE_KEYS)
 
         bugs = int(measures.get("bugs", 0))
         vulnerabilities = int(measures.get("vulnerabilities", 0))
@@ -219,7 +226,7 @@ async def handle_clone_and_analyze(job: Job, progress: ProgressCallback) -> dict
             await progress(85, "collecting issues and hotspots")
             try:
                 issue_count, hotspot_count = await sync_findings(
-                    session, sonar, sonar_project.sonar_project_key, run.id,
+                    session, sonar, sonar_project_key, run.id,
                 )
                 logger.info("Stored %d issue(s) and %d hotspot(s) for analysis run %s",
                             issue_count, hotspot_count, run.id)

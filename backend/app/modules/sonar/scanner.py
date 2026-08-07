@@ -60,8 +60,6 @@ async def run_scanner(
     project_key: str,
     sonar_url: str,
     analysis_token: str,
-    branch: str,
-    default_branch: str,
 ) -> str:
     """Run sonar-scanner against ``source_dir``; return the compute-engine task id.
 
@@ -69,16 +67,16 @@ async def run_scanner(
     ``SonarClient.task_status``/``quality_gate`` — analysis itself finishes
     server-side, asynchronously, after the CLI exits.
 
-    ``sonar.branch.name`` is passed only when ``branch`` differs from
-    ``default_branch``. SonarQube Community Edition rejects that property
-    outright — "Developer Edition or above is required" — regardless of
-    what value it's given, even the repository's own default branch. Every
-    push and every manual "Run Analysis" targets the default branch, so
-    omitting the property there is what makes Community Edition (Rotsy's
-    own reference/dev SonarQube — see docker-compose-sonar/) work at all;
-    only an explicit non-default ``ref`` override hits this, and on
-    Community Edition it always will — that is a real Sonar licensing limit
-    to surface, not a Rotsy bug to route around.
+    No ``sonar.branch.name`` here, deliberately: SonarQube Community Edition
+    rejects that property outright — "Developer Edition or above is
+    required" — regardless of what value it's given, even the repository's
+    own default branch. Rather than needing a paid edition, the caller
+    (``workers/analysis_worker.py``, via
+    ``modules/sonar/provisioning.py:sonar_branch_project_key``) gives every
+    non-default branch its own independent Sonar project key, so as far as
+    this scanner run is concerned it is always analyzing "the only branch"
+    of whatever ``project_key`` it was handed — no branch parameter needed
+    on any edition.
     """
     args = [
         "sonar-scanner",
@@ -86,10 +84,8 @@ async def run_scanner(
         f"-Dsonar.sources={source_dir}",
         f"-Dsonar.host.url={sonar_url}",
         f"-Dsonar.token={analysis_token}",
-        f"-Dsonar.branch.name={branch}" if branch and branch != default_branch else "",
         "-Dsonar.scm.disabled=true",  # source is a shallow clone; SCM blame data isn't available
     ]
-    args = [a for a in args if a]
 
     returncode, stdout, stderr = await exec_scanner(
         args, env={}, timeout=SCAN_TIMEOUT, cwd=source_dir,

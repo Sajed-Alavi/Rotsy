@@ -88,6 +88,28 @@ def sonar_project_key_for(project_id: int, repo_external_id: str) -> str:
     return f"rotsy-{project_id}-{slug}"
 
 
+def sonar_branch_project_key(base_key: str, branch: str, default_branch: str) -> str:
+    """The Sonar-side project key actually analyzed for ``branch``.
+
+    SonarQube Community Edition has no native multi-branch analysis —
+    ``sonar.branch.name`` is rejected outright for anything but the one
+    branch already being analyzed with no branch parameter at all (see
+    ``scanner.py``). Rather than needing Developer Edition, or limiting
+    Rotsy to one branch per repository, every branch other than the
+    repository's own default gets its own independent Sonar project: as
+    far as Sonar is concerned each is simply "the only branch" of its own
+    project, so this works on every edition and scales to however many
+    branches get analyzed, with nothing beyond what's already free.
+
+    The default branch keeps using the repository's own base key
+    unchanged, so existing default-branch analyses/history are untouched.
+    """
+    if branch == default_branch:
+        return base_key
+    slug = branch.lower().replace("/", "-").replace(" ", "-")
+    return f"{base_key}--{slug}"
+
+
 # ---------------------------------------------------------------------------
 # Custom Quality Gate — "block on what matters, report everything else"
 #
@@ -161,6 +183,26 @@ async def ensure_quality_gate(client: SonarClient) -> None:
     for metric, condition in current_by_metric.items():
         if metric not in intended_metrics:
             await client.delete_quality_gate_condition(condition["id"])
+
+
+async def ensure_branch_project(client: SonarClient, project_key: str, name: str) -> None:
+    """Create the Sonar-side project for one branch-derived key
+    (:func:`sonar_branch_project_key`) if it doesn't exist yet, and assign
+    it the default "Rotsy Standard" gate — idempotent, meant to be called
+    before every analysis run of a non-default branch, unlike
+    :func:`ensure_quality_gate`/the repository's own base-key project,
+    which are only ever set up once at connect time (an operator's explicit
+    choice of a *different* gate there is never touched again). A
+    branch-derived project has no such choice to preserve — it didn't exist
+    until this call, so there's nothing to overwrite.
+    """
+    await client.ensure_project(project_key, name)
+    try:
+        await ensure_quality_gate(client)
+        await client.assign_quality_gate(QUALITY_GATE_NAME, project_key)
+    except SonarError:
+        logger.warning("Failed to assign the %r quality gate to %s — it will use Sonar's default gate instead.",
+                        QUALITY_GATE_NAME, project_key, exc_info=True)
 
 
 def pick_supported_language(languages: dict[str, float]) -> str | None:

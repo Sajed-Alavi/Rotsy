@@ -324,6 +324,13 @@ async def reconnect_repository(
     # the credential, whenever the project id actually changed.
     repo.webhook_id = None
     repo.webhook_secret = None
+    # Commit the new token before registering the webhook: _try_register_webhook
+    # goes through GitLabProvider, which opens its own session and re-reads
+    # this row from the database — against an uncommitted transaction it
+    # would still see the old (now-invalid) token and 401 on the very
+    # request meant to prove the new one works.
+    await session.commit()
+    await session.refresh(repo)
     await _try_register_webhook(settings, repo)
     await session.commit()
     await session.refresh(repo)

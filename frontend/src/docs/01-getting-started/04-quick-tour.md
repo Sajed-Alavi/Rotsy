@@ -6,7 +6,7 @@ A map of the sidebar, and which page answers which question.
 
 **Dashboard** — health, CVE totals, storage, recent jobs. The starting point.
 
-**Projects** — the main DevSecOps view. Each Project ties a GitHub repository, its SonarQube analysis, and (where connected) Nexus artifacts together. Tabs: Overview (health score, latest quality gate, recent insights), Analysis (history + manual Run Analysis), Security and Artifacts (link out to the existing scanning/repository views), and Insights.
+**Projects** — groups a GitHub/GitLab repository together with its Nexus artifacts. Tabs: Overview (health score, latest quality gate, recent insights), Repositories (connect GitHub/GitLab repositories — discovered or by name — and toggle each one's auto-analyze branches), Security and Artifacts (link out to the existing scanning/repository views), and Insights. Running and browsing SonarQube analysis itself lives in the global **Code Quality** section below, not on the Project.
 
 **Browse Files** — what a repository actually contains. Two views: *Images* (each image as a folder expanding to its tags, with sizes, push times and a delete action) and *Files* (the raw asset tree, with downloads proxied through the backend so your browser never sees Nexus credentials).
 
@@ -30,6 +30,8 @@ A map of the sidebar, and which page answers which question.
 
 ## Security
 
+**Code Quality** — pick any synced GitHub/GitLab repository and branch and run SonarQube analysis, independent of which Project (if any) it belongs to. Four tabs: Overview (the repo/branch picker and Run Analysis), Analysis Runs (history, per-run issues/hotspots, PDF export), Findings (every open issue/hotspot across the latest run of every repository), and Settings (connection health, Check for Updates). See [Automatic analysis and Smart Insights](/docs/automatic-analysis-and-insights).
+
 **Vulnerability Scanning** — the centrepiece, with six views of its own: Overview, Targets, Images, Reports, Findings and Database Management. See [Scanning on push](/docs/scanning-on-push).
 
 **System & Scripts** — backups, archives and Nexus-to-Nexus sync.
@@ -46,8 +48,8 @@ A map of the sidebar, and which page answers which question.
 
 **Audit Log** — who changed what.
 
-**Settings** — five tabs: General (your profile and password), Integrations (Nexus, GitHub, SonarQube connection cards), Security (links to Access & Webhooks, Users, Roles), Scanning (registry discovery, scan-on-push webhook, scanner proxy), System (health, jobs, versions).
+**Settings** — five tabs: General (your profile and password), Integrations (Nexus, GitHub, GitLab, SonarQube connection cards), Security (links to Access & Webhooks, Users, Roles), Scanning (registry discovery, scan-on-push webhook, scanner proxy), System (health, jobs, versions).
 
 ## Next
 
-Read [Architecture](/docs/architecture) for how the pieces fit, [Connecting GitHub](/docs/connecting-github) and [Connecting SonarQube](/docs/connecting-sonarqube) to get automatic analysis working, or [Scanning on push](/docs/scanning-on-push) for image scanning.
+Read [Architecture](/docs/architecture) for how the pieces fit, [Connecting GitHub](/docs/connecting-github) or [Connecting GitLab](/docs/connecting-gitlab) plus [Connecting SonarQube](/docs/connecting-sonarqube) to get automatic analysis working, or [Scanning on push](/docs/scanning-on-push) for image scanning.

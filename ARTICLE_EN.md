@@ -1,12 +1,12 @@
-# Building Rotsy: a security console for Nexus Repository Manager
+# Building Rotsy: a DevSecOps console for Nexus, GitHub/GitLab, and SonarQube
 
-**Version:** v1.0.0 · **Date:** 2026-08-04
+**Version:** v1.1.0 · **Date:** 2026-08-08
 
 ---
 
 Sonatype Nexus Repository Manager is where a lot of teams' Docker images live, but Nexus itself tells you almost nothing about what's actually inside those images. Is `myapp:latest` running a base layer with six unpatched CRITICAL CVEs? Nexus won't say. We built **Rotsy** to answer that question — a FastAPI + React console that sits in front of Nexus, scans everything it holds with Trivy and Grype, and turns "click into Nexus and hope" into an actual security workflow: repository → image → tag → vulnerability report, with scheduled backups, RBAC-scoped access, and PDF export for anyone who needs to hand a report to an auditor.
 
-This post is less "here's our feature list" and more "here's what actually went wrong while building it, and how we fixed it" — because the interesting parts of a project like this are rarely the happy path.
+That was v1.0. Since then Rotsy grew a second centrepiece: connect a GitHub or GitLab repository, and every push clones the commit, runs SonarQube, and reports back — automatically, no CI YAML. This post covers both halves, and it's less "here's our feature list" and more "here's what actually went wrong while building it, and how we fixed it" — because the interesting parts of a project like this are rarely the happy path.
 
 ## The event-driven scan ledger
 
@@ -30,19 +30,46 @@ The same debugging instinct paid off again on a CVE remediation pass. A Grype sc
 
 Removing packages turned out to be a bigger win than patching them, too: `curl` and `gnupg` were installed in the backend image "just in case," invoked by nothing. They accounted for roughly 40 of a 102-finding scan, several with no patch published yet for the installed version. The only real fix for a vulnerability in a package you don't use is not shipping the package.
 
+## The scan that reported success and analyzed nothing
+
+The second centrepiece — clone a repo, run `sonar-scanner`, report back — sounds simple enough that we shipped it, watched it report "ANALYSIS SUCCESSFUL" on every run, and moved on. Weeks later someone asked why a repository with a few hundred known issues was showing three. The scanner wasn't failing. It was running from the wrong directory — `/app`, the backend's own working directory, not the temporary directory the repository had actually been cloned into — so it dutifully analyzed whatever tiny sliver of source happened to be reachable from there and reported total success, because as far as it knew, it had.
+
+The bug was one missing argument: the subprocess helper that shells out to `sonar-scanner` had no `cwd` parameter, so it silently inherited the caller's. Adding it was a one-line fix. Trusting "successful" as a synonym for "correct" was the actual lesson — a scan that analyzes the wrong thing and a scan that works look identical from the job queue's point of view unless something checks the finding count against expectations.
+
+## Working around a licensing wall without touching the license
+
+SonarQube Community Edition will not analyze more than one branch under a single project — `sonar.branch.name` is rejected outright as a Developer-Edition-and-above feature. That's a real, deliberate limitation, not a bug to route around by lying to the API. But "only ever analyze one branch per repository" wasn't an acceptable answer either, and buying a license wasn't the point of a self-hosted demo stack.
+
+The fix reframes the problem instead of fighting Sonar's licensing: a *branch* doesn't need to share a Sonar project with its repository's other branches, it just needs *a* project. Analyzing a non-default branch now auto-provisions a second Sonar project, named for that branch, the first time it's analyzed — created, assigned the right quality gate, and reused on every later analysis. Sonar's own single-branch limit is still fully respected; the workaround just never asks it to do the thing it can't do. It also had to be genuinely automatic regardless of scale — the explicit requirement was that it work identically whether someone connects one branch or a hundred, since a fix that needs a human to provision each new branch's project by hand isn't really a fix.
+
+## A container recreation that quietly emptied a database
+
+Fixing GitLab webhook delivery required one infrastructure change: telling the standalone GitLab container how to reach the backend at `host.docker.internal`, which meant adding an `extra_hosts` entry and recreating the container to apply it. That recreation came back with an empty database — the test GitLab project, its users, every token, gone. The bind-mounted volumes should have survived a recreation; in this setup, they didn't, and the exact mechanism was never fully pinned down.
+
+Nothing externally valuable was actually lost — the code itself lives in git history, not GitLab, and both branches were re-pushed from the local repository within minutes of noticing. But it's the clearest reminder in this project that "just restart the container to pick up a config change" is not a universally safe operation, and that assuming a bind mount behaves like backup storage is an assumption worth checking, not making.
+
+## A 403 that looked exactly like a bad token
+
+Getting GitLab's webhook registration working end to end took three separate fixes that each looked, from the outside, identical to "the token is wrong": first the callback URL pointed at a browser-facing address GitLab's own SSRF protection rejected; then a webhook-registration call read a token from an open database transaction that hadn't committed yet, so it saw the *previous* (already-invalid) token; and once both of those were fixed, registration still failed — this time with a clean `403 Forbidden` from GitLab itself, on a token that authenticated perfectly fine for read access moments earlier.
+
+The token turned out to belong to a GitLab bot user — the kind auto-created behind a project or group access token — sitting at Developer role on the project. Developer is enough to read a repository; creating a webhook needs Maintainer. Three different failure modes, three different fixes, and from the caller's side every one of them just looked like "it's not working," which is exactly why each one needed to be actually reproduced and read out of GitLab's own logs rather than guessed at from the error message alone.
+
 ## What Rotsy actually does today
 
 - **Vulnerability scanning** — Trivy + Grype run against every image, browsable as repository → image → tag → report, with per-CVE detail (installed/fixed version, CVSS) and a **PDF export** button for sharing a report outside the tool.
-- **Event-driven, not polled** — scans fire on push (webhook or fallback watcher) or on demand, never on a blind schedule.
+- **Code Quality** — connect a GitHub or GitLab repository and every push to a watched branch clones, analyzes with SonarQube, and reports back automatically; run it on demand from a global repository/branch picker instead. Per-branch Sonar projects are auto-provisioned transparently on Community Edition (see above).
+- **Smart Insights and a Project Health Score** — deterministic, evidence-backed comparisons between consecutive analyses, and a documented 0–100 score per project, no black box.
+- **Event-driven, not polled** — scans and analyses fire on push (webhook or fallback watcher) or on demand, never on a blind schedule.
 - **RBAC with per-repository access rules** — read/write/delete scoped down to individual repos and images, not just role-level all-or-nothing.
 - **Cleanup/retention policies** — scheduled bulk deletion of old image tags (`keep last N` per image, or an age cutoff), with the disk-reclaiming "Compact blob store" task triggered automatically after a successful run — not just a rule that removes tags and leaves the blobs behind.
 - **Scheduled, compressed backups** — daily/weekly/monthly/cron cadence, configurable retention, `.tar.gz` archives instead of raw directory copies.
-- **Real-time job progress** — SSE-streamed progress for scans, database downloads and backups, with actual cancellation (see above) instead of a spinner that lies to you.
+- **Real-time job progress** — SSE-streamed progress for scans, analyses, database downloads and backups, with actual cancellation (see above) instead of a spinner that lies to you.
+- **PDF export for both scanning and code analysis** — a SonarQube report's PDF includes a Suggested Fixes table pulled live from SonarQube's own rule documentation, not just a dump of findings.
 - **A documentation section built into the app itself** — installation, configuration reference, troubleshooting, upgrade notes, all versioned alongside the code.
 
 ## Stack
 
-FastAPI + SQLAlchemy (async) + Postgres on the backend, a Redis-backed job queue (no Celery — a few hundred lines got us pending → running → done/failed/cancelled with SSE progress, which was all we needed), React 19 + Vite on the frontend, Trivy and Grype for scanning. Python 3.13, Node 24 LTS.
+FastAPI + SQLAlchemy (async) + Postgres on the backend, a Redis-backed job queue (no Celery — a few hundred lines got us pending → running → done/failed/cancelled with SSE progress, which was all we needed), React 19 + Vite on the frontend, Trivy and Grype for scanning, `sonar-scanner` driving a SonarQube instance for code analysis, GitHub App / GitLab PAT integrations for source control. Python 3.13, Node 24 LTS.
 
 ## Try it
 
@@ -53,7 +80,7 @@ cp .env.example .env   # set JWT_SECRET, bootstrap admin credentials, Postgres c
 docker compose up --build
 ```
 
-Point it at a Nexus Repository Manager instance with at least one Docker repository, and it discovers repositories automatically — no per-repo config required to get started.
+Point it at a Nexus Repository Manager instance with at least one Docker repository, and it discovers repositories automatically — no per-repo config required to get started. GitHub, GitLab, and SonarQube are entirely optional and connected the same way, from **Settings → Integrations** — nothing to set up in `.env` to try Code Quality either.
 
 **Repository:** [github.com/Sajed-Alavi/Rotsy](https://github.com/Sajed-Alavi/Rotsy)
 **License:** custom attribution-required license — see [`LICENSE`](./LICENSE). Use, modification, and redistribution are permitted; the original copyright notice must be retained and not removed, altered, or obscured.

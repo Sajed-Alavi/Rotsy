@@ -14,6 +14,37 @@ These are pinned in `backend/Dockerfile`, `frontend/Dockerfile`, and
 `docker-compose.yml` — not floating tags, so a rebuild reproduces the same
 runtime rather than drifting.
 
+## 2026-08-08 — GitLab support, a global Code Quality section, and automatic per-branch analysis
+
+### Upgrade notes
+
+- **A new migration adds GitLab tables** (`gitlab_connections`, `gitlab_repositories`) and columns on `sonar_projects` for the auto-analyze toggle and per-branch Sonar project keys. Runs automatically on container start, same as always.
+- If you already had SonarQube connected and repositories analyzed under the old per-Project flow, nothing is lost — existing `SonarProject` rows keep working. New analyses of a non-default branch will provision a second, per-branch Sonar project the first time that branch is analyzed (see below); this is additive, not a migration you need to run yourself.
+
+### Added
+
+- **GitLab as a second source provider**, alongside GitHub: account-level (one token, many repositories) or repository-level (one token, one repository) connections, per-repository webhooks, branch listing. See [Connecting GitLab](/docs/connecting-gitlab).
+- **Code Quality**, a new global section under Security: pick any synced GitHub/GitLab repository and branch and run SonarQube analysis, independent of Project grouping. Four tabs — Overview, Analysis Runs, Findings, Settings (connection health, Check for Updates). Replaces the old per-Project Analysis tab.
+- **Per-repository, per-branch auto-analyze control** (Project → Repositories tab): which branches trigger analysis on push, on by default for the default branch only.
+- **Automatic per-branch Sonar project provisioning** — works around SonarQube Community Edition's inability to analyze more than one branch under a single project, transparently, for any number of branches or repositories.
+- **A "Suggested Fixes" table on the SonarQube PDF export** — one row per distinct rule that fired, with a short remediation hint pulled live from SonarQube's own rule documentation.
+- **GitHub App creation via GitHub's App Manifest flow** — no more manually setting `GITHUB_APP_ID`/`GITHUB_APP_PRIVATE_KEY`/etc.; clicking Connect creates the App and saves its credentials automatically.
+- **Connect a public GitHub repository by name**, without an App installation, for repositories you don't own or administer — manual-analysis-only (no push webhook), a deliberate trade-off.
+- A **View** button on each Background Jobs row, linking to that job type's own page (Code Quality Runs, Scan Images, Retention, ...).
+
+### Fixed
+
+- `sonar-scanner` silently analyzing almost nothing because it ran from the wrong working directory, while still reporting a successful analysis.
+- Analysis run duration corruption on a same-commit re-run.
+- SonarQube's own quality-gate defaults silently reappearing after Rotsy set the intended conditions.
+- GitLab webhook deliveries never arriving on a self-managed instance: the callback URL Rotsy registered was the browser-facing address, which GitLab's own SSRF protection rejects outright (`WEBHOOK_BASE_URL` fixes this — see [Configuration reference](/docs/configuration)).
+- `pytest` not running at all in the backend image (the test dependencies were never installed) — a dedicated Docker build stage (`docker compose --profile test run --rm backend-test`) fixes this without shipping test tooling in the production image.
+
+### Changed
+
+- Running and browsing SonarQube analysis moved off the Project page entirely, into the new global Code Quality section — a Project now only groups a repository with its Nexus artifacts and carries the Health Score.
+- The Background Jobs page's "Analyze all" button was removed (no replacement — Code Quality's per-repository, per-branch flow replaces the old fan-out-everything model).
+
 ## 2026-08-02 — Python 3.13, Node LTS, dependency refresh, and three fixes
 
 ### Upgrade notes (read before deploying over an existing install)

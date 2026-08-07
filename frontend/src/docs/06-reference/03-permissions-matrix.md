@@ -12,6 +12,8 @@ Permission keys are `resource:action`. Effective permissions are the union acros
 | `scan:execute` | Enable repositories, trigger scans, manage databases |
 | `repositories:read` | View repositories, images and assets |
 | `repositories:write` | Create and delete repositories, delete images |
+| `projects:read` | View projects, connected GitHub/GitLab repositories, and Code Quality (SonarQube) data |
+| `projects:write` | Create/delete projects; connect and map GitHub/GitLab repositories; run and configure SonarQube analysis |
 | `blobstores:read` | View blobstores |
 | `blobstores:write` | Create and delete blobstores |
 | `access:read` | View API tokens, webhooks and anonymous access |
@@ -24,7 +26,7 @@ Permission keys are `resource:action`. Effective permissions are the union acros
 | `alerts:read` | View alert rules |
 | `alerts:write` | Create, edit and delete alert rules |
 | `system:read` | View system status and backup runs |
-| `system:execute` | Change the Nexus connection and scanner proxy |
+| `system:execute` | Change the Nexus connection, scanner proxy, and SonarQube connection; check for SonarQube updates |
 | `users:manage` | Manage users; see all API tokens |
 | `roles:manage` | Manage roles and permissions; read the audit log |
 | `profile:edit` | Edit your own profile and password |
@@ -34,7 +36,7 @@ Permission keys are `resource:action`. Effective permissions are the union acros
 | Role | Permissions |
 |---|---|
 | `admin` | All of the above |
-| `operator` | storage, retention, repositories:read, scan:*, metrics, jobs, tasks:control, profile:edit |
+| `operator` | storage, retention, repositories:read, scan:*, metrics, jobs, tasks:control, projects:*, profile:edit |
 | `viewer` | Every `:read` permission, plus `profile:edit` |
 
 ## Notes

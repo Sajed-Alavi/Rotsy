@@ -32,6 +32,71 @@ Authenticate with either the session cookie (browser) or a bearer [API token](/d
 | POST | `/api/scan/db-update?force=` | `scan:execute` |
 | POST | `/api/scan/db-import` | `scan:execute` |
 
+## Projects
+
+| Method | Path | Permission |
+|---|---|---|
+| GET | `/api/projects` | `projects:read` |
+| POST | `/api/projects` | `projects:write` |
+| GET | `/api/projects/{id}` | `projects:read` |
+| DELETE | `/api/projects/{id}` | `projects:write` |
+| GET | `/api/projects/{id}/repositories` | `projects:read` |
+| GET | `/api/projects/{id}/insights` | `projects:read` |
+| GET | `/api/projects/{id}/health` | `projects:read` |
+| GET/POST | `/api/projects/{id}/integrations` | `projects:read` / `projects:write` |
+
+## GitHub
+
+| Method | Path | Permission |
+|---|---|---|
+| GET | `/api/modules/github/status` | `projects:read` |
+| GET | `/api/modules/github/manifest-form` | `projects:write` — starts the App Manifest flow |
+| GET | `/api/modules/github/manifest-callback` | none (GitHub redirect target) |
+| GET | `/api/modules/github/install-url` | `projects:read` |
+| GET | `/api/modules/github/callback` | `projects:write` — installation redirect target |
+| GET | `/api/modules/github/installations` | `projects:read` |
+| POST | `/api/modules/github/installations/{id}/sync` | `projects:write` |
+| GET | `/api/modules/github/repositories?unmapped=` | `projects:read` |
+| GET | `/api/modules/github/repositories/{id}/branches` | `projects:read` |
+| POST | `/api/modules/github/repositories/{id}/map` | `projects:write` |
+| POST | `/api/modules/github/repositories/bulk-map` | `projects:write` |
+| POST | `/api/modules/github/public-repositories` | `projects:write` — connect one repo by name, no App installation |
+| POST | `/api/modules/github/public-repositories/bulk` | `projects:write` |
+| POST | `/api/modules/github/webhooks` | HMAC signature |
+
+## GitLab
+
+| Method | Path | Permission |
+|---|---|---|
+| GET | `/api/modules/gitlab/status` | `projects:read` |
+| POST/GET | `/api/modules/gitlab/connections` | `projects:write` / `projects:read` — account-level (one token, many repos) |
+| POST | `/api/modules/gitlab/connections/{id}/sync` | `projects:write` |
+| POST/GET | `/api/modules/gitlab/repositories` | `projects:write` / `projects:read` — repository-level (one token, one repo) |
+| GET | `/api/modules/gitlab/repositories/{id}/branches` | `projects:read` |
+| POST | `/api/modules/gitlab/repositories/{id}/reconnect` | `projects:write` — refresh a repository's token after it goes invalid |
+| POST | `/api/modules/gitlab/repositories/{id}/register-webhook` | `projects:write` — retry after a failed automatic registration |
+| POST | `/api/modules/gitlab/repositories/{id}/map` | `projects:write` |
+| POST | `/api/modules/gitlab/repositories/bulk-map` | `projects:write` |
+| POST | `/api/modules/gitlab/webhooks/{repo_id}` | signed token per repository |
+
+## SonarQube and Code Quality
+
+| Method | Path | Permission |
+|---|---|---|
+| GET/PUT | `/api/modules/sonar/config` | `system:execute` |
+| POST | `/api/modules/sonar/config/test` | `system:execute` |
+| GET | `/api/modules/sonar/status` | `projects:read` |
+| POST | `/api/modules/sonar/check-updates` | `system:execute` |
+| GET | `/api/modules/sonar/repositories` | `projects:read` — every synced repository, globally |
+| POST | `/api/modules/sonar/analyze` | `projects:write` — pick repository + branch, auto-provisions on first use, runs analysis |
+| PATCH | `/api/modules/sonar/projects/{id}` | `projects:write` — auto-analyze toggle and branch list |
+| GET | `/api/modules/sonar/analysis-runs` | `projects:read` — global, latest-first |
+| GET | `/api/modules/sonar/analysis-runs/{id}` | `projects:read` |
+| GET | `/api/modules/sonar/analysis-runs/{id}/report.pdf` | `projects:read` |
+| GET | `/api/modules/sonar/analysis-runs/{id}/issues` \| `/hotspots` | `projects:read` |
+| GET | `/api/modules/sonar/issues` \| `/hotspots` | `projects:read` — global, scoped to each repository's latest successful run |
+| GET | `/api/modules/sonar/quality-gates` | `projects:read` |
+
 ## Repositories and images
 
 | Method | Path | Permission |

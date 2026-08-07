@@ -37,6 +37,18 @@ Generate secrets with `openssl rand -hex 32`.
 | Variable | Notes |
 |---|---|
 | `OUTBOUND_ALLOWED_HOSTS` | Comma-separated hosts exempt from the SSRF guard, for legitimate internal webhook and sync targets |
+| `WEBHOOK_BASE_URL` | Optional. Base URL GitHub/GitLab servers use to reach *this* backend for webhook delivery — leave unset to reuse `FRONTEND_ORIGIN` (correct once deployed somewhere genuinely public, since a browser and GitHub/GitLab's servers then reach the same address). Only needed when the two addresses differ — the common case is a self-hosted GitLab container on the same Docker host: it can reach the backend at `host.docker.internal:${BACKEND_PORT}`, but its own SSRF protection rejects `FRONTEND_ORIGIN`'s `http://localhost` outright, since that's a browser address, not GitLab's own |
+
+## GitHub, GitLab, SonarQube
+
+All optional — every one of these can instead be set up from **Settings → Integrations** after first login, and the dashboard-saved value always wins over the environment once one exists.
+
+| Variable | Notes |
+|---|---|
+| `GITHUB_APP_ID`, `GITHUB_APP_SLUG`, `GITHUB_APP_PRIVATE_KEY`, `GITHUB_WEBHOOK_SECRET` | Bootstrap defaults for an existing GitHub App. Normally unnecessary — clicking **Connect to GitHub** creates the App automatically via GitHub's App Manifest flow and saves these itself. See [Connecting GitHub](/docs/connecting-github). |
+| `SONAR_URL`, `SONAR_ADMIN_TOKEN` | Bootstrap defaults for the SonarQube connection. See [Connecting SonarQube](/docs/connecting-sonarqube). |
+
+GitLab has no equivalent bootstrap env vars — its connection (a Personal Access Token) is only ever set up from Settings, since there's no App-style credential to seed ahead of time. See [Connecting GitLab](/docs/connecting-gitlab).
 
 ## Backups
 

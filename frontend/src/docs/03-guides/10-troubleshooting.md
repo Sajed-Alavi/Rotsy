@@ -2,17 +2,20 @@
 
 A failed report or analysis always carries a reason — Rotsy never shows raw stack traces for external-system failures, only the actionable message. Detailed technical output stays in the backend logs.
 
-## GitHub and SonarQube analysis failures
+## GitHub/GitLab and SonarQube analysis failures
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| Push doesn't trigger analysis | Repository not mapped to a Project, or the Project has no SonarQube project connected | `GET /api/modules/github/repositories?unmapped=true` to check mapping; connect Sonar via Settings → Integrations |
-| Webhook returns 401 | Signature verification failed | Confirm `GITHUB_WEBHOOK_SECRET` matches what's set on the GitHub App |
-| Duplicate analysis for the same push | Should not happen — deliveries are deduplicated by `X-GitHub-Delivery` and by (repository, commit); if seen, it's a bug worth reporting | Check Background Jobs for two jobs with the same commit sha |
+| Push doesn't trigger analysis | The pushed branch isn't in that repository's auto-analyze branch list, or auto-analyze is off | Project → Repositories tab → the repository's auto-analyze setting |
+| No SonarQube project yet on first analysis | Not an error — the first analysis of a repository/branch auto-detects the language and provisions the Sonar project itself | Nothing to do; if it fails, the job's error names the reason (e.g. unsupported language) |
+| GitHub webhook returns 401 | Signature verification failed | Reinstall/reconnect the App — its webhook secret is generated and stored automatically, not something to match by hand |
+| GitLab webhook never arrives | Registration failed at connect time (SSRF protection on a self-managed instance, or the token's role is below Maintainer), or GitLab can't reach Rotsy's webhook URL | Retry webhook registration from the repository's row in Settings → Integrations → GitLab; see [Connecting GitLab](/docs/connecting-gitlab) |
+| Duplicate analysis for the same push | Should not happen — deliveries are deduplicated by delivery id and by (repository, commit); if seen, it's a bug worth reporting | Check Background Jobs for two jobs with the same commit sha |
 | "SonarQube is not configured" on a job failure | No connection saved and no `SONAR_URL`/`SONAR_ADMIN_TOKEN` fallback | Settings → Integrations → SonarQube → Configure |
-| "not analyzable without a build step" | Project's language isn't Python/JavaScript/TypeScript | Not supported yet — see [Connecting SonarQube](/docs/connecting-sonarqube) |
-| Clone failure | GitHub App installation token expired, repository deleted, or repository access revoked | Check the job's error message; reinstall/re-authorize the App if needed |
+| "not analyzable without a build step" | Repository's dominant language isn't supported | See the language list in [Connecting SonarQube](/docs/connecting-sonarqube) |
+| Clone failure | GitHub App installation token expired/revoked, GitLab token expired/revoked, or repository deleted | Check the job's error message; reinstall the GitHub App or reconnect the GitLab token as needed |
 | Analysis timeout / "waiting for quality gate" for a long time | SonarQube's compute engine is slow, overloaded, or stuck | Check SonarQube's own background task queue; Rotsy gives up after 10 minutes |
+| "Developer Edition or above is required" | Shouldn't happen through normal use — see the per-branch Sonar project note in [Automatic analysis and Smart Insights](/docs/automatic-analysis-and-insights) | If seen, it indicates the per-branch provisioning step itself failed — check the job's earlier log lines |
 | GitHub rate limiting | Many repositories/pushes against one installation's token budget | GitHub App installation tokens have their own rate limit, separate from personal tokens — this should be rare for normal use |
 
 ## Vulnerability scanning failures

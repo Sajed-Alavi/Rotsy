@@ -1,8 +1,8 @@
 # Rotsy
 
 A management dashboard and API around **Sonatype Nexus Repository Manager**, with
-**static container-image vulnerability scanning** (Trivy + Grype) as its
-centrepiece.
+**static container-image vulnerability scanning** (Trivy + Grype) and **automatic
+SonarQube code analysis** on every push to GitHub or GitLab as its two centrepieces.
 
 Two deployable projects, one compose stack:
 
@@ -23,7 +23,7 @@ is enforced in code and pointed at below.
 
 ---
 
-> **Full documentation ships inside the app**, at **/docs** in the sidebar — 36
+> **Full documentation ships inside the app**, at **/docs** in the sidebar —
 > pages ordered as a learning path, from first login through core concepts,
 > guides, database management, administration, an API and configuration
 > reference, and end-to-end workflows (CI/CD gating, air-gapped install,
@@ -33,6 +33,7 @@ is enforced in code and pointed at below.
 ## Contents
 
 - [Architecture](#architecture)
+- [Code Quality: GitHub/GitLab + SonarQube](#code-quality-githubgitlab--sonarqube)
 - [Browsing images](#browsing-images)
 - [Deleting images](#deleting-images)
 - [Access control](#access-control)
@@ -108,6 +109,46 @@ Four background loops run in the app lifespan, each with a single job:
 Each of those has exactly one owner. That is a change: database handling used to
 be spread across four places that could disagree, and scan triggering across two
 loops plus an endpoint.
+
+---
+
+## Code Quality: GitHub/GitLab + SonarQube
+
+The other half of the app, alongside image scanning: connect a GitHub or GitLab
+repository, and every push to a watched branch clones the commit, runs
+`sonar-scanner`, and reports results back — no CI YAML, no manual scan. Trigger
+it on demand too, from **Code Quality → Overview**: pick any synced repository
+and branch and click **Run Analysis**. One implementation behind both paths.
+
+**GitHub** connects as a real GitHub App, created automatically via GitHub's App
+Manifest flow (no env vars to set by hand) — install it on an org/account for
+webhook-driven auto-analysis, or connect a single public repository by name for
+manual-only analysis without an installation.
+
+**GitLab** connects with a Personal Access Token, account-level (one token, many
+repositories) or repository-level (one token, one repository), with a webhook
+registered per repository automatically.
+
+**SonarQube** is driven entirely by Rotsy — project creation, analysis tokens,
+quality gates, all automatic. The first analysis of a repository/branch
+auto-detects its language (Python, JavaScript, TypeScript, Go, PHP, Ruby, CSS,
+HTML — anything that doesn't need a build step) and provisions the matching
+Sonar project itself. SonarQube Community Edition can't analyze more than one
+branch under a single project, so a non-default branch transparently gets its
+own auto-provisioned Sonar project the first time it's analyzed — this holds for
+any number of branches or repositories, nothing to configure per branch.
+
+**Smart Insights** compare each analysis to the previous one on that
+repository/branch — new issues, coverage regressions, quality gate changes —
+deterministically, from the actual numbers, never inferred. A **Project Health
+Score** (0–100, documented factors, no black box) rolls SonarQube results up
+per Project for repositories mapped to one.
+
+Full detail: [Connecting GitHub](frontend/src/docs/01-getting-started/05-connecting-github.md),
+[Connecting GitLab](frontend/src/docs/01-getting-started/06-connecting-gitlab.md),
+[Connecting SonarQube](frontend/src/docs/01-getting-started/07-connecting-sonarqube.md),
+[Automatic analysis and Smart Insights](frontend/src/docs/02-core-concepts/06-automatic-analysis-and-insights.md) —
+or the same pages at `/docs` inside the running app.
 
 ---
 

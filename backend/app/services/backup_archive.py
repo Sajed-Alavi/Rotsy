@@ -125,6 +125,45 @@ def _ensure_disk_space(output_dir: Path, min_free_bytes: int) -> None:
         )
 
 
+async def _resolve_target_repos(nexus: NexusClient, mode: str, repos: list[str] | None) -> list[str]:
+    if mode == "selective":
+        if not repos:
+            raise ValueError("selective backup requires at least one repository")
+        return list(repos)
+    if mode == "full":
+        resp = await nexus.client.get("/service/rest/v1/repositories")
+        resp.raise_for_status()
+        return [r.get("name") for r in (resp.json() or []) if r.get("name")]
+    raise ValueError(f"unknown backup mode '{mode}'")
+
+
+async def _download_asset(
+    nexus: NexusClient, download_url: str, dest: Path, output_dir: Path, repo: str, path: str,
+) -> int | None:
+    """Stream one asset to ``dest``. Returns the byte count written, or
+    ``None`` if the upstream refused the download (logged, not fatal — the
+    caller skips this one asset and continues the backup)."""
+    upstream = await nexus.client.send(nexus.client.build_request("GET", download_url), stream=True)
+    try:
+        if upstream.status_code >= 400:
+            logger.warning("skip %s/%s: upstream returned %d", repo, path, upstream.status_code)
+            return None
+        size = 0
+        try:
+            f = await asyncio.to_thread(open, dest, "wb")
+            try:
+                async for chunk in upstream.aiter_raw():
+                    await asyncio.to_thread(f.write, chunk)
+                    size += len(chunk)
+            finally:
+                await asyncio.to_thread(f.close)
+        except PermissionError as exc:
+            raise _permission_error(output_dir, exc)
+        return size
+    finally:
+        await upstream.aclose()
+
+
 async def create_archive(
     nexus: NexusClient,
     *,
@@ -156,17 +195,7 @@ async def create_archive(
     ``compressed``.
     """
     emit = make_emitter(on_progress)
-
-    if mode == "selective":
-        if not repos:
-            raise ValueError("selective backup requires at least one repository")
-        target_repos = list(repos)
-    elif mode == "full":
-        resp = await nexus.client.get("/service/rest/v1/repositories")
-        resp.raise_for_status()
-        target_repos = [r.get("name") for r in (resp.json() or []) if r.get("name")]
-    else:
-        raise ValueError(f"unknown backup mode '{mode}'")
+    target_repos = await _resolve_target_repos(nexus, mode, repos)
 
     # Validate every target repo name before creating any directory. In
     # selective mode these come straight from the caller; reject the whole
@@ -225,24 +254,9 @@ async def create_archive(
                     dest = repo_dir / relpath
                     dest.parent.mkdir(parents=True, exist_ok=True)
 
-                upstream = await nexus.client.send(nexus.client.build_request("GET", download_url), stream=True)
-                try:
-                    if upstream.status_code >= 400:
-                        logger.warning("skip %s/%s: upstream returned %d", repo, path, upstream.status_code)
-                        continue
-                    size = 0
-                    try:
-                        f = await asyncio.to_thread(open, dest, "wb")
-                        try:
-                            async for chunk in upstream.aiter_raw():
-                                await asyncio.to_thread(f.write, chunk)
-                                size += len(chunk)
-                        finally:
-                            await asyncio.to_thread(f.close)
-                    except PermissionError as exc:
-                        raise _permission_error(output_dir, exc)
-                finally:
-                    await upstream.aclose()
+                size = await _download_asset(nexus, download_url, dest, output_dir, repo, path)
+                if size is None:
+                    continue
 
                 if compress:
                     tar.add(dest, arcname=str(Path(repo) / relpath))

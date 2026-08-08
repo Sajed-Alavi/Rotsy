@@ -146,14 +146,42 @@ async def poll_due_schedules(cache, session: AsyncSession) -> list[str]:
     return enqueued
 
 
+def _select_for_deletion(rows: list[BackupRun], schedule: BackupSchedule) -> dict[int, BackupRun]:
+    """Runs violating either retention rule — mirrors
+    :mod:`app.services.retention`'s "both conditions apply when set" semantics."""
+    to_delete: dict[int, BackupRun] = {}
+    if schedule.retention_max_age_days is not None:
+        cutoff = datetime.now(timezone.utc) - timedelta(days=schedule.retention_max_age_days)
+        for run in rows:
+            if run.finished_at is not None and run.finished_at < cutoff:
+                to_delete[run.id] = run
+    if schedule.retention_keep_last is not None and schedule.retention_keep_last >= 0:
+        for run in rows[schedule.retention_keep_last:]:
+            to_delete[run.id] = run
+    return to_delete
+
+
+def _delete_archive_path(run: BackupRun) -> None:
+    if not run.output_path:
+        return
+    path = Path(run.output_path)
+    try:
+        if path.is_file():
+            path.unlink(missing_ok=True)
+        elif path.is_dir():
+            import shutil
+            shutil.rmtree(path, ignore_errors=True)
+    except OSError:
+        logger.exception("Could not remove pruned backup archive at %s", path)
+
+
 async def prune_old_archives(session: AsyncSession, schedule: BackupSchedule) -> dict:
     """Delete this schedule's own archives beyond its retention rule.
 
-    Mirrors :mod:`app.services.retention`'s "both conditions apply when set"
-    semantics: an archive is deleted if it's older than
-    ``retention_max_age_days`` *or* falls outside the newest
-    ``retention_keep_last`` runs. Manual/on-demand runs (``schedule_id`` NULL)
-    are never touched here — a schedule only ever prunes archives it created.
+    An archive is deleted if it's older than ``retention_max_age_days`` *or*
+    falls outside the newest ``retention_keep_last`` runs. Manual/on-demand
+    runs (``schedule_id`` NULL) are never touched here — a schedule only ever
+    prunes archives it created.
     """
     if schedule.retention_keep_last is None and schedule.retention_max_age_days is None:
         return {"deleted": 0}
@@ -164,27 +192,9 @@ async def prune_old_archives(session: AsyncSession, schedule: BackupSchedule) ->
         .order_by(BackupRun.finished_at.desc())
     )).scalars().all()
 
-    to_delete: dict[int, BackupRun] = {}
-    if schedule.retention_max_age_days is not None:
-        cutoff = datetime.now(timezone.utc) - timedelta(days=schedule.retention_max_age_days)
-        for run in rows:
-            if run.finished_at is not None and run.finished_at < cutoff:
-                to_delete[run.id] = run
-    if schedule.retention_keep_last is not None and schedule.retention_keep_last >= 0:
-        for run in rows[schedule.retention_keep_last:]:
-            to_delete[run.id] = run
-
+    to_delete = _select_for_deletion(rows, schedule)
     for run in to_delete.values():
-        if run.output_path:
-            path = Path(run.output_path)
-            try:
-                if path.is_file():
-                    path.unlink(missing_ok=True)
-                elif path.is_dir():
-                    import shutil
-                    shutil.rmtree(path, ignore_errors=True)
-            except OSError:
-                logger.exception("Could not remove pruned backup archive at %s", path)
+        _delete_archive_path(run)
         await session.delete(run)
 
     if to_delete:

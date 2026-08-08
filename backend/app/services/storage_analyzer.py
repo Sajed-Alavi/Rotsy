@@ -62,6 +62,23 @@ def _latest(*values: str | None) -> str | None:
     return max(present) if present else None
 
 
+def _manifest_layer_blobs(data: dict[str, Any]) -> tuple[int, list[tuple[str | None, int]]]:
+    """Config + layer blobs of a single-arch docker/oci manifest."""
+    local_size = 0
+    blobs: list[tuple[str | None, int]] = []
+    config = data.get("config") or {}
+    config_size = config.get("size") or 0
+    if config_size:
+        local_size += config_size
+        blobs.append((config.get("digest"), config_size))
+    for layer in data.get("layers") or []:
+        layer_size = layer.get("size") or 0
+        if layer_size:
+            local_size += layer_size
+            blobs.append((layer.get("digest"), layer_size))
+    return local_size, blobs
+
+
 def _build_item_tree(
     item_version_sizes: dict[str, dict[str, int]],
     timestamps: dict[tuple[str, str], tuple[str | None, str | None]] | None = None,
@@ -292,28 +309,24 @@ class StorageAnalyzer:
         except ValueError:
             return 0, []
 
+        if "layers" in data:  # single-arch manifest
+            return _manifest_layer_blobs(data)
+        if "manifests" in data:  # multi-arch manifest list
+            return await self._process_manifest_list(repo, image, data, depth=depth)
+        return 0, []
+
+    async def _process_manifest_list(
+        self, repo: str, image: str, data: dict[str, Any], *, depth: int,
+    ) -> tuple[int, list[tuple[str | None, int]]]:
+        child_digests = [d for d in (m.get("digest") for m in data.get("manifests") or []) if d]
+        results = await asyncio.gather(*(
+            self._process_manifest(repo, image, digest, depth=depth + 1) for digest in child_digests
+        ))
         local_size = 0
         blobs: list[tuple[str | None, int]] = []
-
-        if "layers" in data:  # single-arch manifest
-            config = data.get("config") or {}
-            config_size = config.get("size") or 0
-            if config_size:
-                local_size += config_size
-                blobs.append((config.get("digest"), config_size))
-            for layer in data.get("layers") or []:
-                layer_size = layer.get("size") or 0
-                if layer_size:
-                    local_size += layer_size
-                    blobs.append((layer.get("digest"), layer_size))
-        elif "manifests" in data:  # multi-arch manifest list
-            child_digests = [d for d in (m.get("digest") for m in data.get("manifests") or []) if d]
-            results = await asyncio.gather(*(
-                self._process_manifest(repo, image, digest, depth=depth + 1) for digest in child_digests
-            ))
-            for child_size, child_blobs in results:
-                local_size += child_size
-                blobs.extend(child_blobs)
+        for child_size, child_blobs in results:
+            local_size += child_size
+            blobs.extend(child_blobs)
         return local_size, blobs
 
     # ==================================================================

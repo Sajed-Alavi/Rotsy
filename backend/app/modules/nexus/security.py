@@ -117,48 +117,38 @@ async def revoke_anonymous_access(nexus: NexusClient, repo_name: str) -> dict[st
     return {"revoked": True, "repo": repo_name, "privilege": priv_name, "privilege_deleted": deleted}
 
 
-async def anonymous_overview(nexus: NexusClient) -> dict[str, Any]:
-    """The global anonymous toggle plus every repository currently readable anonymously.
-
-    Answers "what is public right now?", which nothing did before: the global
-    flag was read only to populate a metrics field, and per-repo grants were
-    write-only.
-
-    Repositories are derived from the privileges actually attached to
-    ``nx-anonymous`` — the live authorization state — rather than from the
-    ``-anon-view`` naming convention alone, so a privilege granted by hand in
-    the Nexus UI still shows up.
-    """
-    out: dict[str, Any] = {"global_enabled": None, "repositories": [], "available": True}
-
+async def _read_global_anonymous_flag(nexus: NexusClient) -> bool | None:
     try:
         resp = await nexus.client.get("/service/rest/v1/security/anonymous")
         if resp.status_code == 200:
-            out["global_enabled"] = bool((resp.json() or {}).get("enabled"))
+            return bool((resp.json() or {}).get("enabled"))
     except Exception as exc:  # noqa: BLE001
         logger.debug("could not read the global anonymous setting: %s", exc)
+    return None
 
+
+async def _read_attached_privileges(nexus: NexusClient) -> tuple[set[str] | None, str | None]:
+    """Privilege names attached to ``nx-anonymous``, or ``(None, reason)`` on failure."""
     try:
         role_resp = await nexus.client.get(f"/service/rest/v1/security/roles/{_ANON_ROLE_ID}")
         if role_resp.status_code != 200:
-            out["available"] = False
-            out["reason"] = f"could not read the {_ANON_ROLE_ID} role (HTTP {role_resp.status_code})"
-            return out
-        attached = set((role_resp.json() or {}).get("privileges") or [])
+            return None, f"could not read the {_ANON_ROLE_ID} role (HTTP {role_resp.status_code})"
+        return set((role_resp.json() or {}).get("privileges") or []), None
     except Exception as exc:  # noqa: BLE001
-        out["available"] = False
-        out["reason"] = f"could not read the {_ANON_ROLE_ID} role: {exc}"
-        return out
+        return None, f"could not read the {_ANON_ROLE_ID} role: {exc}"
 
-    privileges: list[dict[str, Any]] = []
+
+async def _list_all_privileges(nexus: NexusClient) -> list[dict[str, Any]]:
     try:
         priv_resp = await nexus.client.get("/service/rest/v1/security/privileges")
         if priv_resp.status_code == 200:
-            privileges = priv_resp.json() or []
+            return priv_resp.json() or []
     except Exception as exc:  # noqa: BLE001
         logger.debug("could not list privileges: %s", exc)
+    return []
 
-    by_name = {p.get("name"): p for p in privileges}
+
+def _repos_from_privileges(attached: set[str], by_name: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
     repos: list[dict[str, Any]] = []
     for name in sorted(attached):
         priv = by_name.get(name)
@@ -172,7 +162,33 @@ async def anonymous_overview(nexus: NexusClient) -> dict[str, Any]:
             "actions": (priv or {}).get("actions", []),
             "managed_here": name == _privilege_name(repo),
         })
+    return repos
 
-    out["repositories"] = repos
+
+async def anonymous_overview(nexus: NexusClient) -> dict[str, Any]:
+    """The global anonymous toggle plus every repository currently readable anonymously.
+
+    Answers "what is public right now?", which nothing did before: the global
+    flag was read only to populate a metrics field, and per-repo grants were
+    write-only.
+
+    Repositories are derived from the privileges actually attached to
+    ``nx-anonymous`` — the live authorization state — rather than from the
+    ``-anon-view`` naming convention alone, so a privilege granted by hand in
+    the Nexus UI still shows up.
+    """
+    out: dict[str, Any] = {"global_enabled": None, "repositories": [], "available": True}
+    out["global_enabled"] = await _read_global_anonymous_flag(nexus)
+
+    attached, reason = await _read_attached_privileges(nexus)
+    if attached is None:
+        out["available"] = False
+        out["reason"] = reason
+        return out
+
+    privileges = await _list_all_privileges(nexus)
+    by_name = {p.get("name"): p for p in privileges}
+
+    out["repositories"] = _repos_from_privileges(attached, by_name)
     out["unmapped_privileges"] = sorted(n for n in attached if n not in by_name)
     return out

@@ -56,8 +56,8 @@ class HealthScore:
     has_data: bool = True  # False when there's no analysis yet to score
 
 
-async def compute_health_score(session: AsyncSession, project_id: int) -> HealthScore:
-    sonar_projects = (
+async def _sonar_projects_for(session: AsyncSession, project_id: int) -> list[SonarProject]:
+    return (
         await session.execute(
             select(SonarProject).where(
                 SonarProject.project_id == project_id,
@@ -68,11 +68,11 @@ async def compute_health_score(session: AsyncSession, project_id: int) -> Health
             )
         )
     ).scalars().all()
-    if not sonar_projects:
-        return HealthScore(score=0, factors=["No SonarQube project connected yet."], has_data=False)
 
-    # One latest-successful-run per repository — a Project can hold many.
-    latest_runs: list[AnalysisRun] = []
+
+async def _latest_successful_runs(session: AsyncSession, sonar_projects: list[SonarProject]) -> list[AnalysisRun]:
+    """One latest-successful-run per repository — a Project can hold many."""
+    runs: list[AnalysisRun] = []
     for sonar_project in sonar_projects:
         run = await session.scalar(
             select(AnalysisRun)
@@ -81,55 +81,63 @@ async def compute_health_score(session: AsyncSession, project_id: int) -> Health
             .limit(1)
         )
         if run is not None:
-            latest_runs.append(run)
-    if not latest_runs:
-        return HealthScore(score=0, factors=["No successful analysis yet."], has_data=False)
+            runs.append(run)
+    return runs
 
-    score = 100
-    factors: list[str] = []
 
-    # Worst gate status across repositories — one failing repo isn't hidden
-    # by others passing.
+async def _gate_deduction(session: AsyncSession, latest_runs: list[AnalysisRun]) -> tuple[int, str | None]:
+    """Worst gate status across repositories — one failing repo isn't hidden
+    by others passing."""
     gate_statuses = []
     for run in latest_runs:
         gate = await session.scalar(select(QualityGateResult).where(QualityGateResult.analysis_run_id == run.id))
         if gate is not None:
             gate_statuses.append(gate.status)
     if "ERROR" in gate_statuses:
-        score += SCORING_FACTORS["quality_gate_error"]
+        deduction = SCORING_FACTORS["quality_gate_error"]
         failing = gate_statuses.count("ERROR")
-        factors.append(f"Quality gate failed on {failing} repositor{'y' if failing == 1 else 'ies'} ({SCORING_FACTORS['quality_gate_error']})")
-    elif "WARN" in gate_statuses:
-        score += SCORING_FACTORS["quality_gate_warn"]
-        factors.append(f"Quality gate warning ({SCORING_FACTORS['quality_gate_warn']})")
+        return deduction, f"Quality gate failed on {failing} repositor{'y' if failing == 1 else 'ies'} ({deduction})"
+    if "WARN" in gate_statuses:
+        deduction = SCORING_FACTORS["quality_gate_warn"]
+        return deduction, f"Quality gate warning ({deduction})"
+    return 0, None
 
-    total_vulnerabilities = sum(r.vulnerabilities or 0 for r in latest_runs)
-    if total_vulnerabilities:
-        deduction = max(
-            SCORING_FACTORS["per_vulnerability"] * total_vulnerabilities,
-            SCORING_FACTORS["vulnerability_cap"],
-        )
-        score += deduction
-        factors.append(f"{total_vulnerabilities} vulnerabilit{'y' if total_vulnerabilities == 1 else 'ies'} across repositories ({deduction})")
 
-    total_bugs = sum(r.bugs or 0 for r in latest_runs)
-    if total_bugs:
-        deduction = max(SCORING_FACTORS["per_bug"] * total_bugs, SCORING_FACTORS["bug_cap"])
-        score += deduction
-        factors.append(f"{total_bugs} bug(s) across repositories ({deduction})")
+def _vulnerability_deduction(latest_runs: list[AnalysisRun]) -> tuple[int, str | None]:
+    total = sum(r.vulnerabilities or 0 for r in latest_runs)
+    if not total:
+        return 0, None
+    deduction = max(SCORING_FACTORS["per_vulnerability"] * total, SCORING_FACTORS["vulnerability_cap"])
+    return deduction, f"{total} vulnerabilit{'y' if total == 1 else 'ies'} across repositories ({deduction})"
 
+
+def _bug_deduction(latest_runs: list[AnalysisRun]) -> tuple[int, str | None]:
+    total = sum(r.bugs or 0 for r in latest_runs)
+    if not total:
+        return 0, None
+    deduction = max(SCORING_FACTORS["per_bug"] * total, SCORING_FACTORS["bug_cap"])
+    return deduction, f"{total} bug(s) across repositories ({deduction})"
+
+
+def _coverage_deduction(latest_runs: list[AnalysisRun]) -> tuple[int, str | None]:
     coverages = [r.coverage for r in latest_runs if r.coverage is not None]
-    avg_coverage = sum(coverages) / len(coverages) if coverages else None
-    if avg_coverage is not None and avg_coverage < SCORING_FACTORS["low_coverage_threshold_pct"]:
-        score += SCORING_FACTORS["low_coverage_penalty"]
-        factors.append(f"Average coverage below {SCORING_FACTORS['low_coverage_threshold_pct']:.0f}% ({SCORING_FACTORS['low_coverage_penalty']})")
+    avg = sum(coverages) / len(coverages) if coverages else None
+    if avg is None or avg >= SCORING_FACTORS["low_coverage_threshold_pct"]:
+        return 0, None
+    deduction = SCORING_FACTORS["low_coverage_penalty"]
+    return deduction, f"Average coverage below {SCORING_FACTORS['low_coverage_threshold_pct']:.0f}% ({deduction})"
 
+
+def _duplication_deduction(latest_runs: list[AnalysisRun]) -> tuple[int, str | None]:
     duplications = [r.duplication_pct for r in latest_runs if r.duplication_pct is not None]
-    avg_duplication = sum(duplications) / len(duplications) if duplications else None
-    if avg_duplication is not None and avg_duplication > SCORING_FACTORS["high_duplication_threshold_pct"]:
-        score += SCORING_FACTORS["high_duplication_penalty"]
-        factors.append(f"Average duplication above {SCORING_FACTORS['high_duplication_threshold_pct']:.0f}% ({SCORING_FACTORS['high_duplication_penalty']})")
+    avg = sum(duplications) / len(duplications) if duplications else None
+    if avg is None or avg <= SCORING_FACTORS["high_duplication_threshold_pct"]:
+        return 0, None
+    deduction = SCORING_FACTORS["high_duplication_penalty"]
+    return deduction, f"Average duplication above {SCORING_FACTORS['high_duplication_threshold_pct']:.0f}% ({deduction})"
 
+
+async def _insight_deduction(session: AsyncSession, project_id: int) -> tuple[int, str | None]:
     recent_insights = (
         await session.execute(
             select(Insight)
@@ -138,18 +146,42 @@ async def compute_health_score(session: AsyncSession, project_id: int) -> Health
             .limit(SCORING_FACTORS["recent_insights_considered"])
         )
     ).scalars().all()
-    insight_deduction = 0
-    for insight in recent_insights:
-        if insight.severity == "CRITICAL":
-            insight_deduction += SCORING_FACTORS["insight_critical"]
-        elif insight.severity == "HIGH":
-            insight_deduction += SCORING_FACTORS["insight_high"]
-        elif insight.severity == "MEDIUM":
-            insight_deduction += SCORING_FACTORS["insight_medium"]
-    insight_deduction = max(insight_deduction, SCORING_FACTORS["insight_cap"])
-    if insight_deduction:
-        score += insight_deduction
-        factors.append(f"Recent insights ({insight_deduction})")
+    per_severity = {
+        "CRITICAL": SCORING_FACTORS["insight_critical"],
+        "HIGH": SCORING_FACTORS["insight_high"],
+        "MEDIUM": SCORING_FACTORS["insight_medium"],
+    }
+    deduction = sum(per_severity.get(insight.severity, 0) for insight in recent_insights)
+    deduction = max(deduction, SCORING_FACTORS["insight_cap"])
+    if not deduction:
+        return 0, None
+    return deduction, f"Recent insights ({deduction})"
+
+
+async def compute_health_score(session: AsyncSession, project_id: int) -> HealthScore:
+    sonar_projects = await _sonar_projects_for(session, project_id)
+    if not sonar_projects:
+        return HealthScore(score=0, factors=["No SonarQube project connected yet."], has_data=False)
+
+    latest_runs = await _latest_successful_runs(session, sonar_projects)
+    if not latest_runs:
+        return HealthScore(score=0, factors=["No successful analysis yet."], has_data=False)
+
+    score = 100
+    factors: list[str] = []
+
+    deductions = [
+        await _gate_deduction(session, latest_runs),
+        _vulnerability_deduction(latest_runs),
+        _bug_deduction(latest_runs),
+        _coverage_deduction(latest_runs),
+        _duplication_deduction(latest_runs),
+        await _insight_deduction(session, project_id),
+    ]
+    for deduction, message in deductions:
+        if message:
+            score += deduction
+            factors.append(message)
 
     score = max(0, min(100, score))
     if not factors:

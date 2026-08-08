@@ -34,6 +34,32 @@ class NormalizedEvent:
     installation_id: int
 
 
+def _push_event(payload: dict[str, Any], installation_id: int) -> NormalizedEvent | None:
+    repo = payload.get("repository") or {}
+    ref = payload.get("ref", "")  # "refs/heads/main"
+    branch = ref.removeprefix("refs/heads/")
+    sha = payload.get("after", "")
+    # A branch deletion push has an all-zero "after" sha — nothing to analyze.
+    if not sha or set(sha) == {"0"}:
+        return None
+    return NormalizedEvent(
+        type="push", repo_full_name=repo.get("full_name", ""), ref=branch, sha=sha,
+        installation_id=installation_id,
+    )
+
+
+def _pull_request_event(payload: dict[str, Any], installation_id: int) -> NormalizedEvent | None:
+    if payload.get("action") not in ("opened", "synchronize", "reopened"):
+        return None
+    repo = payload.get("repository") or {}
+    pr = payload.get("pull_request") or {}
+    head = pr.get("head") or {}
+    return NormalizedEvent(
+        type="pull_request", repo_full_name=repo.get("full_name", ""), ref=head.get("ref", ""),
+        sha=head.get("sha", ""), installation_id=installation_id,
+    )
+
+
 def normalize_event(event_type: str, payload: dict[str, Any]) -> NormalizedEvent | None:
     """Map a GitHub webhook payload to Rotsy's internal event shape.
 
@@ -45,33 +71,8 @@ def normalize_event(event_type: str, payload: dict[str, Any]) -> NormalizedEvent
     installation_id = (payload.get("installation") or {}).get("id")
     if installation_id is None:
         return None
-
     if event_type == "push":
-        repo = payload.get("repository") or {}
-        ref = payload.get("ref", "")  # "refs/heads/main"
-        branch = ref.removeprefix("refs/heads/")
-        sha = payload.get("after", "")
-        # A branch deletion push has an all-zero "after" sha — nothing to analyze.
-        if not sha or set(sha) == {"0"}:
-            return None
-        return NormalizedEvent(
-            type="push",
-            repo_full_name=repo.get("full_name", ""),
-            ref=branch,
-            sha=sha,
-            installation_id=installation_id,
-        )
-
-    if event_type == "pull_request" and payload.get("action") in ("opened", "synchronize", "reopened"):
-        repo = payload.get("repository") or {}
-        pr = payload.get("pull_request") or {}
-        head = pr.get("head") or {}
-        return NormalizedEvent(
-            type="pull_request",
-            repo_full_name=repo.get("full_name", ""),
-            ref=head.get("ref", ""),
-            sha=head.get("sha", ""),
-            installation_id=installation_id,
-        )
-
+        return _push_event(payload, installation_id)
+    if event_type == "pull_request":
+        return _pull_request_event(payload, installation_id)
     return None

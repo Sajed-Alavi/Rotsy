@@ -511,6 +511,36 @@ async def bulk_map_repositories(
     return {"mapped": len(mapped), "queued": len(mapped), "errors": errors}
 
 
+async def _already_seen(cache, key: str, ttl: int) -> bool:
+    """True if ``key`` was already recorded (a duplicate analysis trigger);
+    otherwise records it and returns False. GitLab, like GitHub, does not
+    guarantee exactly-once delivery."""
+    if await cache.get_json(key):
+        return True
+    await cache.set_json(key, True, ttl=ttl)
+    return False
+
+
+async def _resolve_analyzable_repo(session: AsyncSession, repo: GitLabRepository, event) -> str | None:
+    """None when the pushed branch should trigger analysis; otherwise a
+    rejection status (``"unmapped"``, ``"no_sonar_project"``,
+    ``"auto_analyze_disabled"``, ``"branch_not_watched"``) explaining why not
+    — none of these are errors, just "nothing to analyze against yet"."""
+    if repo.project_id is None:
+        return "unmapped"
+    sonar_project = await session.scalar(
+        select(SonarProject).where(SonarProject.gitlab_repository_id == repo.id)
+    )
+    if sonar_project is None:
+        return "no_sonar_project"
+    if not sonar_project.auto_analyze_enabled:
+        return "auto_analyze_disabled"
+    watched = sonar_project.auto_analyze_branches or [repo.default_branch]
+    if event.ref not in watched:
+        return "branch_not_watched"
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Webhook ingress — one per repository, URL carries the repository id since
 # there is no shared instance-level secret to disambiguate by (unlike GitHub).
@@ -539,29 +569,15 @@ async def gitlab_webhook(
     if event is None:
         return {"status": "ignored"}
 
-    if repo.project_id is None:
-        return {"status": "unmapped"}
-
-    sonar_project = await session.scalar(
-        select(SonarProject).where(SonarProject.gitlab_repository_id == repo.id)
-    )
-    if sonar_project is None:
-        return {"status": "no_sonar_project"}
-    if not sonar_project.auto_analyze_enabled:
-        return {"status": "auto_analyze_disabled"}
-    watched = sonar_project.auto_analyze_branches or [repo.default_branch]
-    if event.ref not in watched:
-        return {"status": "branch_not_watched"}
+    status_reason = await _resolve_analyzable_repo(session, repo, event)
+    if status_reason is not None:
+        return {"status": status_reason}
 
     if state.cache is None:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Job queue cache not initialised")
 
-    # Idempotency — GitLab, like GitHub, does not guarantee exactly-once
-    # delivery; same cache-based guard as the GitHub webhook receiver.
-    analysis_key = f"gitlab:analyzed:{repo.id}:{event.sha}"
-    if await state.cache.get_json(analysis_key):
+    if await _already_seen(state.cache, f"gitlab:analyzed:{repo.id}:{event.sha}", 3600):
         return {"status": "duplicate"}
-    await state.cache.set_json(analysis_key, True, ttl=3600)
 
     queue = JobQueue(state.cache)
     await queue.enqueue("clone_and_analyze", {

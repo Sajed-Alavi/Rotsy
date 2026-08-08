@@ -305,6 +305,51 @@ async def delete_report(
     await session.commit()
 
 
+async def _delete_scoped_reports(
+    session: AsyncSession, access: AccessResolver, repo: str, image: str | None, reset_ledger: bool,
+) -> None:
+    image_name = image.split(":", 1)[0] if image else None
+    allowed = access.repo(repo)
+    permitted = allowed.unrestricted or (image_name is not None and allowed.allows(image_name, DELETE))
+    if not permitted:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            f"Not permitted to delete reports in '{repo}'" + (f"/{image}" if image else ""),
+        )
+    conditions = [ScanReport.target_repo == repo]
+    if image:
+        conditions.append(ScanReport.image == image)
+    report_ids = select(ScanReport.id).where(*conditions)
+    await session.execute(sa_delete(Vulnerability).where(Vulnerability.report_id.in_(report_ids)))
+    await session.execute(sa_delete(ScanReport).where(*conditions))
+    if reset_ledger:
+        ledger_conditions = [ScannedImage.repo == repo]
+        if image:
+            ledger_conditions.append(ScannedImage.image == image)
+        await session.execute(
+            sa_update(ScannedImage).where(*ledger_conditions)
+            .values(state="baseline", last_scan_at=None, scan_count=0, last_job_id="")
+        )
+    await session.commit()
+
+
+async def _delete_every_report(session: AsyncSession, access: AccessResolver, reset_ledger: bool) -> None:
+    if not access.unrestricted_everywhere:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "Deleting every report requires unrestricted access. Delete the reports you "
+            "can reach individually instead.",
+        )
+    await session.execute(sa_delete(Vulnerability))
+    await session.execute(sa_delete(ScanReport))
+    if reset_ledger:
+        await session.execute(
+            sa_update(ScannedImage)
+            .values(state="baseline", last_scan_at=None, scan_count=0, last_job_id="")
+        )
+    await session.commit()
+
+
 @router.delete("/reports", status_code=status.HTTP_204_NO_CONTENT,
                dependencies=[Depends(RequirePermission("scan:execute"))])
 async def delete_all_reports(
@@ -335,42 +380,6 @@ async def delete_all_reports(
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "'image' requires 'repo'")
 
     if repo:
-        image_name = image.split(":", 1)[0] if image else None
-        allowed = access.repo(repo)
-        permitted = allowed.unrestricted or (image_name is not None and allowed.allows(image_name, DELETE))
-        if not permitted:
-            raise HTTPException(
-                status.HTTP_403_FORBIDDEN,
-                f"Not permitted to delete reports in '{repo}'" + (f"/{image}" if image else ""),
-            )
-        conditions = [ScanReport.target_repo == repo]
-        if image:
-            conditions.append(ScanReport.image == image)
-        report_ids = select(ScanReport.id).where(*conditions)
-        await session.execute(sa_delete(Vulnerability).where(Vulnerability.report_id.in_(report_ids)))
-        await session.execute(sa_delete(ScanReport).where(*conditions))
-        if reset_ledger:
-            ledger_conditions = [ScannedImage.repo == repo]
-            if image:
-                ledger_conditions.append(ScannedImage.image == image)
-            await session.execute(
-                sa_update(ScannedImage).where(*ledger_conditions)
-                .values(state="baseline", last_scan_at=None, scan_count=0, last_job_id="")
-            )
-        await session.commit()
-        return
-
-    if not access.unrestricted_everywhere:
-        raise HTTPException(
-            status.HTTP_403_FORBIDDEN,
-            "Deleting every report requires unrestricted access. Delete the reports you "
-            "can reach individually instead.",
-        )
-    await session.execute(sa_delete(Vulnerability))
-    await session.execute(sa_delete(ScanReport))
-    if reset_ledger:
-        await session.execute(
-            sa_update(ScannedImage)
-            .values(state="baseline", last_scan_at=None, scan_count=0, last_job_id="")
-        )
-    await session.commit()
+        await _delete_scoped_reports(session, access, repo, image, reset_ledger)
+    else:
+        await _delete_every_report(session, access, reset_ledger)

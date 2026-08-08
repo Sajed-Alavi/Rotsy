@@ -146,8 +146,9 @@ def _registry_from_docker_block(
     )
 
 
-async def _from_repository_settings(nexus: NexusClient, host: str) -> DiscoveryResult | None:
-    """Step 1: one call for every repository's full configuration."""
+async def _fetch_repository_settings(nexus: NexusClient) -> list[dict] | None:
+    """The raw rows from the repositorySettings bulk endpoint, or ``None`` on
+    any failure — signals the caller to fall back to the per-repository probe."""
     try:
         resp = await nexus.client.get(_SETTINGS_ENDPOINT)
     except Exception as exc:  # noqa: BLE001
@@ -161,25 +162,40 @@ async def _from_repository_settings(nexus: NexusClient, host: str) -> DiscoveryR
         rows = resp.json()
     except ValueError:
         return None
-    if not isinstance(rows, list):
+    return rows if isinstance(rows, list) else None
+
+
+def _registry_row_from_settings(row: dict, host: str) -> tuple[str, DockerRegistry | None, str | None] | None:
+    if (row.get("format") or "").lower() != "docker":
+        return None
+    name = row.get("name")
+    if not name:
+        return None
+    built = _registry_from_docker_block(
+        name, (row.get("type") or "").lower(), row.get("docker") or {}, host, "repositorySettings",
+    )
+    if isinstance(built, DockerRegistry):
+        return name, built, None
+    return name, None, built
+
+
+async def _from_repository_settings(nexus: NexusClient, host: str) -> DiscoveryResult | None:
+    """Step 1: one call for every repository's full configuration."""
+    rows = await _fetch_repository_settings(nexus)
+    if rows is None:
         return None
 
     registries: dict[str, DockerRegistry] = {}
     unresolved: dict[str, str] = {}
     for row in rows:
-        if (row.get("format") or "").lower() != "docker":
+        resolved = _registry_row_from_settings(row, host)
+        if resolved is None:
             continue
-        name = row.get("name")
-        if not name:
-            continue
-        built = _registry_from_docker_block(
-            name, (row.get("type") or "").lower(), row.get("docker") or {}, host,
-            "repositorySettings",
-        )
-        if isinstance(built, DockerRegistry):
-            registries[name] = built
+        name, registry, reason = resolved
+        if registry is not None:
+            registries[name] = registry
         else:
-            unresolved[name] = built
+            unresolved[name] = reason
     return DiscoveryResult(registries, unresolved, "repositorySettings")
 
 

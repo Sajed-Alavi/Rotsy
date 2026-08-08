@@ -641,6 +641,45 @@ async def connect_public_repository(
     return RepoOut(id=repo.id, full_name=repo.full_name, default_branch=repo.default_branch, project_id=repo.project_id)
 
 
+async def _already_seen(cache: Cache, key: str, ttl: int) -> bool:
+    """True if ``key`` was already recorded (a duplicate delivery/analysis);
+    otherwise records it and returns False. Shared idempotency check —
+    GitHub's at-least-once delivery (plus a possible retry after our 202 but
+    before the sender sees it) can otherwise double-process the same event."""
+    if await cache.get_json(key):
+        return True
+    await cache.set_json(key, True, ttl=ttl)
+    return False
+
+
+async def _resolve_analyzable_repo(
+    session: AsyncSession, event,
+) -> tuple[str | None, GitHubRepository | None, SonarProject | None]:
+    """The repo/SonarProject a push event should trigger analysis against, or
+    a rejection status (``"unmapped"``, ``"no_sonar_project"``,
+    ``"auto_analyze_disabled"``, ``"branch_not_watched"``) explaining why
+    not — none of these are errors, just "nothing to analyze against yet"."""
+    repo = await session.scalar(
+        select(GitHubRepository).where(GitHubRepository.full_name == event.repo_full_name)
+    )
+    if repo is None or repo.project_id is None:
+        return "unmapped", None, None
+
+    sonar_project = await session.scalar(
+        select(SonarProject).where(SonarProject.github_repository_id == repo.id)
+    )
+    if sonar_project is None:
+        return "no_sonar_project", repo, None
+    if not sonar_project.auto_analyze_enabled:
+        return "auto_analyze_disabled", repo, sonar_project
+    # Empty list = "default branch only" (see models/sonar.py) — otherwise
+    # the push must match one of the explicitly watched branches.
+    watched = sonar_project.auto_analyze_branches or [repo.default_branch]
+    if event.ref not in watched:
+        return "branch_not_watched", repo, sonar_project
+    return None, repo, sonar_project
+
+
 @router.post("/webhooks", status_code=status.HTTP_202_ACCEPTED, include_in_schema=True)
 async def github_webhook(
     request: Request,
@@ -671,48 +710,23 @@ async def github_webhook(
     payload = await request.json()
 
     if state.cache is not None and delivery_id:
-        dedupe_key = f"github:delivery:{delivery_id}"
-        if await state.cache.get_json(dedupe_key):
+        if await _already_seen(state.cache, f"github:delivery:{delivery_id}", 86400):
             return {"status": "duplicate"}
-        await state.cache.set_json(dedupe_key, True, ttl=86400)
 
     event = normalize_event(event_type, payload)
     if event is None:
         return {"status": "ignored"}
 
-    repo = await session.scalar(
-        select(GitHubRepository).where(GitHubRepository.full_name == event.repo_full_name)
-    )
-    if repo is None or repo.project_id is None:
-        # Discovered-but-unmapped, or not discovered yet — nothing to analyze
-        # against. Not an error: the operator hasn't mapped this repo yet.
-        return {"status": "unmapped"}
-
-    sonar_project = await session.scalar(
-        select(SonarProject).where(SonarProject.github_repository_id == repo.id)
-    )
-    if sonar_project is None:
-        # No Sonar project connected yet — same "nothing to analyze against"
-        # reasoning as the unmapped case above, not an error.
-        return {"status": "no_sonar_project"}
-    if not sonar_project.auto_analyze_enabled:
-        return {"status": "auto_analyze_disabled"}
-    # Empty list = "default branch only" (see models/sonar.py) — otherwise
-    # the push must match one of the explicitly watched branches.
-    watched = sonar_project.auto_analyze_branches or [repo.default_branch]
-    if event.ref not in watched:
-        return {"status": "branch_not_watched"}
+    status_reason, repo, _sonar_project = await _resolve_analyzable_repo(session, event)
+    if status_reason is not None:
+        return {"status": status_reason}
 
     if state.cache is None:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Job queue cache not initialised")
 
-    # Idempotency: JobQueue.enqueue() has no dedupe of its own, and GitHub's
-    # at-least-once delivery (plus a possible retry after our 202 but before
-    # the sender sees it) can otherwise double-analyze the same commit.
-    analysis_key = f"github:analyzed:{repo.id}:{event.sha}"
-    if await state.cache.get_json(analysis_key):
+    # Idempotency: JobQueue.enqueue() has no dedupe of its own.
+    if await _already_seen(state.cache, f"github:analyzed:{repo.id}:{event.sha}", 3600):
         return {"status": "duplicate"}
-    await state.cache.set_json(analysis_key, True, ttl=3600)
 
     installation = await session.get(GitHubInstallation, repo.installation_id)
     if installation is None:

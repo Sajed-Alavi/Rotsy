@@ -67,11 +67,16 @@ RUN apk update && apk upgrade --no-cache \
 # top-level config (installed above, after the `nginx.org`-pinned image's own
 # version) — this puts our known-good one back, with pid already pointing at
 # /tmp/nginx.pid (see nginx-main.conf's own comment for why).
-COPY --chown=nginx:nginx nginx-main.conf /etc/nginx/nginx.conf
+#
+# No --chown here (unlike the runtime-writable dirs chowned above): nginx
+# only ever reads its config and served files, never writes them, so they
+# stay root-owned — a compromised nginx worker can't modify its own config
+# or the static bundle it serves.
+COPY nginx-main.conf /etc/nginx/nginx.conf
 
 # envsubst template directory (the nginx image processes /etc/nginx/templates/*).
-COPY --chown=nginx:nginx nginx.conf /etc/nginx/templates/default.conf.template
-COPY --chown=nginx:nginx --from=build /app/dist /usr/share/nginx/html
+COPY nginx.conf /etc/nginx/templates/default.conf.template
+COPY --from=build /app/dist /usr/share/nginx/html
 EXPOSE 8080
 
 USER nginx

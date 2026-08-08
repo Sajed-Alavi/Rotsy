@@ -40,7 +40,7 @@ export default function OverviewPage() {
       const runs = await api.get(`/modules/sonar/projects/${projectId}/analysis-runs`);
       const latest = runs[0] || null;
       setLatestRun(latest);
-      if (latest && latest.status === 'success') {
+      if (latest?.status === 'success') {
         try { setGate(await api.get(`/modules/sonar/analysis-runs/${latest.id}/quality-gate`)); }
         catch (_) { setGate(null); }
       }

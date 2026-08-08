@@ -119,7 +119,7 @@ export default function ImagesPage() {
     return next;
   });
   const selectTag = (repo, imageName, tag) => setSelectedTag((prev) => (
-    prev && prev.repo === repo && prev.imageName === imageName && prev.tag === tag
+    prev?.repo === repo && prev?.imageName === imageName && prev?.tag === tag
       ? null
       : { repo, imageName, tag }
   ));

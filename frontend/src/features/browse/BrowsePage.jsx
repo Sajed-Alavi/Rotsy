@@ -405,7 +405,7 @@ function DeleteResult({ result }) {
         <div className="border border-emerald-200 bg-emerald-50 px-3 py-2 font-mono text-xs text-emerald-700 dark:border-emerald-800 dark:bg-emerald-950/30 dark:text-emerald-400">
           Deleted {result.deleted_count} tag{result.deleted_count === 1 ? '' : 's'}.
           {compact && !compact.triggered && ` Disk space not reclaimed yet: ${compact.reason}`}
-          {compact && compact.triggered && ' Blob compaction triggered.'}
+          {compact?.triggered && ' Blob compaction triggered.'}
         </div>
       )}
       {result.failed_count > 0 && (

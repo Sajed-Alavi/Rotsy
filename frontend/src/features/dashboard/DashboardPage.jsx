@@ -142,8 +142,8 @@ export default function DashboardPage() {
       <section className="mb-6">
         <h2 className="mb-2 font-mono text-[10px] uppercase tracking-wider text-slate-500">Host resources</h2>
         <div className="grid grid-cols-1 gap-px border border-slate-200 bg-slate-200 sm:grid-cols-3 dark:border-slate-800 dark:bg-slate-800">
-          <Stat label="CPU" value={host ? `${host.cpu_percent.toFixed(0)}%` : '···'} series={cpuHistory} tone={host && host.cpu_percent > 85 ? 'warn' : 'neutral'} />
-          <Stat label="Memory" value={host ? `${host.memory_percent.toFixed(0)}%` : '···'} sub={host ? formatBytes(host.memory_used_bytes) : ''} series={memHistory} tone={host && host.memory_percent > 85 ? 'warn' : 'neutral'} />
+          <Stat label="CPU" value={host ? `${host.cpu_percent.toFixed(0)}%` : '···'} series={cpuHistory} tone={host?.cpu_percent > 85 ? 'warn' : 'neutral'} />
+          <Stat label="Memory" value={host ? `${host.memory_percent.toFixed(0)}%` : '···'} sub={host ? formatBytes(host.memory_used_bytes) : ''} series={memHistory} tone={host?.memory_percent > 85 ? 'warn' : 'neutral'} />
           <Stat label="Disk" value={host ? `${((host.disk_used_bytes / (host.disk_total_bytes || 1)) * 100).toFixed(0)}%` : '···'} sub={host ? formatBytes(host.disk_used_bytes) : ''} series={diskHistory} tone={host && host.disk_used_bytes / (host.disk_total_bytes || 1) > 0.85 ? 'warn' : 'neutral'} />
         </div>
       </section>

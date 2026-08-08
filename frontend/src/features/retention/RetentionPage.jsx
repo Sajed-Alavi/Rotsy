@@ -229,7 +229,7 @@ function PreviewModal({ preview, onClose }) {
             timestamp for them, so an age rule cannot judge them. They are never deleted on a guess.
           </div>
         )}
-        {preview.compact && preview.compact.triggered === false && (
+        {preview.compact?.triggered === false && (
           <div className="border border-amber-200 bg-amber-50 px-3 py-2 font-mono text-[11px] text-amber-700 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-400">
             Disk space not reclaimed yet: {preview.compact.reason}
           </div>

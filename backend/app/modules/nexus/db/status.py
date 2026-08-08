@@ -105,6 +105,32 @@ def _trivy_status() -> dict[str, Any]:
     return out
 
 
+def _grype_metadata_fields(v5_meta: Path | None, v6_meta: Path | None) -> dict[str, Any]:
+    """Version/build-date fields from whichever metadata file this database's
+    schema version actually uses."""
+    if v5_meta is not None and v5_meta.is_file():
+        try:
+            meta = json.loads(v5_meta.read_text())
+            return {
+                "version": meta.get("version") or meta.get("Version"),
+                "built": parse_iso(meta.get("built") or meta.get("Built")),
+                "schema_version": meta.get("schema"),
+            }
+        except (json.JSONDecodeError, OSError):
+            return {}
+    if v6_meta is not None and v6_meta.is_file():
+        try:
+            meta = json.loads(v6_meta.read_text())
+            return {
+                "version": meta.get("client_version"),
+                "built": _grype_built_from_source(meta.get("source") or ""),
+                "schema_version": v6_meta.parent.name,
+            }
+        except (json.JSONDecodeError, OSError):
+            return {}
+    return {}
+
+
 def grype_status() -> dict[str, Any]:
     out: dict[str, Any] = {"installed": which("grype") is not None, "present": False}
     out["path"] = str(GRYPE_CACHE_ROOT)
@@ -119,27 +145,7 @@ def grype_status() -> dict[str, Any]:
     out["present"] = db_file is not None
     v5_meta = next(GRYPE_CACHE_ROOT.rglob(_METADATA_FILENAME), None)
     v6_meta = next(GRYPE_CACHE_ROOT.rglob("import.json"), None)
-
-    if v5_meta is not None and v5_meta.is_file():
-        try:
-            meta = json.loads(v5_meta.read_text())
-            out.update({
-                "version": meta.get("version") or meta.get("Version"),
-                "built": parse_iso(meta.get("built") or meta.get("Built")),
-                "schema_version": meta.get("schema"),
-            })
-        except (json.JSONDecodeError, OSError):
-            pass
-    elif v6_meta is not None and v6_meta.is_file():
-        try:
-            meta = json.loads(v6_meta.read_text())
-            out.update({
-                "version": meta.get("client_version"),
-                "built": _grype_built_from_source(meta.get("source") or ""),
-                "schema_version": v6_meta.parent.name,
-            })
-        except (json.JSONDecodeError, OSError):
-            pass
+    out.update(_grype_metadata_fields(v5_meta, v6_meta))
     out["size_bytes"] = dir_size(GRYPE_CACHE_ROOT)
     return out
 

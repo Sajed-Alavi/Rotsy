@@ -2,7 +2,6 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../../lib/api.js';
 import Stat from '../../components/Stat.jsx';
 import Icon from '../../components/Icon.jsx';
-import Badge from '../../components/Badge.jsx';
 import { formatBytes, formatDateTime, formatNumber, percent, relativeTime } from '../../lib/format.js';
 
 const PHASES = {
@@ -152,7 +151,6 @@ export default function StorageAnalyzerPage() {
 
   const stats = result?.stats;
   const isDocker = result?.mode === 'docker';
-  const childLabel = isDocker ? 'tag' : 'version';
 
   return (
     <div className="p-6">

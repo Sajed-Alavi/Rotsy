@@ -46,7 +46,7 @@ function inline(text, keyPrefix = 'i') {
     } else if (token.startsWith('*')) {
       nodes.push(<em key={key}>{token.slice(1, -1)}</em>);
     } else {
-      const [, label, href] = token.match(/\[([^\]]+)\]\(([^)]+)\)/);
+      const [, label, href] = /\[([^\]]+)\]\(([^)]+)\)/.exec(token);
       const internal = href.startsWith('/');
       nodes.push(internal
         ? <Link key={key} to={href} className="text-sky-600 underline underline-offset-2 hover:text-sky-500 dark:text-sky-400">{label}</Link>
@@ -69,7 +69,7 @@ export function outline(markdown) {
     .split('\n')
     .filter((l) => /^#{2,3}\s/.test(l))
     .map((l) => {
-      const level = l.match(/^#+/)[0].length;
+      const level = /^#+/.exec(l)[0].length;
       const text = l.replace(/^#+\s+/, '').trim();
       return { level, text, id: slugify(text) };
     });
@@ -110,7 +110,7 @@ export function Markdown({ source }) {
     }
 
     // Heading
-    const heading = line.match(/^(#{1,4})\s+(.*)$/);
+    const heading = /^(#{1,4})\s+(.*)$/.exec(line);
     if (heading) {
       const level = heading[1].length;
       const text = heading[2].trim();

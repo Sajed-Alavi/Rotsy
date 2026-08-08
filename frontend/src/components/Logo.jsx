@@ -14,7 +14,7 @@ import { useId } from 'react';
 
 /** The glyph alone. Square, so it drops into any fixed-size slot. */
 export function LogoMark({ size = 24, className = '' }) {
-  const uid = useId().replace(/:/g, '');
+  const uid = useId().replaceAll(':', '');
   const shield = `shield-${uid}`;
   const cube = `cube-${uid}`;
   const arrow = `arrow-${uid}`;

@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useState } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import { api, ApiError } from '../lib/api.js';
 
 /**
@@ -76,7 +76,14 @@ export function AuthProvider({ children }) {
     [user],
   );
 
-  const value = { user, loading, login, logout, refreshMe, hasPermission };
+  // Memoized so every consumer doesn't re-render on every AuthProvider
+  // render — login/logout/refreshMe are already stable (useCallback with
+  // no deps), so this object's identity only changes when user or loading
+  // actually change.
+  const value = useMemo(
+    () => ({ user, loading, login, logout, refreshMe, hasPermission }),
+    [user, loading, login, logout, refreshMe, hasPermission],
+  );
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }
 

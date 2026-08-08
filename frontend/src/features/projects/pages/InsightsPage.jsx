@@ -36,7 +36,7 @@ export default function InsightsPage() {
           {['all', 'CRITICAL', 'HIGH', 'MEDIUM', 'LOW'].map((s) => <option key={s} value={s}>{s}</option>)}
         </select>
         <select value={kind} onChange={(e) => setKind(e.target.value)} className="border border-slate-300 bg-white px-2 py-1 font-mono text-xs text-slate-700 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-300">
-          {kinds.map((k) => <option key={k} value={k}>{k.replace(/_/g, ' ')}</option>)}
+          {kinds.map((k) => <option key={k} value={k}>{k.replaceAll('_', ' ')}</option>)}
         </select>
       </div>
 
@@ -53,14 +53,14 @@ export default function InsightsPage() {
                 <Badge tone={SEVERITY_TONE[ins.severity] || 'neutral'}>{ins.severity}</Badge>
               </div>
               <div className="mb-2 font-mono text-[10px] uppercase tracking-wider text-slate-400 dark:text-slate-600">
-                {ins.kind.replace(/_/g, ' ')} · {relativeTime(ins.created_at)}
+                {ins.kind.replaceAll('_', ' ')} · {relativeTime(ins.created_at)}
                 {ins.related_commit_sha && ` · commit ${ins.related_commit_sha.slice(0, 8)}`}
               </div>
               {Object.keys(ins.evidence || {}).length > 0 && (
                 <dl className="grid grid-cols-2 gap-x-4 gap-y-1 border-t border-slate-100 pt-2 font-mono text-[11px] dark:border-slate-800/60 sm:grid-cols-4">
                   {Object.entries(ins.evidence).map(([k, v]) => (
                     <div key={k}>
-                      <dt className="text-slate-400 dark:text-slate-600">{k.replace(/_/g, ' ')}</dt>
+                      <dt className="text-slate-400 dark:text-slate-600">{k.replaceAll('_', ' ')}</dt>
                       <dd className="text-slate-700 dark:text-slate-300">{String(v)}</dd>
                     </div>
                   ))}

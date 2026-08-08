@@ -35,7 +35,7 @@ function parse(path) {
 function titleOf(source, slug) {
   const match = source.match(/^#\s+(.+)$/m);
   if (match) return match[1].trim();
-  return slug.replace(/-/g, ' ').replace(/^\w/, (c) => c.toUpperCase());
+  return slug.replaceAll('-', ' ').replace(/^\w/, (c) => c.toUpperCase());
 }
 
 /** First non-heading, non-empty line — used as the sidebar/landing subtitle. */

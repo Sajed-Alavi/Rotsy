@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react';
 import { api } from '../../lib/api.js';
 import Stat from '../../components/Stat.jsx';
-import Badge from '../../components/Badge.jsx';
 import ProgressBar from '../../components/ProgressBar.jsx';
 import HealthTile from '../../components/HealthTile.jsx';
 import TimeSeriesChart from '../../components/TimeSeriesChart.jsx';
@@ -84,8 +83,6 @@ export default function MetricsPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [blobstores.length]);
 
-  const totalStorage = overview.reduce((s, r) => s + (r.total_bytes || 0), 0);
-  const totalAssets = overview.reduce((s, r) => s + (r.asset_count || 0), 0);
   const totalDiskUsed = blobstores.reduce((s, b) => s + (b.used_bytes || 0), 0);
   const totalDiskCapacity = blobstores.reduce((s, b) => s + (b.capacity_bytes || 0), 0);
   const failingProbes = health?.failing ?? 0;

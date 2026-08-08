@@ -260,10 +260,10 @@ function PatternField({ value, onChange, placeholder, candidates }) {
 export function antMatch(pattern, value) {
   if (!pattern) return false;
   const source = pattern.replace(/\*\*|[*?]|[.+^${}()|[\]\\/-]/g, (token) => {
-    if (token === '**') return '[\\s\\S]*';
+    if (token === '**') return String.raw`[\s\S]*`;
     if (token === '*') return '[^/]*';
     if (token === '?') return '[^/]';
-    return `\\${token}`;
+    return `\\${token}`;  // NOSONAR — String.raw can't be used here: `${token}` must stay a real interpolation, and String.raw`\${token}` silently stops interpolating it (verified)
   });
   try {
     return new RegExp(`^(?:${source})$`).test(value);

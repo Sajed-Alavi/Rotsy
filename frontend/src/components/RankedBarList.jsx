@@ -8,7 +8,7 @@
  * @param {(n: number) => string} [props.formatValue]  defaults to String(n)
  * @param {number} [props.limit=5]
  */
-export default function RankedBarList({ items, formatValue = (n) => String(n), limit = 5 }) {
+export default function RankedBarList({ items, formatValue = String, limit = 5 }) {
   const sorted = [...(items || [])].sort((a, b) => b.value - a.value).slice(0, limit);
   const max = Math.max(1, ...sorted.map((it) => it.value));
 

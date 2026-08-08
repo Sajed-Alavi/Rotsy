@@ -48,7 +48,7 @@ export default function TokensPage() {
       key: 'scopes',
       header: 'Scopes',
       render: (v) => (v
-        ? <span className="font-mono text-[10px] text-slate-500 dark:text-slate-400">{v.split(',').join(', ')}</span>
+        ? <span className="font-mono text-[10px] text-slate-500 dark:text-slate-400">{v.replaceAll(',', ', ')}</span>
         : <span className="font-mono text-[10px] text-slate-400 dark:text-slate-600">owner's full permissions</span>),
     },
     { key: 'revoked', header: 'State', render: (_v, row) => { const s = stateOf(row); return <Badge tone={s.tone}>{s.label}</Badge>; } },
@@ -89,7 +89,7 @@ export default function TokensPage() {
           someone's role immediately narrows every token they issued.
         </p>
         <pre className="overflow-x-auto border border-slate-200 bg-slate-50 p-3 font-mono text-[11px] text-slate-700 dark:border-slate-800 dark:bg-slate-900/40 dark:text-slate-300">
-{`curl -H "Authorization: Bearer shp_…" \\
+{String.raw`curl -H "Authorization: Bearer shp_…" \
      https://your-host/api/scan/summary`}
         </pre>
       </Section>

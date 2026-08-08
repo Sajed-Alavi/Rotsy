@@ -23,8 +23,14 @@ from ..core.outbound import OutboundURLError, validate_outbound_url
 logger = logging.getLogger(__name__)
 
 
-async def send_webhook(url: str, payload: dict, timeout: float = 10.0) -> bool:
-    """POST ``payload`` to ``url``. Returns True on 2xx, False otherwise."""
+async def send_webhook(url: str, payload: dict, timeout: float = 10.0) -> bool:  # NOSONAR
+    """POST ``payload`` to ``url``. Returns True on 2xx, False otherwise.
+
+    ``timeout`` is passed straight to ``httpx.AsyncClient`` — httpx's own
+    documented timeout mechanism, not a generic ``asyncio.wait_for`` pattern
+    a linter might suggest wrapping in ``asyncio.timeout()`` instead; httpx
+    manages its own connection-level timeouts and cancellation internally.
+    """
     try:
         validate_outbound_url(url, get_settings())
     except OutboundURLError as exc:

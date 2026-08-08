@@ -69,8 +69,9 @@ async def run_streaming(
 
     pump_task = asyncio.create_task(pump())
     try:
-        rc = await asyncio.wait_for(proc.wait(), timeout=timeout)
-    except asyncio.TimeoutError:
+        async with asyncio.timeout(timeout):
+            rc = await proc.wait()
+    except TimeoutError:
         proc.kill()
         await proc.wait()
         pump_task.cancel()
@@ -149,7 +150,7 @@ async def oras_pull(
     progress_range: tuple[int, int],
     label: str,
     scanner: str = "trivy",
-    timeout: float = 1800.0,
+    timeout: float = 1800.0,  # NOSONAR
     total_bytes: int | None = None,
 ) -> bool:
     """``oras pull`` with live byte progress polled from the output directory.
@@ -166,6 +167,12 @@ async def oras_pull(
 
     ``timeout`` bounds the whole pull: a stalled connection would otherwise hold
     the job open indefinitely, with the queue behind it.
+
+    Uses a manual deadline rather than ``asyncio.timeout()`` (a linter's
+    generic preference): the poll loop below wraps ``proc.wait()`` in
+    ``asyncio.shield()`` specifically so a 2-second poll timeout doesn't
+    cancel the wait itself, only the "check back in 2s" — a context-manager
+    timeout around the whole loop would cancel that shielded wait too.
     """
     low, high = progress_range
     span = high - low

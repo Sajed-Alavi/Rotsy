@@ -246,8 +246,9 @@ async def _wait_for_event(queue: asyncio.Queue, timeout: float = 15.0) -> dict[s
     """The next analyzer event, or ``None`` on a timeout (caller should emit
     a keepalive and retry)."""
     try:
-        return await asyncio.wait_for(queue.get(), timeout=timeout)
-    except asyncio.TimeoutError:
+        async with asyncio.timeout(timeout):
+            return await queue.get()
+    except TimeoutError:
         return None
 
 

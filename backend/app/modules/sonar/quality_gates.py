@@ -26,9 +26,15 @@ class QualityGateFailedError(Exception):
 
 
 async def wait_for_analysis(client: SonarClient, task_id: str) -> None:
-    """Block until the compute-engine task reaches a terminal state."""
+    """Block until the compute-engine task reaches a terminal state.
+
+    An ``asyncio.Event`` (a linter's generic preference over a sleep loop)
+    doesn't apply here: nothing in this process can set it. The task's status
+    only changes on SonarQube's server, reachable solely by asking it — see
+    the module docstring on why that's polling, not a webhook.
+    """
     elapsed = 0.0
-    while elapsed < POLL_TIMEOUT_SECONDS:
+    while elapsed < POLL_TIMEOUT_SECONDS:  # NOSONAR
         status = await client.task_status(task_id)
         if status == "SUCCESS":
             return

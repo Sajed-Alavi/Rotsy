@@ -102,8 +102,9 @@ async def exec_scanner(
         cwd=cwd,
     )
     try:
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-    except asyncio.TimeoutError:
+        async with asyncio.timeout(timeout):
+            stdout, stderr = await proc.communicate()
+    except TimeoutError:
         proc.kill()
         await proc.wait()
         raise TimeoutError(f"scanner exceeded {timeout:.0f}s")

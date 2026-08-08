@@ -104,7 +104,7 @@ async def generate_python_coverage(source_dir: str) -> str | None:
         returncode, stdout, stderr = await exec_scanner(
             args, env={}, timeout=COVERAGE_TIMEOUT, cwd=source_dir,
         )
-    except (TimeoutError, OSError):
+    except OSError:  # TimeoutError is a subclass of OSError
         logger.warning("Coverage generation timed out or failed to start for %s", source_dir, exc_info=True)
         return None
 

@@ -809,6 +809,61 @@ class AnalyzeRequest(BaseModel):
     branch: str | None = Field(default=None, description="Defaults to the repository's default branch")
 
 
+async def _ensure_sonar_project(
+    session: AsyncSession, settings: Settings, provider, credential_ref: str, repo_ref, source_module: str,
+    project_id: int, github_repository_id: int | None, gitlab_repository_id: int | None,
+) -> SonarProject:
+    """The SonarProject for this repository, auto-provisioning one
+    (language auto-detected the same way automatic on-connect provisioning
+    does) if it doesn't exist yet."""
+    sonar_project = await session.scalar(
+        select(SonarProject).where(
+            SonarProject.github_repository_id == github_repository_id
+            if github_repository_id else SonarProject.gitlab_repository_id == gitlab_repository_id
+        )
+    )
+    if sonar_project is not None:
+        return sonar_project
+
+    try:
+        languages = await provider.get_repository_languages(credential_ref, repo_ref)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(
+            status.HTTP_502_BAD_GATEWAY,
+            f"Unable to reach {source_module.title()} to detect {repo_ref.external_id}'s language: {exc}",
+        ) from exc
+    language = pick_supported_language(languages)
+    if language is None:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            f"{repo_ref.external_id} has no auto-detectable supported language "
+            f"({', '.join(SUPPORTED_LANGUAGES)}) — it can't be analyzed without a build step.",
+        )
+    try:
+        return await create_sonar_project_row(
+            session, settings, project_id, repo_ref.external_id, language,
+            github_repository_id=github_repository_id, gitlab_repository_id=gitlab_repository_id,
+        )
+    except SonarError as exc:
+        if "not configured" in str(exc):
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                "SonarQube is not configured. Set it up in Settings -> Integrations -> SonarQube first.",
+            ) from exc
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, _UNREACHABLE_MESSAGE) from exc
+
+
+async def _resolve_commit_sha(provider, credential_ref: str, repo_ref, branch: str, source_module: str) -> str:
+    try:
+        return await provider.get_latest_commit_sha(credential_ref, repo_ref, branch)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Failed to resolve latest commit for %s@%s: %s", repo_ref.external_id, branch, exc)
+        detail = str(exc).strip() or (
+            f"Unable to reach {source_module.title()} to find the latest commit on {branch!r}. Verify the connection."
+        )
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, detail) from exc
+
+
 @router.post("/analyze", status_code=status.HTTP_202_ACCEPTED,
              dependencies=[Depends(RequirePermission("projects:write"))])
 async def analyze_repository(
@@ -841,49 +896,13 @@ async def analyze_repository(
             "Repositories tab first, then it can be analyzed from Code Quality.",
         )
 
-    sonar_project = await session.scalar(
-        select(SonarProject).where(
-            SonarProject.github_repository_id == github_repository_id
-            if github_repository_id else SonarProject.gitlab_repository_id == gitlab_repository_id
-        )
+    sonar_project = await _ensure_sonar_project(
+        session, settings, provider, credential_ref, repo_ref, source_module,
+        project_id, github_repository_id, gitlab_repository_id,
     )
-    if sonar_project is None:
-        try:
-            languages = await provider.get_repository_languages(credential_ref, repo_ref)
-        except Exception as exc:  # noqa: BLE001
-            raise HTTPException(
-                status.HTTP_502_BAD_GATEWAY,
-                f"Unable to reach {source_module.title()} to detect {repo_ref.external_id}'s language: {exc}",
-            ) from exc
-        language = pick_supported_language(languages)
-        if language is None:
-            raise HTTPException(
-                status.HTTP_400_BAD_REQUEST,
-                f"{repo_ref.external_id} has no auto-detectable supported language "
-                f"({', '.join(SUPPORTED_LANGUAGES)}) — it can't be analyzed without a build step.",
-            )
-        try:
-            sonar_project = await create_sonar_project_row(
-                session, settings, project_id, repo_ref.external_id, language,
-                github_repository_id=github_repository_id, gitlab_repository_id=gitlab_repository_id,
-            )
-        except SonarError as exc:
-            if "not configured" in str(exc):
-                raise HTTPException(
-                    status.HTTP_400_BAD_REQUEST,
-                    "SonarQube is not configured. Set it up in Settings -> Integrations -> SonarQube first.",
-                ) from exc
-            raise HTTPException(status.HTTP_502_BAD_GATEWAY, _UNREACHABLE_MESSAGE) from exc
 
     branch = body.branch or repo_ref.default_branch
-    try:
-        sha = await provider.get_latest_commit_sha(credential_ref, repo_ref, branch)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("Failed to resolve latest commit for %s@%s: %s", repo_ref.external_id, branch, exc)
-        detail = str(exc).strip() or (
-            f"Unable to reach {source_module.title()} to find the latest commit on {branch!r}. Verify the connection."
-        )
-        raise HTTPException(status.HTTP_502_BAD_GATEWAY, detail) from exc
+    sha = await _resolve_commit_sha(provider, credential_ref, repo_ref, branch, source_module)
 
     if state.cache is None:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Job queue is not available")

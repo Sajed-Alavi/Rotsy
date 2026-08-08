@@ -183,6 +183,39 @@ async def _from_repository_settings(nexus: NexusClient, host: str) -> DiscoveryR
     return DiscoveryResult(registries, unresolved, "repositorySettings")
 
 
+async def _resolve_repo_registry(
+    nexus: NexusClient, row: dict, host: str,
+) -> tuple[str, DockerRegistry | None, str | None] | None:
+    """One repository row from the list endpoint, resolved to its connector
+    port. Returns ``(name, registry, None)`` on success, ``(name, None,
+    reason)`` if unresolved, or ``None`` to skip (not a docker
+    hosted/proxy/group repo)."""
+    if (row.get("format") or "").lower() != "docker":
+        return None
+    name = row.get("name")
+    repo_type = (row.get("type") or "").lower()
+    if not name or repo_type not in ("hosted", "proxy", "group"):
+        return None
+    try:
+        detail = await nexus.client.get(f"{_REPOS_ENDPOINT}/docker/{repo_type}/{name}")
+    except Exception as exc:  # noqa: BLE001
+        return name, None, f"could not read repository configuration: {exc}"
+    if detail.status_code != 200:
+        return name, None, (
+            f"Nexus returned HTTP {detail.status_code} for the repository configuration — "
+            "the service account needs repository-admin read privileges to discover "
+            "connector ports"
+        )
+    try:
+        docker_block = (detail.json() or {}).get("docker") or {}
+    except ValueError:
+        return name, None, "malformed repository configuration response"
+    built = _registry_from_docker_block(name, repo_type, docker_block, host, "repository-api")
+    if isinstance(built, DockerRegistry):
+        return name, built, None
+    return name, None, built
+
+
 async def _from_per_repo_api(nexus: NexusClient, host: str) -> DiscoveryResult:
     """Step 2: per-repository config lookups (fallback for step 1)."""
     registries: dict[str, DockerRegistry] = {}
@@ -196,34 +229,14 @@ async def _from_per_repo_api(nexus: NexusClient, host: str) -> DiscoveryResult:
         return DiscoveryResult({}, {}, "unavailable")
 
     for row in rows if isinstance(rows, list) else []:
-        if (row.get("format") or "").lower() != "docker":
+        resolved = await _resolve_repo_registry(nexus, row, host)
+        if resolved is None:
             continue
-        name = row.get("name")
-        repo_type = (row.get("type") or "").lower()
-        if not name or repo_type not in ("hosted", "proxy", "group"):
-            continue
-        try:
-            detail = await nexus.client.get(f"{_REPOS_ENDPOINT}/docker/{repo_type}/{name}")
-        except Exception as exc:  # noqa: BLE001
-            unresolved[name] = f"could not read repository configuration: {exc}"
-            continue
-        if detail.status_code != 200:
-            unresolved[name] = (
-                f"Nexus returned HTTP {detail.status_code} for the repository configuration — "
-                "the service account needs repository-admin read privileges to discover "
-                "connector ports"
-            )
-            continue
-        try:
-            docker_block = (detail.json() or {}).get("docker") or {}
-        except ValueError:
-            unresolved[name] = "malformed repository configuration response"
-            continue
-        built = _registry_from_docker_block(name, repo_type, docker_block, host, "repository-api")
-        if isinstance(built, DockerRegistry):
-            registries[name] = built
+        name, registry, reason = resolved
+        if registry is not None:
+            registries[name] = registry
         else:
-            unresolved[name] = built
+            unresolved[name] = reason
     return DiscoveryResult(registries, unresolved, "repository-api")
 
 

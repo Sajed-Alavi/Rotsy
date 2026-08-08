@@ -124,6 +124,28 @@ def severity_from_cvss(score: float) -> str:
     return "LOW"
 
 
+def _finding_to_row(finding: dict, report: ScanReport, repo: str, scanner: str) -> tuple[str, Vulnerability]:
+    severity = (finding.get("severity") or "UNKNOWN").upper()
+    if severity not in SEVERITIES:
+        severity = "UNKNOWN"
+    cvss = float(finding.get("cvss") or 0.0)
+    if severity == "UNKNOWN" and cvss > 0:
+        # The scanner gave no usable severity but did give a CVSS score —
+        # without this, a real Critical/High finding silently undercounts
+        # into "Unknown" instead of report.critical/report.high.
+        severity = severity_from_cvss(cvss)
+    row = Vulnerability(
+        report_id=report.id, repo=repo, scanner=scanner,
+        cve=finding.get("cve") or "UNKNOWN", severity=severity,
+        package=finding.get("package") or "",
+        installed_version=finding.get("installed_version") or "",
+        fixed_version=finding.get("fixed_version") or "",
+        title=finding.get("title") or "",
+        cvss=cvss,
+    )
+    return severity, row
+
+
 def apply_outcome(
     session: AsyncSession, report: ScanReport, outcome: ScanOutcome, repo: str,
 ) -> None:
@@ -131,25 +153,9 @@ def apply_outcome(
     counts = dict.fromkeys(SEVERITIES, 0)
     rows: list[Vulnerability] = []
     for finding in outcome.vulnerabilities:
-        severity = (finding.get("severity") or "UNKNOWN").upper()
-        if severity not in counts:
-            severity = "UNKNOWN"
-        cvss = float(finding.get("cvss") or 0.0)
-        if severity == "UNKNOWN" and cvss > 0:
-            # The scanner gave no usable severity but did give a CVSS score —
-            # without this, a real Critical/High finding silently undercounts
-            # into "Unknown" instead of report.critical/report.high.
-            severity = severity_from_cvss(cvss)
+        severity, row = _finding_to_row(finding, report, repo, outcome.scanner)
         counts[severity] += 1
-        rows.append(Vulnerability(
-            report_id=report.id, repo=repo, scanner=outcome.scanner,
-            cve=finding.get("cve") or "UNKNOWN", severity=severity,
-            package=finding.get("package") or "",
-            installed_version=finding.get("installed_version") or "",
-            fixed_version=finding.get("fixed_version") or "",
-            title=finding.get("title") or "",
-            cvss=cvss,
-        ))
+        rows.append(row)
     if rows:
         session.add_all(rows)
 

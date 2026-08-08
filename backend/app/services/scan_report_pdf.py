@@ -58,6 +58,30 @@ def _split_image(image: str) -> tuple[str, str]:
     return image, ""
 
 
+def _fixable_recommendation(fixable: list[Vulnerability]) -> str:
+    packages = list(dict.fromkeys(v.package for v in fixable if v.package))[:5]
+    pkg_list = ", ".join(packages) if packages else "the affected packages"
+    plural = "s" if len(fixable) != 1 else ""
+    return (
+        f"{len(fixable)} Critical/High finding{plural} have available fixes — "
+        f"prioritize upgrading {pkg_list}."
+    )
+
+
+def _unfixable_recommendation(unfixable: list[Vulnerability]) -> str:
+    plural = "s" if len(unfixable) != 1 else ""
+    return (
+        f"{len(unfixable)} Critical/High finding{plural} have no vendor-published fix "
+        f"yet — track for a future rescan."
+    )
+
+
+def _no_high_severity_recommendation(report: ScanReport) -> str:
+    if report.critical == 0 and report.high == 0:
+        return "No Critical or High severity findings were detected in this scan."
+    return "Critical/High findings were recorded without fix-availability detail."
+
+
 def _build_recommendations(vulnerabilities: list[Vulnerability], report: ScanReport) -> list[str]:
     """Derive plain-language guidance from the findings — no new DB column needed."""
     fixable = [v for v in vulnerabilities if v.severity in ("CRITICAL", "HIGH") and v.fixed_version]
@@ -65,24 +89,11 @@ def _build_recommendations(vulnerabilities: list[Vulnerability], report: ScanRep
     lines: list[str] = []
 
     if fixable:
-        packages = list(dict.fromkeys(v.package for v in fixable if v.package))[:5]
-        pkg_list = ", ".join(packages) if packages else "the affected packages"
-        plural = "s" if len(fixable) != 1 else ""
-        lines.append(
-            f"{len(fixable)} Critical/High finding{plural} have available fixes — "
-            f"prioritize upgrading {pkg_list}."
-        )
+        lines.append(_fixable_recommendation(fixable))
     if unfixable:
-        plural = "s" if len(unfixable) != 1 else ""
-        lines.append(
-            f"{len(unfixable)} Critical/High finding{plural} have no vendor-published fix "
-            f"yet — track for a future rescan."
-        )
+        lines.append(_unfixable_recommendation(unfixable))
     if not fixable and not unfixable:
-        if report.critical == 0 and report.high == 0:
-            lines.append("No Critical or High severity findings were detected in this scan.")
-        else:
-            lines.append("Critical/High findings were recorded without fix-availability detail.")
+        lines.append(_no_high_severity_recommendation(report))
     if report.medium or report.low:
         lines.append(
             f"{report.medium} Medium and {report.low} Low severity finding(s) remain — "
@@ -130,6 +141,100 @@ def _numbered_canvas_maker(footer_left: str):
     return NumberedCanvas
 
 
+def _build_metadata_table(report: ScanReport, image_name: str, tag: str | None) -> Table:
+    scan_date = report.started_at.strftime("%Y-%m-%d %H:%M UTC") if report.started_at else "—"
+    meta_rows = [
+        ["Repository", report.target_repo, "Scanner", report.scanner],
+        ["Image", image_name, "Tag", tag or "—"],
+        ["Scan date", scan_date, "Status", report.status],
+    ]
+    meta_table = Table(meta_rows, colWidths=[1.0 * inch, 2.35 * inch, 1.0 * inch, 2.35 * inch])
+    meta_table.setStyle(TableStyle([
+        ("FONTNAME", (0, 0), (0, -1), "Helvetica-Bold"),
+        ("FONTNAME", (2, 0), (2, -1), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, -1), 9),
+        ("TEXTCOLOR", (0, 0), (0, -1), _SLATE_500),
+        ("TEXTCOLOR", (2, 0), (2, -1), _SLATE_500),
+        ("TEXTCOLOR", (1, 0), (1, -1), _SLATE_900),
+        ("TEXTCOLOR", (3, 0), (3, -1), _SLATE_900),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+        ("TOPPADDING", (0, 0), (-1, -1), 5),
+        ("LINEBELOW", (0, 0), (-1, -1), 0.5, _SLATE_200),
+    ]))
+    return meta_table
+
+
+def _build_severity_table(report: ScanReport) -> Table:
+    sev_rows = [
+        ["Critical", "High", "Medium", "Low", "Unknown"],
+        [str(report.critical), str(report.high), str(report.medium), str(report.low), str(report.unknown)],
+    ]
+    sev_table = Table(sev_rows, colWidths=[1.34 * inch] * 5)
+    sev_style = [
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTNAME", (0, 1), (-1, 1), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, 0), 8),
+        ("FONTSIZE", (0, 1), (-1, 1), 13),
+        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+        ("BOTTOMPADDING", (0, 0), (-1, 0), 4),
+        ("TOPPADDING", (0, 1), (-1, 1), 4),
+        ("BOTTOMPADDING", (0, 1), (-1, 1), 8),
+        ("BOX", (0, 0), (-1, -1), 0.5, _SLATE_200),
+        ("INNERGRID", (0, 0), (-1, -1), 0.5, _SLATE_200),
+    ]
+    for col, sev in enumerate(("CRITICAL", "HIGH", "MEDIUM", "LOW", "UNKNOWN")):
+        tone = _SEVERITY_COLORS.get(sev, _DEFAULT_SEVERITY_COLOR)
+        sev_style.append(("BACKGROUND", (col, 0), (col, 0), tone["bg"]))
+        sev_style.append(("TEXTCOLOR", (col, 0), (col, 0), tone["text"]))
+        sev_style.append(("TEXTCOLOR", (col, 1), (col, 1), tone["text"]))
+    sev_table.setStyle(TableStyle(sev_style))
+    return sev_table
+
+
+def _build_findings_flowables(
+    vulnerabilities: list[Vulnerability], h2_style, body_style, cell_style,
+) -> list:
+    flowables = [Paragraph(f"Findings ({len(vulnerabilities)})", h2_style)]
+    if not vulnerabilities:
+        flowables.append(Paragraph("No vulnerabilities were recorded for this report.", body_style))
+        return flowables
+    header = ["CVE", "Severity", "Package", "Installed", "Fixed"]
+    finding_rows = [header]
+    for v in vulnerabilities:
+        finding_rows.append([
+            Paragraph(v.cve or "—", cell_style),
+            v.severity,
+            Paragraph(v.package or "—", cell_style),
+            Paragraph(v.installed_version or "—", cell_style),
+            Paragraph(v.fixed_version or "—", cell_style),
+        ])
+    finding_table = Table(
+        finding_rows,
+        colWidths=[1.15 * inch, 0.85 * inch, 1.75 * inch, 1.35 * inch, 1.4 * inch],
+        repeatRows=1,
+    )
+    finding_style = [
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, 0), 8),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("BACKGROUND", (0, 0), (-1, 0), _SLATE_900),
+        ("FONTSIZE", (0, 1), (-1, -1), 8),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("TOPPADDING", (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ("LEFTPADDING", (0, 0), (-1, -1), 5),
+        ("GRID", (0, 0), (-1, -1), 0.4, _SLATE_200),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, _SLATE_50]),
+    ]
+    for row_idx, v in enumerate(vulnerabilities, start=1):
+        tone = _SEVERITY_COLORS.get(v.severity, _DEFAULT_SEVERITY_COLOR)
+        finding_style.append(("TEXTCOLOR", (1, row_idx), (1, row_idx), tone["text"]))
+        finding_style.append(("FONTNAME", (1, row_idx), (1, row_idx), "Helvetica-Bold"))
+    finding_table.setStyle(TableStyle(finding_style))
+    flowables.append(finding_table)
+    return flowables
+
+
 async def build_report_pdf(session: AsyncSession, report: ScanReport) -> bytes:
     """Render one :class:`ScanReport` and all of its findings as a PDF.
 
@@ -170,100 +275,20 @@ async def build_report_pdf(session: AsyncSession, report: ScanReport) -> bytes:
         f"Generated {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}", subtitle_style,
     ))
 
-    scan_date = report.started_at.strftime("%Y-%m-%d %H:%M UTC") if report.started_at else "—"
-    meta_rows = [
-        ["Repository", report.target_repo, "Scanner", report.scanner],
-        ["Image", image_name, "Tag", tag or "—"],
-        ["Scan date", scan_date, "Status", report.status],
-    ]
-    meta_table = Table(meta_rows, colWidths=[1.0 * inch, 2.35 * inch, 1.0 * inch, 2.35 * inch])
-    meta_table.setStyle(TableStyle([
-        ("FONTNAME", (0, 0), (0, -1), "Helvetica-Bold"),
-        ("FONTNAME", (2, 0), (2, -1), "Helvetica-Bold"),
-        ("FONTSIZE", (0, 0), (-1, -1), 9),
-        ("TEXTCOLOR", (0, 0), (0, -1), _SLATE_500),
-        ("TEXTCOLOR", (2, 0), (2, -1), _SLATE_500),
-        ("TEXTCOLOR", (1, 0), (1, -1), _SLATE_900),
-        ("TEXTCOLOR", (3, 0), (3, -1), _SLATE_900),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
-        ("TOPPADDING", (0, 0), (-1, -1), 5),
-        ("LINEBELOW", (0, 0), (-1, -1), 0.5, _SLATE_200),
-    ]))
-    story.append(meta_table)
+    story.append(_build_metadata_table(report, image_name, tag))
 
     total = report.critical + report.high + report.medium + report.low + report.unknown
     story.append(Paragraph("Summary", h2_style))
     story.append(Paragraph(f"<b>{total}</b> total findings across all severities.", body_style))
     story.append(Spacer(1, 6))
-
-    sev_rows = [
-        ["Critical", "High", "Medium", "Low", "Unknown"],
-        [str(report.critical), str(report.high), str(report.medium), str(report.low), str(report.unknown)],
-    ]
-    sev_table = Table(sev_rows, colWidths=[1.34 * inch] * 5)
-    sev_style = [
-        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-        ("FONTNAME", (0, 1), (-1, 1), "Helvetica-Bold"),
-        ("FONTSIZE", (0, 0), (-1, 0), 8),
-        ("FONTSIZE", (0, 1), (-1, 1), 13),
-        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
-        ("BOTTOMPADDING", (0, 0), (-1, 0), 4),
-        ("TOPPADDING", (0, 1), (-1, 1), 4),
-        ("BOTTOMPADDING", (0, 1), (-1, 1), 8),
-        ("BOX", (0, 0), (-1, -1), 0.5, _SLATE_200),
-        ("INNERGRID", (0, 0), (-1, -1), 0.5, _SLATE_200),
-    ]
-    for col, sev in enumerate(("CRITICAL", "HIGH", "MEDIUM", "LOW", "UNKNOWN")):
-        tone = _SEVERITY_COLORS.get(sev, _DEFAULT_SEVERITY_COLOR)
-        sev_style.append(("BACKGROUND", (col, 0), (col, 0), tone["bg"]))
-        sev_style.append(("TEXTCOLOR", (col, 0), (col, 0), tone["text"]))
-        sev_style.append(("TEXTCOLOR", (col, 1), (col, 1), tone["text"]))
-    sev_table.setStyle(TableStyle(sev_style))
-    story.append(sev_table)
+    story.append(_build_severity_table(report))
 
     story.append(Paragraph("Recommendations", h2_style))
     for line in _build_recommendations(vulnerabilities, report):
         story.append(Paragraph(f"&bull; {line}", body_style))
         story.append(Spacer(1, 3))
 
-    story.append(Paragraph(f"Findings ({len(vulnerabilities)})", h2_style))
-    if vulnerabilities:
-        header = ["CVE", "Severity", "Package", "Installed", "Fixed"]
-        finding_rows = [header]
-        for v in vulnerabilities:
-            finding_rows.append([
-                Paragraph(v.cve or "—", cell_style),
-                v.severity,
-                Paragraph(v.package or "—", cell_style),
-                Paragraph(v.installed_version or "—", cell_style),
-                Paragraph(v.fixed_version or "—", cell_style),
-            ])
-        finding_table = Table(
-            finding_rows,
-            colWidths=[1.15 * inch, 0.85 * inch, 1.75 * inch, 1.35 * inch, 1.4 * inch],
-            repeatRows=1,
-        )
-        finding_style = [
-            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-            ("FONTSIZE", (0, 0), (-1, 0), 8),
-            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-            ("BACKGROUND", (0, 0), (-1, 0), _SLATE_900),
-            ("FONTSIZE", (0, 1), (-1, -1), 8),
-            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-            ("TOPPADDING", (0, 0), (-1, -1), 4),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
-            ("LEFTPADDING", (0, 0), (-1, -1), 5),
-            ("GRID", (0, 0), (-1, -1), 0.4, _SLATE_200),
-            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, _SLATE_50]),
-        ]
-        for row_idx, v in enumerate(vulnerabilities, start=1):
-            tone = _SEVERITY_COLORS.get(v.severity, _DEFAULT_SEVERITY_COLOR)
-            finding_style.append(("TEXTCOLOR", (1, row_idx), (1, row_idx), tone["text"]))
-            finding_style.append(("FONTNAME", (1, row_idx), (1, row_idx), "Helvetica-Bold"))
-        finding_table.setStyle(TableStyle(finding_style))
-        story.append(finding_table)
-    else:
-        story.append(Paragraph("No vulnerabilities were recorded for this report.", body_style))
+    story.extend(_build_findings_flowables(vulnerabilities, h2_style, body_style, cell_style))
 
     footer_left = f"Rotsy · {report.target_repo}/{report.image}"
     doc.build(story, canvasmaker=_numbered_canvas_maker(footer_left))

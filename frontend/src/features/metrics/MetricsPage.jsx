@@ -62,7 +62,7 @@ export default function MetricsPage() {
       try {
         const data = await api.get(`/metrics/${encodeURIComponent(selected)}/timeseries?hours=${hours}`);
         if (active) setSeries(data);
-      } catch (_) {}
+      } catch (_) { console.debug('metric refresh failed, keeping last known values', _); }
     })();
     return () => { active = false; };
   }, [selected, hours]);
@@ -77,7 +77,7 @@ export default function MetricsPage() {
       try {
         const data = await api.get(`/metrics/blobstore/${encodeURIComponent(worst.name)}/timeseries?hours=24`);
         if (active) setDiskSeries(data.map((d) => d.used_pct || 0));
-      } catch (_) {}
+      } catch (_) { console.debug('disk sparkline refresh failed, keeping last known values', _); }
     })();
     return () => { active = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps

@@ -42,9 +42,9 @@ export default function OverviewPage() {
       setLatestRun(latest);
       if (latest?.status === 'success') {
         try { setGate(await api.get(`/modules/sonar/analysis-runs/${latest.id}/quality-gate`)); }
-        catch (_) { setGate(null); }
+        catch (_) { setGate(null); console.debug('quality gate fetch failed for latest run', _); }
       }
-    } catch (_) { /* no Sonar project connected yet */ }
+    } catch (_) { console.debug('no Sonar project connected yet', _); }
   };
   useEffect(() => { load(); }, [projectId]);
 

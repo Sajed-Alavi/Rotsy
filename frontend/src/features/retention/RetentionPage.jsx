@@ -16,12 +16,12 @@ export default function RetentionPage() {
   const [msg, setMsg] = useState('');
 
   const loadRepos = async () => {
-    try { setRepos(await api.get('/storage/repos')); } catch (_) {}
+    try { setRepos(await api.get('/storage/repos')); } catch (_) { console.debug('repo list fetch failed', _); }
   };
 
   const load = async () => {
     setLoading(true);
-    try { setPolicies(await api.get('/retention/policies')); } catch (_) {}
+    try { setPolicies(await api.get('/retention/policies')); } catch (_) { console.debug('retention policy fetch failed', _); }
     setLoading(false);
   };
   useEffect(() => { load(); loadRepos(); }, []);

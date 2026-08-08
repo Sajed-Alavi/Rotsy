@@ -27,7 +27,7 @@ export default function JobsPage() {
 
   const load = async () => {
     setLoading(true);
-    try { setJobs(await api.get('/jobs')); } catch (_) {}
+    try { setJobs(await api.get('/jobs')); } catch (_) { console.debug('jobs fetch failed', _); }
     setLoading(false);
   };
 

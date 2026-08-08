@@ -51,7 +51,7 @@ function NexusCard() {
       if (data.configured) {
         setForm({ url: data.url, username: data.username, password: '', verify_ssl: data.verify_ssl });
       }
-    } catch (_) {}
+    } catch (_) { console.debug('SonarQube config fetch failed', _); }
   };
   useEffect(() => { load(); }, []);
 
@@ -145,8 +145,8 @@ function GitHubCard() {
 
   const load = async () => {
     try { setData(await api.get('/modules/github/status')); } catch (e) { setErr(e.message); }
-    try { setInstallUrl((await api.get('/modules/github/install-url')).url); } catch (_) { /* App may not be configured yet */ }
-    try { setInstallations(await api.get('/modules/github/installations')); } catch (_) { /* not configured yet */ }
+    try { setInstallUrl((await api.get('/modules/github/install-url')).url); } catch (_) { console.debug('install-url unavailable — App may not be configured yet', _); }
+    try { setInstallations(await api.get('/modules/github/installations')); } catch (_) { console.debug('installations fetch failed — not configured yet', _); }
   };
 
   useEffect(() => {
@@ -341,7 +341,7 @@ function GitLabCard() {
 
   const load = async () => {
     try { setData(await api.get('/modules/gitlab/status')); } catch (e) { setErr(e.message); }
-    try { setRepos(await api.get('/modules/gitlab/repositories')); } catch (_) { /* ignore */ }
+    try { setRepos(await api.get('/modules/gitlab/repositories')); } catch (_) { console.debug('GitLab repositories fetch failed', _); }
   };
   useEffect(() => { load(); }, []);
 
@@ -525,7 +525,7 @@ function SonarCard() {
     try {
       const cfg = await api.get('/modules/sonar/config');
       if (cfg.configured) setForm((f) => ({ ...f, url: cfg.url }));
-    } catch (_) { /* no config saved yet */ }
+    } catch (_) { console.debug('SonarQube config not saved yet', _); }
   };
   useEffect(() => { load(); }, []);
 

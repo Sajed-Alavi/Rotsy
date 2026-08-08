@@ -15,7 +15,7 @@ export default function AlertsPage() {
 
   const load = async () => {
     setLoading(true);
-    try { setRules(await api.get('/alerts')); } catch (_) {}
+    try { setRules(await api.get('/alerts')); } catch (_) { console.debug('alert rules fetch failed', _); }
     setLoading(false);
   };
   useEffect(() => { load(); }, []);

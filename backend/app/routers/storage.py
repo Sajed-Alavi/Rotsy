@@ -258,6 +258,14 @@ async def analyze_stream(
     # gone by the time the SSE body streams.
     allowed = access.repo(repo)
 
+    async def _wait_for_event(queue: asyncio.Queue, timeout: float = 15.0) -> dict[str, Any] | None:
+        """The next analyzer event, or ``None`` on a timeout (caller should
+        emit a keepalive and retry)."""
+        try:
+            return await asyncio.wait_for(queue.get(), timeout=timeout)
+        except asyncio.TimeoutError:
+            return None
+
     async def event_generator() -> AsyncIterator[dict[str, Any]]:
         if use_cache:
             cached = await cache.get_json(_result_cache_key(repo))
@@ -274,9 +282,8 @@ async def analyze_stream(
                 if await request.is_disconnected():
                     logger.info("Client disconnected from analysis stream for '%s'.", repo)
                     break
-                try:
-                    ev = await asyncio.wait_for(queue.get(), timeout=15.0)
-                except asyncio.TimeoutError:
+                ev = await _wait_for_event(queue)
+                if ev is None:
                     yield event("progress", {"message": "working"})
                     continue
 

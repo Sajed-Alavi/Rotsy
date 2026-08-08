@@ -215,16 +215,7 @@ async def check_sonar_updates(
     }
 
 
-# ---------------------------------------------------------------------------
-# Project mapping
-# ---------------------------------------------------------------------------
-@router.post("/projects", status_code=201,
-             dependencies=[Depends(RequirePermission("projects:write"))])
-async def create_sonar_project(
-    body: SonarProjectCreate,
-    session: Annotated[AsyncSession, Depends(get_session)],
-    settings: Annotated[Settings, Depends(get_settings)],
-) -> SonarProjectOut:
+def _validate_create_body(body: SonarProjectCreate) -> None:
     if body.language not in SUPPORTED_LANGUAGES:
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST,
@@ -238,8 +229,10 @@ async def create_sonar_project(
     if body.github_repository_id and body.gitlab_repository_id:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Specify only one of github_repository_id/gitlab_repository_id.")
 
-    project = await projects_core.get_project(session, body.project_id)
 
+async def _resolve_target_repo(session: AsyncSession, body: SonarProjectCreate) -> str:
+    """The label of the repository this Sonar project will belong to, after
+    checking it's actually connected to the Project in ``body``."""
     if body.github_repository_id:
         repo = await session.get(GitHubRepository, body.github_repository_id)
         repo_label = repo.full_name if repo else None
@@ -248,7 +241,10 @@ async def create_sonar_project(
         repo_label = repo.full_path if repo else None
     if repo is None or repo.project_id != body.project_id:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "That repository is not connected to this Project.")
+    return repo_label
 
+
+async def _ensure_no_existing_sonar_project(session: AsyncSession, body: SonarProjectCreate, repo_label: str) -> None:
     existing = await session.scalar(
         select(SonarProject).where(
             SonarProject.github_repository_id == body.github_repository_id
@@ -257,6 +253,22 @@ async def create_sonar_project(
     )
     if existing is not None:
         raise HTTPException(status.HTTP_409_CONFLICT, f"{repo_label} already has a Sonar project")
+
+
+# ---------------------------------------------------------------------------
+# Project mapping
+# ---------------------------------------------------------------------------
+@router.post("/projects", status_code=201,
+             dependencies=[Depends(RequirePermission("projects:write"))])
+async def create_sonar_project(
+    body: SonarProjectCreate,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> SonarProjectOut:
+    _validate_create_body(body)
+    project = await projects_core.get_project(session, body.project_id)
+    repo_label = await _resolve_target_repo(session, body)
+    await _ensure_no_existing_sonar_project(session, body, repo_label)
 
     try:
         return await create_sonar_project_row(

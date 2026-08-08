@@ -71,49 +71,65 @@ def _group_key(component: dict) -> str:
     return f"{group}/{name}".lstrip("/")
 
 
+def _split_dated(components: list[dict]) -> tuple[list[tuple[dict, datetime | None]], list[dict]]:
+    """Every component paired with its best-known timestamp, plus the subset
+    whose age could not be determined at all."""
+    dated: list[tuple[dict, datetime | None]] = []
+    undated: list[dict] = []
+    for component in components:
+        timestamp = _component_time(component)
+        if timestamp is None:
+            undated.append(component)
+        dated.append((component, timestamp))
+    return dated, undated
+
+
+def _age_rule_targets(dated: list[tuple[dict, datetime | None]], max_age_days: int) -> dict[str, dict]:
+    cutoff = datetime.now(timezone.utc) - timedelta(days=max_age_days)
+    return {
+        str(component.get("id")): component
+        for component, timestamp in dated
+        if timestamp is not None and timestamp < cutoff
+    }
+
+
+def _keep_last_n_targets(dated: list[tuple[dict, datetime | None]], keep_last_n: int) -> dict[str, dict]:
+    """``keep_last_n`` counts **per image name**, not across the whole
+    repository. Repository-wide counting was the bug behind "I have 4 images
+    and it deleted the wrong thing / nothing": with `keep_last_n=3` and four
+    separate images of one tag each, it kept the three newest images in the
+    entire repository and deleted the fourth image outright, rather than
+    keeping the last three tags of each image."""
+    by_name: dict[str, list[tuple[dict, datetime | None]]] = {}
+    for component, timestamp in dated:
+        by_name.setdefault(_group_key(component), []).append((component, timestamp))
+    targets: dict[str, dict] = {}
+    for entries in by_name.values():
+        # Newest first. Undated components sort last, so a component of
+        # unknown age is a deletion candidate before a known-recent one.
+        entries.sort(
+            key=lambda pair: pair[1] or datetime.min.replace(tzinfo=timezone.utc),
+            reverse=True,
+        )
+        for component, _ in entries[keep_last_n:]:
+            targets[str(component.get("id"))] = component
+    return targets
+
+
 def _select_for_deletion(components: list[dict], policy: RetentionPolicy) -> tuple[list[dict], list[dict]]:
     """Apply a policy; return ``(to_delete, undated)``.
 
     ``undated`` lists components whose age could not be determined. They are
     never deleted by an age rule — the run reports them so the operator can see
     that they were skipped instead of silently losing data or silently keeping it.
-
-    ``keep_last_n`` counts **per image name**, not across the whole repository.
-    Repository-wide counting was the bug behind "I have 4 images and it deleted
-    the wrong thing / nothing": with `keep_last_n=3` and four separate images of
-    one tag each, it kept the three newest images in the entire repository and
-    deleted the fourth image outright, rather than keeping the last three tags of
-    each image.
     """
+    dated, undated = _split_dated(components)
+
     to_delete: dict[str, dict] = {}
-    undated: list[dict] = []
-
-    dated: list[tuple[dict, datetime | None]] = []
-    for component in components:
-        timestamp = _component_time(component)
-        if timestamp is None:
-            undated.append(component)
-        dated.append((component, timestamp))
-
     if policy.delete_older_than_days is not None:
-        cutoff = datetime.now(timezone.utc) - timedelta(days=policy.delete_older_than_days)
-        for component, timestamp in dated:
-            if timestamp is not None and timestamp < cutoff:
-                to_delete[str(component.get("id"))] = component
-
+        to_delete.update(_age_rule_targets(dated, policy.delete_older_than_days))
     if policy.keep_last_n is not None and policy.keep_last_n >= 0:
-        by_name: dict[str, list[tuple[dict, datetime | None]]] = {}
-        for component, timestamp in dated:
-            by_name.setdefault(_group_key(component), []).append((component, timestamp))
-        for entries in by_name.values():
-            # Newest first. Undated components sort last, so a component of
-            # unknown age is a deletion candidate before a known-recent one.
-            entries.sort(
-                key=lambda pair: pair[1] or datetime.min.replace(tzinfo=timezone.utc),
-                reverse=True,
-            )
-            for component, _ in entries[policy.keep_last_n:]:
-                to_delete[str(component.get("id"))] = component
+        to_delete.update(_keep_last_n_targets(dated, policy.keep_last_n))
 
     return list(to_delete.values()), undated
 

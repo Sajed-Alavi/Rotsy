@@ -53,6 +53,54 @@ def _matches(value: float, condition: str, threshold: float) -> bool:
     return False
 
 
+async def _fire_rule(rule: AlertRule, repo: str, numeric: float) -> None:
+    if rule.webhook_url:
+        await send_webhook(
+            rule.webhook_url,
+            {
+                "rule_id": rule.id,
+                "rule_name": rule.name,
+                "repo": repo,
+                "metric": rule.metric,
+                "value": numeric,
+                "condition": rule.condition,
+                "threshold": rule.threshold,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            },
+        )
+    else:
+        logger.info("alert '%s' fired (no webhook configured, delivery skipped)", rule.name)
+    rule.last_triggered_at = datetime.now(timezone.utc)
+
+
+async def _evaluate_rule(rule: AlertRule, snapshots: dict[str, list[dict]]) -> bool:
+    """Check one rule against its snapshot kind; fire (webhook +
+    ``last_triggered_at``) on the first matching entry. One fire per rule per
+    evaluation cycle."""
+    mapping = _METRIC_PATHS.get(rule.metric)
+    if mapping is None:
+        return False
+    field_key, snapshot_kind = mapping
+    # Determine which repos/blobstores this rule applies to.
+    pattern = rule.repo_filter or "%"
+    for entry in snapshots[snapshot_kind]:
+        repo = entry.get("repo", "")
+        # Translate SQL LIKE to a simple wildcard check.
+        if not _like_match(pattern, repo):
+            continue
+        value = entry.get(field_key)
+        if value is None:
+            continue
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError):
+            continue
+        if _matches(numeric, rule.condition, rule.threshold):
+            await _fire_rule(rule, repo, numeric)
+            return True
+    return False
+
+
 async def evaluate_alerts(
     session: AsyncSession, snapshot: list[dict], blobstore_snapshot: list[dict] | None = None,
 ) -> int:
@@ -68,44 +116,8 @@ async def evaluate_alerts(
 
     fired = 0
     for rule in rules:
-        mapping = _METRIC_PATHS.get(rule.metric)
-        if mapping is None:
-            continue
-        field_key, snapshot_kind = mapping
-        # Determine which repos/blobstores this rule applies to.
-        pattern = rule.repo_filter or "%"
-        for entry in snapshots[snapshot_kind]:
-            repo = entry.get("repo", "")
-            # Translate SQL LIKE to a simple wildcard check.
-            if not _like_match(pattern, repo):
-                continue
-            value = entry.get(field_key)
-            if value is None:
-                continue
-            try:
-                numeric = float(value)
-            except (TypeError, ValueError):
-                continue
-            if _matches(numeric, rule.condition, rule.threshold):
-                if rule.webhook_url:
-                    await send_webhook(
-                        rule.webhook_url,
-                        {
-                            "rule_id": rule.id,
-                            "rule_name": rule.name,
-                            "repo": repo,
-                            "metric": rule.metric,
-                            "value": numeric,
-                            "condition": rule.condition,
-                            "threshold": rule.threshold,
-                            "timestamp": datetime.now(timezone.utc).isoformat(),
-                        },
-                    )
-                else:
-                    logger.info("alert '%s' fired (no webhook configured, delivery skipped)", rule.name)
-                rule.last_triggered_at = datetime.now(timezone.utc)
-                fired += 1
-                break  # one fire per rule per evaluation cycle
+        if await _evaluate_rule(rule, snapshots):
+            fired += 1
     if fired:
         await session.commit()
     return fired

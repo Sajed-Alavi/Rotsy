@@ -171,6 +171,31 @@ async def _enqueue_scan(
 # ---------------------------------------------------------------------------
 # Trigger (a): a push happened
 # ---------------------------------------------------------------------------
+async def _resolve_ledger_entry(
+    session: AsyncSession, repo: str, ref: ImageRef, source: str,
+) -> tuple[ScannedImage | None, str | None]:
+    """The ledger entry ``ref`` should be scanned against — freshly created,
+    or updated in place for a genuine re-push — or ``(None, reason)`` when
+    nothing should be scanned right now."""
+    entry = await _ledger_entry(session, repo, ref.image)
+    if entry is None:
+        entry = ScannedImage(repo=repo, image=ref.image, digest=ref.digest,
+                             state="queued", source=source)
+        session.add(entry)
+        await session.flush()
+        return entry, None
+    if entry.state == "queued":
+        return None, "a scan for this image is already queued"
+    if ref.digest and entry.digest and ref.digest != entry.digest:
+        # Same tag, new content — treat as a fresh push.
+        entry.digest = ref.digest
+        entry.source = source
+        return entry, None
+    if entry.state in ("scanned", "failed", "baseline"):
+        return None, f"already known ({entry.state}); not re-scanning implicitly"
+    return entry, None
+
+
 async def ingest_push_event(
     session: AsyncSession,
     cache: Cache,
@@ -198,20 +223,9 @@ async def ingest_push_event(
         # baseline it first; the next push is scanned.
         return {"scanned": False, "reason": f"'{repo}' has no baseline yet — it will be adopted shortly"}
 
-    entry = await _ledger_entry(session, repo, ref.image)
+    entry, reason = await _resolve_ledger_entry(session, repo, ref, source)
     if entry is None:
-        entry = ScannedImage(repo=repo, image=ref.image, digest=ref.digest,
-                             state="queued", source=source)
-        session.add(entry)
-        await session.flush()
-    elif entry.state == "queued":
-        return {"scanned": False, "reason": "a scan for this image is already queued"}
-    elif ref.digest and entry.digest and ref.digest != entry.digest:
-        # Same tag, new content — treat as a fresh push.
-        entry.digest = ref.digest
-        entry.source = source
-    elif entry.state in ("scanned", "failed", "baseline"):
-        return {"scanned": False, "reason": f"already known ({entry.state}); not re-scanning implicitly"}
+        return {"scanned": False, "reason": reason}
 
     job_id = await _enqueue_scan(cache, session, entry, _scanners_for(target, default_scanners), source)
     return {"scanned": True, "job_id": job_id, "image": ref.image, "repo": repo}
@@ -258,6 +272,36 @@ def parse_webhook_payload(payload: dict[str, Any]) -> tuple[str, ImageRef] | Non
     return repo, ImageRef(f"{name}:{tag}")
 
 
+async def _entry_to_scan(
+    session: AsyncSession, target: ScanTarget, ref: ImageRef, known: dict[str, ScannedImage],
+) -> ScannedImage | None:
+    """The ledger entry to enqueue a scan for, or ``None`` to skip this image
+    — already queued, unchanged, or a digest backfill with nothing new to
+    scan."""
+    entry = known.get(ref.image)
+    if entry is None:
+        entry = ScannedImage(repo=target.repo, image=ref.image, digest=ref.digest,
+                             state="queued", source="push")
+        session.add(entry)
+        await session.flush()
+        return entry
+    if entry.state == "queued":
+        return None  # a scan is already in flight for this image
+    if ref.digest and entry.digest and ref.digest != entry.digest:
+        # Same tag, different content: someone re-pushed. That is a new push,
+        # and it is the only thing that makes a known image scannable again
+        # without an explicit request.
+        entry.digest = ref.digest
+        entry.source = "push"
+        return entry
+    if not entry.digest and ref.digest:
+        # Backfill a digest we did not have (e.g. a row created before the
+        # manifest was readable) without treating it as a push.
+        entry.digest = ref.digest
+        return None
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Trigger (a), fallback: notice new images without a webhook
 # ---------------------------------------------------------------------------
@@ -292,26 +336,8 @@ async def observe_target(
     queued: list[str] = []
     scanners = _scanners_for(target, default_scanners)
     for ref in images:
-        entry = known.get(ref.image)
+        entry = await _entry_to_scan(session, target, ref, known)
         if entry is None:
-            entry = ScannedImage(repo=target.repo, image=ref.image, digest=ref.digest,
-                                 state="queued", source="push")
-            session.add(entry)
-            await session.flush()
-        elif entry.state == "queued":
-            continue  # a scan is already in flight for this image
-        elif ref.digest and entry.digest and ref.digest != entry.digest:
-            # Same tag, different content: someone re-pushed. That is a new push,
-            # and it is the only thing that makes a known image scannable again
-            # without an explicit request.
-            entry.digest = ref.digest
-            entry.source = "push"
-        elif not entry.digest and ref.digest:
-            # Backfill a digest we did not have (e.g. a row created before the
-            # manifest was readable) without treating it as a push.
-            entry.digest = ref.digest
-            continue
-        else:
             continue
         queued.append(await _enqueue_scan(cache, session, entry, scanners, "push"))
     if not queued:

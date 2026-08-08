@@ -286,6 +286,31 @@ async def _grype_db_size(env: dict[str, str]) -> int:
         return 0
 
 
+async def _emit_download_tick(
+    emit: ProgressCallback, done: int, total: int, prev_bytes: int, prev_time: float,
+) -> tuple[int, float]:
+    """One progress tick: compute speed/ETA from the delta since the last
+    tick, emit it, and return the new (bytes, time) baseline for the next one."""
+    now = time.monotonic()
+    elapsed = now - prev_time
+    speed_bps = ((done - prev_bytes) / elapsed) if elapsed > 0 else 0.0
+
+    speed_mbps = speed_bps / 1e6
+    remaining_mb = max(0.0, (total - done) / 1e6) if total else 0.0
+    pct = 52 + (int(min(44, done / total * 44)) if total else 0)
+    await emit(
+        pct,
+        f"grype-db: {done / 1e6:.1f}"
+        + (f" / {total / 1e6:.0f} MB{rate(speed_mbps, remaining_mb)}" if total else " MB downloaded"),
+        {"scanner": "grype", "stage": "downloading", "artifact": "grype-db",
+         "done_bytes": done, "total_bytes": total, "estimated": False,
+         "indeterminate": not total,
+         "speed_bps": round(speed_bps),
+         "eta_seconds": round(remaining_mb * 1e6 / speed_bps) if (total and speed_bps > 1e5) else None},
+    )
+    return done, now
+
+
 async def _watch_download(
     target: Path, total: int, emit: ProgressCallback, stop: asyncio.Event,
 ) -> None:
@@ -308,109 +333,65 @@ async def _watch_download(
         done = dir_size(target)
         if done <= 0:
             continue
-        now = time.monotonic()
-        elapsed = now - prev_time
-        speed_bps = ((done - prev_bytes) / elapsed) if elapsed > 0 else 0.0
-        prev_bytes, prev_time = done, now
-
-        speed_mbps = speed_bps / 1e6
-        remaining_mb = max(0.0, (total - done) / 1e6) if total else 0.0
-        pct = 52 + (int(min(44, done / total * 44)) if total else 0)
-        await emit(
-            pct,
-            f"grype-db: {done / 1e6:.1f}"
-            + (f" / {total / 1e6:.0f} MB{rate(speed_mbps, remaining_mb)}" if total else " MB downloaded"),
-            {"scanner": "grype", "stage": "downloading", "artifact": "grype-db",
-             "done_bytes": done, "total_bytes": total, "estimated": False,
-             "indeterminate": not total,
-             "speed_bps": round(speed_bps),
-             "eta_seconds": round(remaining_mb * 1e6 / speed_bps) if (total and speed_bps > 1e5) else None},
-        )
+        prev_bytes, prev_time = await _emit_download_tick(emit, done, total, prev_bytes, prev_time)
 
 
-async def _update_grype(emit: ProgressCallback, env: dict[str, str]) -> dict[str, Any]:
-    grype = which("grype")
-    if grype is None:
-        return {"ok": False, "error": "grype binary not installed"}
-
-    await emit(52, "grype: resolving the current database",
-               {"scanner": "grype", "stage": "connecting"})
-
-    # Grype's own download timeout defaults to 5 minutes, which a ~139 MB
-    # database on a slow link cannot meet; it then aborts mid-stream and reports
-    # "unexpected EOF", which looks like a network fault rather than a deadline.
-    # TMPDIR is pinned so the transfer can be observed while it happens.
+def _prepare_grype_download_env(env: dict[str, str]) -> tuple[dict[str, str], Path]:
+    """A scratch TMPDIR plus timeouts long enough for a ~139 MB database on a
+    slow link. Grype's own download timeout defaults to 5 minutes, which such
+    a transfer cannot meet; it then aborts mid-stream and reports "unexpected
+    EOF", which looks like a network fault rather than a deadline. TMPDIR is
+    pinned so the transfer can be observed while it happens."""
     GRYPE_TMPDIR.mkdir(parents=True, exist_ok=True)
     tmp = Path(tempfile.mkdtemp(prefix="dl-", dir=str(GRYPE_TMPDIR)))
-    env = {
+    merged = {
         **env,
         "TMPDIR": str(tmp),
         "GRYPE_DB_UPDATE_DOWNLOAD_TIMEOUT": GRYPE_DOWNLOAD_TIMEOUT,
         "GRYPE_DB_UPDATE_AVAILABLE_TIMEOUT": GRYPE_AVAILABLE_TIMEOUT,
     }
+    return merged, tmp
 
-    total = await _grype_db_size(env)
-    await emit(52, f"grype: downloading database ({total / 1e6:.0f} MB)" if total
-               else "grype: downloading database (size unknown)",
-               {"scanner": "grype", "stage": "downloading", "artifact": "grype-db",
-                "done_bytes": 0, "total_bytes": total, "estimated": False,
-                "indeterminate": not total})
 
-    state = {"prev_bytes": 0.0, "prev_time": time.monotonic()}
-
-    async def on_line(line: str) -> None:
-        """Fast path for Grype builds that do print progress."""
-        match = GRYPE_PROGRESS.search(line)
-        if not match:
-            return
-        done = float(match.group(1)) * SI_UNITS.get(match.group(2).upper(), 1)
-        reported = float(match.group(3)) * SI_UNITS.get(match.group(4).upper(), 1)
-        now = time.monotonic()
-        elapsed = now - state["prev_time"]
-        speed_bps = ((done - state["prev_bytes"]) / elapsed) if elapsed > 0 else 0.0
-        speed_mbps = speed_bps / 1e6
-        state["prev_bytes"], state["prev_time"] = done, now
-        pct = 52 + (int(min(44, done / reported * 44)) if reported else 0)
-        await emit(
-            pct,
-            f"grype-db: {done / 1e6:.1f} / {reported / 1e6:.0f} MB{rate(speed_mbps, (reported - done) / 1e6)}",
-            {"scanner": "grype", "stage": "downloading", "artifact": "grype-db",
+def _grype_line_progress(line: str, state: dict[str, float]) -> tuple[int, str, dict[str, Any]] | None:
+    """Parse one Grype progress line, updating the download-speed ``state`` in
+    place. Returns the ``(pct, message, detail)`` triple to emit, or ``None``
+    if the line isn't a progress line."""
+    match = GRYPE_PROGRESS.search(line)
+    if not match:
+        return None
+    done = float(match.group(1)) * SI_UNITS.get(match.group(2).upper(), 1)
+    reported = float(match.group(3)) * SI_UNITS.get(match.group(4).upper(), 1)
+    now = time.monotonic()
+    elapsed = now - state["prev_time"]
+    speed_bps = ((done - state["prev_bytes"]) / elapsed) if elapsed > 0 else 0.0
+    speed_mbps = speed_bps / 1e6
+    state["prev_bytes"], state["prev_time"] = done, now
+    pct = 52 + (int(min(44, done / reported * 44)) if reported else 0)
+    message = f"grype-db: {done / 1e6:.1f} / {reported / 1e6:.0f} MB{rate(speed_mbps, (reported - done) / 1e6)}"
+    detail = {"scanner": "grype", "stage": "downloading", "artifact": "grype-db",
              "done_bytes": round(done), "total_bytes": round(reported), "estimated": False,
              "speed_bps": round(speed_bps),
-             "eta_seconds": round((reported - done) / speed_bps) if speed_bps > 1e5 else None},
-        )
+             "eta_seconds": round((reported - done) / speed_bps) if speed_bps > 1e5 else None}
+    return pct, message, detail
 
-    stop = asyncio.Event()
-    watcher = asyncio.create_task(_watch_download(tmp, total, emit, stop))
-    try:
-        # The subprocess ceiling must exceed Grype's own download timeout, or
-        # this would kill a transfer that was still within its budget.
-        rc, lines = await run_streaming(
-            [grype, "db", "update", "-v"], timeout=3600, env=env, on_line=on_line,
-        )
-    except Exception as exc:  # noqa: BLE001
-        await emit(100, f"grype: database update failed — {exc}",
-                   {"scanner": "grype", "stage": "failed", "error": str(exc)})
-        return {"ok": False, "error": str(exc)}
-    finally:
-        stop.set()
-        await watcher
-        shutil.rmtree(tmp, ignore_errors=True)
 
-    if rc == 0:
-        # Exit 0 is not proof of a usable database. Grype can complete an update
-        # and still leave nothing the binary can load — that is exactly what
-        # happened with a v5-schema binary against a v6-only feed: the job
-        # reported success, the dashboard showed READY, and every scan failed.
-        # Verify through the same load path a scan uses before claiming success.
-        usable, why = grype_db_usable()
-        if not usable:
-            await emit(100, f"grype: update finished but the database is unusable — {why}",
-                       {"scanner": "grype", "stage": "failed", "error": why})
-            return {"ok": False, "downloaded": True, "error": why}
-        await emit(100, "grype: database updated", {"scanner": "grype", "stage": "done"})
-        return {"ok": True, "downloaded": True}
+async def _grype_update_success_result(emit: ProgressCallback) -> dict[str, Any]:
+    # Exit 0 is not proof of a usable database. Grype can complete an update
+    # and still leave nothing the binary can load — that is exactly what
+    # happened with a v5-schema binary against a v6-only feed: the job
+    # reported success, the dashboard showed READY, and every scan failed.
+    # Verify through the same load path a scan uses before claiming success.
+    usable, why = grype_db_usable()
+    if not usable:
+        await emit(100, f"grype: update finished but the database is unusable — {why}",
+                   {"scanner": "grype", "stage": "failed", "error": why})
+        return {"ok": False, "downloaded": True, "error": why}
+    await emit(100, "grype: database updated", {"scanner": "grype", "stage": "done"})
+    return {"ok": True, "downloaded": True}
 
+
+async def _grype_update_failure_result(rc: int, lines: list[str], emit: ProgressCallback) -> dict[str, Any]:
     # The download failed. Never report that as success: say so, and say
     # whether a usable (older) database is still on disk.
     tail = " | ".join(line for line in lines[-4:] if line.strip())[:400]
@@ -433,3 +414,50 @@ async def _update_grype(emit: ProgressCallback, env: dict[str, str]) -> dict[str
         "error": f"grype db update failed (exit {rc}) and no database is present. "
                  f"On a restricted network use the offline import. {tail}",
     }
+
+
+async def _update_grype(emit: ProgressCallback, env: dict[str, str]) -> dict[str, Any]:
+    grype = which("grype")
+    if grype is None:
+        return {"ok": False, "error": "grype binary not installed"}
+
+    await emit(52, "grype: resolving the current database",
+               {"scanner": "grype", "stage": "connecting"})
+
+    env, tmp = _prepare_grype_download_env(env)
+
+    total = await _grype_db_size(env)
+    await emit(52, f"grype: downloading database ({total / 1e6:.0f} MB)" if total
+               else "grype: downloading database (size unknown)",
+               {"scanner": "grype", "stage": "downloading", "artifact": "grype-db",
+                "done_bytes": 0, "total_bytes": total, "estimated": False,
+                "indeterminate": not total})
+
+    state = {"prev_bytes": 0.0, "prev_time": time.monotonic()}
+
+    async def on_line(line: str) -> None:
+        """Fast path for Grype builds that do print progress."""
+        result = _grype_line_progress(line, state)
+        if result is not None:
+            await emit(*result)
+
+    stop = asyncio.Event()
+    watcher = asyncio.create_task(_watch_download(tmp, total, emit, stop))
+    try:
+        # The subprocess ceiling must exceed Grype's own download timeout, or
+        # this would kill a transfer that was still within its budget.
+        rc, lines = await run_streaming(
+            [grype, "db", "update", "-v"], timeout=3600, env=env, on_line=on_line,
+        )
+    except Exception as exc:  # noqa: BLE001
+        await emit(100, f"grype: database update failed — {exc}",
+                   {"scanner": "grype", "stage": "failed", "error": str(exc)})
+        return {"ok": False, "error": str(exc)}
+    finally:
+        stop.set()
+        await watcher
+        shutil.rmtree(tmp, ignore_errors=True)
+
+    if rc == 0:
+        return await _grype_update_success_result(emit)
+    return await _grype_update_failure_result(rc, lines, emit)

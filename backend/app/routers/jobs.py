@@ -88,6 +88,19 @@ async def cancel_job(request: Request, job_id: str) -> dict[str, Any]:
     return {"ok": True, "status": "cancelled", "stopped_running_task": cancelled_in_process}
 
 
+def _parse_job_events(raw_events: list) -> list[tuple[str, dict[str, Any]]]:
+    """Parse buffered Redis event JSON, skipping any that fail to decode."""
+    parsed: list[tuple[str, dict[str, Any]]] = []
+    for raw in raw_events:
+        try:
+            ev = json.loads(raw)
+            ev_type = ev.pop("type", "progress")
+            parsed.append((ev_type, ev))
+        except (json.JSONDecodeError, TypeError):
+            continue
+    return parsed
+
+
 @router.get("/{job_id}/stream", dependencies=[Depends(RequirePermission("jobs:read"))])
 async def stream_job(request: Request, job_id: str) -> EventSourceResponse:
     """Stream progress events for a job until it terminates.
@@ -112,13 +125,8 @@ async def stream_job(request: Request, job_id: str) -> EventSourceResponse:
                 yield {"event": "error", "data": {"message": "job not found"}}
                 return
             raw_events = await r.lrange(f"job:{job_id}:events", last_idx, -1)
-            for raw in raw_events:
-                try:
-                    ev = json.loads(raw)
-                    ev_type = ev.pop("type", "progress")
-                    yield event(ev_type, ev)
-                except (json.JSONDecodeError, TypeError):
-                    continue
+            for ev_type, ev in _parse_job_events(raw_events):
+                yield event(ev_type, ev)
             last_idx += max(0, len(raw_events))
             # "cancelled" belongs here too: POST /jobs/{id}/cancel sets it, but
             # this loop used to wait only for done/failed, so cancelling a job

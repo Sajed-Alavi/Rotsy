@@ -134,6 +134,36 @@ def _select_for_deletion(components: list[dict], policy: RetentionPolicy) -> tup
     return list(to_delete.values()), undated
 
 
+async def _delete_targets(
+    nexus: NexusClient, targets: list[dict], emit,
+) -> tuple[int, list[dict[str, str]]]:
+    """Delete every target component, recording a per-failure reason so a run
+    reporting "0 deleted" is never a silent no-op. Returns (deleted_count,
+    failures)."""
+    deleted = 0
+    failures: list[dict[str, str]] = []
+    total = max(1, len(targets))
+    for index, component in enumerate(targets):
+        component_id = component.get("id")
+        if not component_id:
+            failures.append({"name": component.get("name", "?"),
+                             "version": component.get("version", "?"),
+                             "reason": "Nexus did not return a component id"})
+            continue
+        ok, reason = await delete_component(nexus, component_id)
+        if ok:
+            deleted += 1
+        else:
+            failures.append({"name": component.get("name", "?"),
+                             "version": component.get("version", "?"),
+                             "reason": reason})
+        if (index + 1) % 5 == 0 or index + 1 == len(targets):
+            await emit(50 + int((index + 1) / total * 40),
+                       f"deleted {deleted}/{len(targets)}"
+                       + (f" ({len(failures)} failed)" if failures else ""))
+    return deleted, failures
+
+
 async def run_policy(
     nexus: NexusClient,
     session: AsyncSession,
@@ -161,27 +191,7 @@ async def run_policy(
     compact: dict[str, Any] = {}
 
     if not dry_run:
-        total = max(1, len(targets))
-        for index, component in enumerate(targets):
-            component_id = component.get("id")
-            if not component_id:
-                failures.append({"name": component.get("name", "?"),
-                                 "version": component.get("version", "?"),
-                                 "reason": "Nexus did not return a component id"})
-                continue
-            ok, reason = await delete_component(nexus, component_id)
-            if ok:
-                deleted += 1
-            else:
-                # Record why, rather than counting it as a silent no-op. A run
-                # reporting "0 deleted" with no reason is impossible to debug.
-                failures.append({"name": component.get("name", "?"),
-                                 "version": component.get("version", "?"),
-                                 "reason": reason})
-            if (index + 1) % 5 == 0 or index + 1 == len(targets):
-                await emit(50 + int((index + 1) / total * 40),
-                           f"deleted {deleted}/{len(targets)}"
-                           + (f" ({len(failures)} failed)" if failures else ""))
+        deleted, failures = await _delete_targets(nexus, targets, emit)
 
         if deleted:
             await emit(92, "triggering blob compaction")

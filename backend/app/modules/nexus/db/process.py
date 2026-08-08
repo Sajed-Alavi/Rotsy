@@ -89,6 +89,55 @@ async def run_streaming(
     return rc, lines
 
 
+def _resolve_display_total(total_bytes: int | None, expected_mb: int) -> tuple[int, bool]:
+    """``(display_total_bytes, estimated)``. A caller-supplied real total
+    (from the image's actual manifest) always wins; the hardcoded
+    ``expected_mb`` guess is a marked-estimated fallback — that guess has
+    drifted from the real archive size before (the database grows over
+    time)."""
+    real_total = int(total_bytes) if total_bytes else 0
+    if real_total > 0:
+        return real_total, False
+    if expected_mb:
+        return int(expected_mb * 1e6), True
+    return 0, True
+
+
+async def _emit_pull_tick(
+    emit: ProgressCallback, scanner: str, label: str, out_dir: str,
+    low: int, span: int, display_total: int, display_mb: float, estimated: bool,
+    prev_bytes: int, prev_time: float,
+) -> tuple[int, float]:
+    """One progress tick: size the output directory, derive speed/ETA from
+    the delta since the last tick, and emit it. Returns the new (bytes, time)
+    baseline for the next tick."""
+    downloaded = dir_size(Path(out_dir))
+    now = time.monotonic()
+    elapsed = now - prev_time
+    speed_bps = ((downloaded - prev_bytes) / elapsed) if elapsed > 0 else 0.0
+
+    done_mb = downloaded / 1e6
+    speed_mbps = speed_bps / 1e6
+    remaining_mb = max(0.0, display_mb - done_mb) if display_total else 0.0
+    pct = low + min(span, int(done_mb / display_mb * span)) if display_total else low
+    total_label = f"{display_mb:.0f}" if not estimated else f"~{display_mb:.0f}"
+    await emit(
+        pct,
+        f"{label}: {done_mb:.1f}" + (f" / {total_label} MB{rate(speed_mbps, remaining_mb)}"
+                                      if display_total else " MB downloaded"),
+        # ``estimated`` says whether ``total_bytes`` came from the real
+        # manifest (False) or the hardcoded fallback guess (True) — the UI
+        # shows an indeterminate bar rather than a precise-looking but
+        # invented percentage when it can't trust the total.
+        {"scanner": scanner, "stage": "downloading", "artifact": label,
+         "done_bytes": downloaded, "total_bytes": display_total, "estimated": estimated,
+         "indeterminate": not display_total,
+         "speed_bps": round(speed_bps),
+         "eta_seconds": round(remaining_mb / speed_mbps) if speed_mbps > 0.1 else None},
+    )
+    return downloaded, now
+
+
 async def oras_pull(
     oras: str,
     image: str,
@@ -120,14 +169,7 @@ async def oras_pull(
     """
     low, high = progress_range
     span = high - low
-    real_total = int(total_bytes) if total_bytes else 0
-    estimated = real_total <= 0
-    if real_total > 0:
-        display_total = real_total
-    elif expected_mb:
-        display_total = int(expected_mb * 1e6)
-    else:
-        display_total = 0
+    display_total, estimated = _resolve_display_total(total_bytes, expected_mb)
     display_mb = display_total / 1e6
     deadline = time.monotonic() + timeout
     await emit(low, f"{label}: connecting to the registry",
@@ -162,30 +204,9 @@ async def oras_pull(
                            {"scanner": scanner, "stage": "failed", "artifact": label,
                             "error": f"timed out after {timeout / 60:.0f} minutes"})
                 return False
-            downloaded = dir_size(Path(out_dir))
-            now = time.monotonic()
-            elapsed = now - prev_time
-            speed_bps = ((downloaded - prev_bytes) / elapsed) if elapsed > 0 else 0.0
-            prev_bytes, prev_time = downloaded, now
-
-            done_mb = downloaded / 1e6
-            speed_mbps = speed_bps / 1e6
-            remaining_mb = max(0.0, display_mb - done_mb) if display_total else 0.0
-            pct = low + min(span, int(done_mb / display_mb * span)) if display_total else low
-            total_label = f"{display_mb:.0f}" if not estimated else f"~{display_mb:.0f}"
-            await emit(
-                pct,
-                f"{label}: {done_mb:.1f}" + (f" / {total_label} MB{rate(speed_mbps, remaining_mb)}"
-                                              if display_total else " MB downloaded"),
-                # ``estimated`` says whether ``total_bytes`` came from the real
-                # manifest (False) or the hardcoded fallback guess (True) — the UI
-                # shows an indeterminate bar rather than a precise-looking but
-                # invented percentage when it can't trust the total.
-                {"scanner": scanner, "stage": "downloading", "artifact": label,
-                 "done_bytes": downloaded, "total_bytes": display_total, "estimated": estimated,
-                 "indeterminate": not display_total,
-                 "speed_bps": round(speed_bps),
-                 "eta_seconds": round(remaining_mb / speed_mbps) if speed_mbps > 0.1 else None},
+            prev_bytes, prev_time = await _emit_pull_tick(
+                emit, scanner, label, out_dir, low, span, display_total, display_mb, estimated,
+                prev_bytes, prev_time,
             )
             try:
                 await asyncio.wait_for(asyncio.shield(proc.wait()), timeout=2.0)

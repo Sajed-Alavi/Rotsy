@@ -8,7 +8,7 @@ into ``core.projects.connect_integration`` the same way this one does.
 
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends
 from sqlalchemy import desc, select
@@ -109,6 +109,26 @@ async def list_insights(
     return list(rows)
 
 
+def _connected_repo_row(
+    source_module: str, repo_id: int, full_name: str, default_branch: str,
+    has_delivery_mechanism: bool, sp: SonarProject | None, created_at,
+) -> dict[str, Any]:
+    return {
+        "source_module": source_module,
+        "repository_id": repo_id,
+        "full_name": full_name,
+        "default_branch": default_branch,
+        # A repo needs both the delivery mechanism (App installation /
+        # webhook) and the per-repository toggle on to actually auto-analyze.
+        "auto_analyze_on_push": has_delivery_mechanism and (sp is None or sp.auto_analyze_enabled),
+        "sonar_project_id": sp.id if sp else None,
+        "language": sp.language if sp else None,
+        "auto_analyze_enabled": sp.auto_analyze_enabled if sp else None,
+        "auto_analyze_branches": sp.auto_analyze_branches if sp else None,
+        "created_at": created_at,
+    }
+
+
 @router.get("/{project_id}/repositories", dependencies=[Depends(RequirePermission("projects:read"))])
 async def list_project_repositories(
     project_id: int,
@@ -135,38 +155,18 @@ async def list_project_repositories(
     ).scalars().all()
     for r in github_repos:
         sp = sonar_by_github.get(r.id)
-        out.append({
-            "source_module": "github",
-            "repository_id": r.id,
-            "full_name": r.full_name,
-            "default_branch": r.default_branch,
-            # A repo needs both the delivery mechanism (App installation)
-            # and the per-repository toggle on to actually auto-analyze.
-            "auto_analyze_on_push": r.installation_id is not None and (sp is None or sp.auto_analyze_enabled),
-            "sonar_project_id": sp.id if sp else None,
-            "language": sp.language if sp else None,
-            "auto_analyze_enabled": sp.auto_analyze_enabled if sp else None,
-            "auto_analyze_branches": sp.auto_analyze_branches if sp else None,
-            "created_at": r.created_at,
-        })
+        out.append(_connected_repo_row(
+            "github", r.id, r.full_name, r.default_branch, r.installation_id is not None, sp, r.created_at,
+        ))
 
     gitlab_repos = (
         await session.execute(select(GitLabRepository).where(GitLabRepository.project_id == project_id))
     ).scalars().all()
     for r in gitlab_repos:
         sp = sonar_by_gitlab.get(r.id)
-        out.append({
-            "source_module": "gitlab",
-            "repository_id": r.id,
-            "full_name": r.full_path,
-            "default_branch": r.default_branch,
-            "auto_analyze_on_push": r.webhook_id is not None and (sp is None or sp.auto_analyze_enabled),
-            "sonar_project_id": sp.id if sp else None,
-            "language": sp.language if sp else None,
-            "auto_analyze_enabled": sp.auto_analyze_enabled if sp else None,
-            "auto_analyze_branches": sp.auto_analyze_branches if sp else None,
-            "created_at": r.created_at,
-        })
+        out.append(_connected_repo_row(
+            "gitlab", r.id, r.full_path, r.default_branch, r.webhook_id is not None, sp, r.created_at,
+        ))
 
     out.sort(key=lambda row: row["full_name"])
     return out

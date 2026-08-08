@@ -164,6 +164,91 @@ async def _download_asset(
         await upstream.aclose()
 
 
+def _prepare_archive_target(
+    output_dir: Path, run_id: str, compress: bool,
+) -> tuple[Path | None, Path | None, tarfile.TarFile | None, Path | None]:
+    """Returns ``(run_dir, scratch_dir, tar, archive_path)`` for this run —
+    exactly one of ``run_dir`` or ``(scratch_dir, tar, archive_path)`` is
+    populated, matching whether ``compress`` is set."""
+    try:
+        if compress:
+            archive_path = output_dir / f"{run_id}.tar.gz"
+            scratch_dir = output_dir / f".{run_id}.scratch"
+            scratch_dir.mkdir(parents=True, exist_ok=True)
+            tar = tarfile.open(archive_path, "w:gz")
+            return None, scratch_dir, tar, archive_path
+        run_dir = output_dir / run_id
+        run_dir.mkdir(parents=True, exist_ok=True)
+        return run_dir, None, None, None
+    except PermissionError as exc:
+        raise _permission_error(output_dir, exc)
+
+
+async def _backup_repo_assets(
+    nexus: NexusClient, output_dir: Path, run_dir: Path | None, scratch_dir: Path | None,
+    tar: tarfile.TarFile | None, repo: str, compress: bool, min_free_bytes: int, asset_count: int,
+) -> tuple[int, int, int, list[dict[str, Any]]]:
+    """Download and (if compressing) archive every asset in one repository.
+    Returns ``(repo_bytes, repo_assets, new_asset_count, manifest_entries)``."""
+    repo_dir = run_dir / repo if run_dir is not None else None
+    repo_bytes = 0
+    repo_assets = 0
+    bytes_since_disk_check = 0
+    entries: list[dict[str, Any]] = []
+
+    async for asset in nexus.paginate("/service/rest/v1/assets", params={"repository": repo}):
+        path = asset.get("path") or asset.get("id") or ""
+        download_url = asset.get("downloadUrl")
+        if not download_url:
+            continue
+        relpath = _safe_relpath(path)
+        if compress:
+            dest = scratch_dir / f"{asset_count}.blob"
+        else:
+            dest = repo_dir / relpath
+            dest.parent.mkdir(parents=True, exist_ok=True)
+
+        size = await _download_asset(nexus, download_url, dest, output_dir, repo, path)
+        if size is None:
+            continue
+
+        if compress:
+            tar.add(dest, arcname=str(Path(repo) / relpath))
+            dest.unlink(missing_ok=True)
+
+        entries.append({
+            "path": path, "size": size,
+            "checksum": asset.get("checksum"), "contentType": asset.get("contentType"),
+        })
+        repo_bytes += size
+        repo_assets += 1
+        asset_count += 1
+        bytes_since_disk_check += size
+        if (
+            asset_count % _DISK_CHECK_EVERY == 0
+            or bytes_since_disk_check >= _DISK_CHECK_EVERY_BYTES
+        ):
+            _ensure_disk_space(output_dir, min_free_bytes)
+            bytes_since_disk_check = 0
+
+    return repo_bytes, repo_assets, asset_count, entries
+
+
+def _finalize_manifest(
+    manifest: dict[str, Any], run_dir: Path | None, archive_path: Path | None,
+    tar: tarfile.TarFile | None, compress: bool,
+) -> str:
+    manifest_bytes = json.dumps(manifest, indent=2, default=str).encode()
+    if compress:
+        info = tarfile.TarInfo(name="manifest.json")
+        info.size = len(manifest_bytes)
+        info.mtime = int(time.time())
+        tar.addfile(info, io.BytesIO(manifest_bytes))
+        return str(archive_path)
+    (run_dir / "manifest.json").write_bytes(manifest_bytes)
+    return str(run_dir)
+
+
 async def create_archive(
     nexus: NexusClient,
     *,
@@ -210,90 +295,28 @@ async def create_archive(
     _ensure_disk_space(output_dir, min_free_bytes)
 
     run_id = _new_run_id()
-    run_dir: Path | None = None
-    scratch_dir: Path | None = None
-    tar: tarfile.TarFile | None = None
-    archive_path: Path | None = None
-
-    try:
-        if compress:
-            archive_path = output_dir / f"{run_id}.tar.gz"
-            scratch_dir = output_dir / f".{run_id}.scratch"
-            scratch_dir.mkdir(parents=True, exist_ok=True)
-            tar = tarfile.open(archive_path, "w:gz")
-        else:
-            run_dir = output_dir / run_id
-            run_dir.mkdir(parents=True, exist_ok=True)
-    except PermissionError as exc:
-        raise _permission_error(output_dir, exc)
+    run_dir, scratch_dir, tar, archive_path = _prepare_archive_target(output_dir, run_id, compress)
 
     manifest: dict[str, Any] = {"run_id": run_id, "mode": mode, "repos": target_repos, "assets": {}}
     total_bytes = 0
     asset_count = 0
-    bytes_since_disk_check = 0
     per_repo: dict[str, dict[str, int]] = {}
 
     try:
         await emit(0, f"backing up {len(target_repos)} repositories")
         total_repos = max(1, len(target_repos))
         for i, repo in enumerate(target_repos):
-            repo_dir = run_dir / repo if run_dir is not None else None
-            repo_bytes = 0
-            repo_assets = 0
-            manifest["assets"][repo] = []
-
-            async for asset in nexus.paginate("/service/rest/v1/assets", params={"repository": repo}):
-                path = asset.get("path") or asset.get("id") or ""
-                download_url = asset.get("downloadUrl")
-                if not download_url:
-                    continue
-                relpath = _safe_relpath(path)
-                if compress:
-                    dest = scratch_dir / f"{asset_count}.blob"
-                else:
-                    dest = repo_dir / relpath
-                    dest.parent.mkdir(parents=True, exist_ok=True)
-
-                size = await _download_asset(nexus, download_url, dest, output_dir, repo, path)
-                if size is None:
-                    continue
-
-                if compress:
-                    tar.add(dest, arcname=str(Path(repo) / relpath))
-                    dest.unlink(missing_ok=True)
-
-                manifest["assets"][repo].append({
-                    "path": path, "size": size,
-                    "checksum": asset.get("checksum"), "contentType": asset.get("contentType"),
-                })
-                repo_bytes += size
-                repo_assets += 1
-                asset_count += 1
-                bytes_since_disk_check += size
-                if (
-                    asset_count % _DISK_CHECK_EVERY == 0
-                    or bytes_since_disk_check >= _DISK_CHECK_EVERY_BYTES
-                ):
-                    _ensure_disk_space(output_dir, min_free_bytes)
-                    bytes_since_disk_check = 0
-
+            repo_bytes, repo_assets, asset_count, entries = await _backup_repo_assets(
+                nexus, output_dir, run_dir, scratch_dir, tar, repo, compress, min_free_bytes, asset_count,
+            )
+            manifest["assets"][repo] = entries
             total_bytes += repo_bytes
             per_repo[repo] = {"asset_count": repo_assets, "total_bytes": repo_bytes}
             await emit(int((i + 1) / total_repos * 100), f"backed up {repo} ({repo_assets} assets, {repo_bytes} bytes)")
 
         manifest["total_bytes"] = total_bytes
         manifest["asset_count"] = asset_count
-        manifest_bytes = json.dumps(manifest, indent=2, default=str).encode()
-
-        if compress:
-            info = tarfile.TarInfo(name="manifest.json")
-            info.size = len(manifest_bytes)
-            info.mtime = int(time.time())
-            tar.addfile(info, io.BytesIO(manifest_bytes))
-            output_path = str(archive_path)
-        else:
-            (run_dir / "manifest.json").write_bytes(manifest_bytes)
-            output_path = str(run_dir)
+        output_path = _finalize_manifest(manifest, run_dir, archive_path, tar, compress)
     finally:
         if tar is not None:
             tar.close()

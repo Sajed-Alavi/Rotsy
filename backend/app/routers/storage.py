@@ -91,6 +91,15 @@ class _InFlight:
 _inflight: dict[str, _InFlight] = {}
 
 
+async def _fanout(entry: _InFlight, payload: dict[str, Any]) -> None:
+    """Send ``payload`` to every current subscriber. NOSONAR: the list(...)
+    copy is required, not redundant — awaiting q.put() below yields control,
+    during which a subscriber can detach and mutate entry.subscribers
+    concurrently."""
+    for q in list(entry.subscribers):  # NOSONAR
+        await q.put(payload)
+
+
 def _join_or_start(
     repo: str, analyzer: StorageAnalyzer, fmt_hint: str | None, cache: Any,
 ) -> tuple[_InFlight, "asyncio.Queue[dict[str, Any]]"]:
@@ -102,8 +111,7 @@ def _join_or_start(
         _inflight[repo] = entry
 
         async def broadcast(ev: dict[str, Any]) -> None:
-            for q in list(entry.subscribers):  # NOSONAR — a real copy, not redundant: awaiting q.put() below yields control, during which a subscriber can detach and mutate entry.subscribers concurrently
-                await q.put(dict(ev))
+            await _fanout(entry, dict(ev))
 
         async def run() -> None:
             try:
@@ -111,14 +119,11 @@ def _join_or_start(
                 # Cache once here, regardless of how many subscribers are still
                 # attached — a disconnect must not discard a completed run.
                 await cache.set_json(_result_cache_key(repo), result)
-                for q in list(entry.subscribers):  # NOSONAR — a real copy, not redundant: awaiting q.put() below yields control, during which a subscriber can detach and mutate entry.subscribers concurrently
-                    await q.put({"__result__": result})
+                await _fanout(entry, {"__result__": result})
             except Exception as exc:  # noqa: BLE001
-                for q in list(entry.subscribers):  # NOSONAR — a real copy, not redundant: awaiting q.put() below yields control, during which a subscriber can detach and mutate entry.subscribers concurrently
-                    await q.put({"__error__": exc})
+                await _fanout(entry, {"__error__": exc})
             finally:
-                for q in list(entry.subscribers):  # NOSONAR — a real copy, not redundant: awaiting q.put() below yields control, during which a subscriber can detach and mutate entry.subscribers concurrently
-                    await q.put({"__done__": True})
+                await _fanout(entry, {"__done__": True})
                 _inflight.pop(repo, None)
 
         entry.task = asyncio.create_task(run())
@@ -237,6 +242,62 @@ async def analyze(
     return _scope_result(result, allowed)
 
 
+async def _wait_for_event(queue: asyncio.Queue, timeout: float = 15.0) -> dict[str, Any] | None:
+    """The next analyzer event, or ``None`` on a timeout (caller should emit
+    a keepalive and retry)."""
+    try:
+        return await asyncio.wait_for(queue.get(), timeout=timeout)
+    except asyncio.TimeoutError:
+        return None
+
+
+def _translate_stream_event(ev: dict[str, Any], allowed) -> tuple[str, dict[str, Any]]:
+    """One analyzer-queue event, translated into an SSE ``(type, data)``
+    frame. JSON-encode the data so the browser gets valid JSON (sse-starlette
+    writes ``str(dict)`` otherwise, which ``JSON.parse`` rejects)."""
+    ev_type = ev.pop("type", "progress")
+    if ev_type == "result" and "result" in ev:
+        ev["result"] = _scope_result(ev["result"], allowed)
+    return ev_type, ev
+
+
+async def _stream_analysis_events(
+    request: Request, repo: str, entry: _InFlight, queue: "asyncio.Queue[dict[str, Any]]", allowed,
+) -> AsyncIterator[dict[str, Any]]:
+    """The live portion of an analysis SSE stream — after any cached-result
+    short circuit. Attaches to a shared analysis run and yields its events
+    until the run finishes, then detaches."""
+    analyzer_error: Exception | None = None
+    try:
+        while True:
+            if await request.is_disconnected():
+                logger.info("Client disconnected from analysis stream for '%s'.", repo)
+                break
+            ev = await _wait_for_event(queue)
+            if ev is None:
+                yield event("progress", {"message": "working"})
+                continue
+
+            if "__done__" in ev:
+                break
+            if "__result__" in ev:
+                # Caching already happened once inside the shared run.
+                continue
+            if "__error__" in ev:
+                analyzer_error = ev["__error__"]
+                continue
+            ev_type, data = _translate_stream_event(ev, allowed)
+            yield event(ev_type, data)
+
+        if analyzer_error is not None:
+            logger.exception("Analysis failed for %s", repo, exc_info=analyzer_error)
+            yield event("error", {"message": f"Analysis failed: {analyzer_error}"})
+    finally:
+        # Detach without cancelling — other subscribers (or a request that
+        # started after us) may still be waiting on this same run.
+        entry.subscribers[:] = [q for q in entry.subscribers if q is not queue]
+
+
 @router.get("/{repo}/analyze/stream", dependencies=[Depends(RequirePermission("storage:analyze"))])
 async def analyze_stream(
     request: Request,
@@ -258,14 +319,6 @@ async def analyze_stream(
     # gone by the time the SSE body streams.
     allowed = access.repo(repo)
 
-    async def _wait_for_event(queue: asyncio.Queue, timeout: float = 15.0) -> dict[str, Any] | None:
-        """The next analyzer event, or ``None`` on a timeout (caller should
-        emit a keepalive and retry)."""
-        try:
-            return await asyncio.wait_for(queue.get(), timeout=timeout)
-        except asyncio.TimeoutError:
-            return None
-
     async def event_generator() -> AsyncIterator[dict[str, Any]]:
         if use_cache:
             cached = await cache.get_json(_result_cache_key(repo))
@@ -275,41 +328,7 @@ async def analyze_stream(
 
         analyzer = _analyzer(request, settings)
         entry, queue = _join_or_start(repo, analyzer, format, cache)
-        analyzer_error: Exception | None = None
-
-        try:
-            while True:
-                if await request.is_disconnected():
-                    logger.info("Client disconnected from analysis stream for '%s'.", repo)
-                    break
-                ev = await _wait_for_event(queue)
-                if ev is None:
-                    yield event("progress", {"message": "working"})
-                    continue
-
-                if "__done__" in ev:
-                    break
-                if "__result__" in ev:
-                    # Caching already happened once inside the shared run.
-                    continue
-                if "__error__" in ev:
-                    analyzer_error = ev["__error__"]
-                    continue
-                # Translate the analyzer's internal payload (``{"type": ...,
-                # ...rest}``) into an SSE frame. JSON-encode the data so the
-                # browser gets valid JSON (sse-starlette writes str(dict)
-                # otherwise, which JSON.parse rejects).
-                ev_type = ev.pop("type", "progress")
-                if ev_type == "result" and "result" in ev:
-                    ev["result"] = _scope_result(ev["result"], allowed)
-                yield event(ev_type, ev)
-
-            if analyzer_error is not None:
-                logger.exception("Analysis failed for %s", repo, exc_info=analyzer_error)
-                yield event("error", {"message": f"Analysis failed: {analyzer_error}"})
-        finally:
-            # Detach without cancelling — other subscribers (or a request that
-            # started after us) may still be waiting on this same run.
-            entry.subscribers[:] = [q for q in entry.subscribers if q is not queue]
+        async for frame in _stream_analysis_events(request, repo, entry, queue, allowed):
+            yield frame
 
     return EventSourceResponse(event_generator(), media_type="text/event-stream")

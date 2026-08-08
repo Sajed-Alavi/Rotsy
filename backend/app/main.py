@@ -134,6 +134,24 @@ async def _metric_loop(settings: Settings, stop: asyncio.Event) -> None:
             await tick()
 
 
+async def _fetch_missing_databases_at_startup(scanner_db, settings: Settings, enqueue, logger) -> None:
+    """Startup: only fetch what is missing. Scans cannot run without a
+    database, so this is a prerequisite, not a refresh."""
+    missing = [name for name, check in scanner_db.readiness(settings.scanners_enabled).items()
+               if not check.ready]
+    if missing:
+        logger.info("No vulnerability database for: %s — fetching now", ", ".join(missing))
+        await enqueue("Startup (database missing)")
+    else:
+        logger.info("Vulnerability databases already present; leaving them to the schedule.")
+
+
+def _next_scanner_db_delay(time_of_day: tuple[int, int] | None, interval: float) -> float:
+    if time_of_day is not None:
+        return max(30.0, _seconds_until(*time_of_day))
+    return interval
+
+
 async def _scanner_db_loop(settings: Settings, stop: asyncio.Event) -> None:
     """Keep the vulnerability databases fresh.
 
@@ -180,18 +198,10 @@ async def _scanner_db_loop(settings: Settings, stop: asyncio.Event) -> None:
     except asyncio.TimeoutError:
         pass
 
-    # Startup: only fetch what is missing. Scans cannot run without a database,
-    # so this is a prerequisite, not a refresh.
-    missing = [name for name, check in scanner_db.readiness(settings.scanners_enabled).items()
-               if not check.ready]
-    if missing:
-        logger.info("No vulnerability database for: %s — fetching now", ", ".join(missing))
-        await enqueue("Startup (database missing)")
-    else:
-        logger.info("Vulnerability databases already present; leaving them to the schedule.")
+    await _fetch_missing_databases_at_startup(scanner_db, settings, enqueue, logger)
 
     while not stop.is_set():
-        delay = max(30.0, _seconds_until(*time_of_day)) if time_of_day is not None else interval
+        delay = _next_scanner_db_delay(time_of_day, interval)
         try:
             await asyncio.wait_for(stop.wait(), timeout=delay)
             return

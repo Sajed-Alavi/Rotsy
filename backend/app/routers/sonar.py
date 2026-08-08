@@ -339,6 +339,25 @@ async def list_quality_gates(
 # scoped to a single Project (see routers/projects.py's
 # list_project_repositories for the per-Project version this mirrors).
 # ---------------------------------------------------------------------------
+def _global_repo_row(
+    source_module: str, repo_id: int, full_name: str, default_branch: str,
+    has_delivery_mechanism: bool, sp: SonarProject | None, project_id: int, project_name: str | None,
+) -> dict:
+    return {
+        "source_module": source_module,
+        "repository_id": repo_id,
+        "full_name": full_name,
+        "default_branch": default_branch,
+        "auto_analyze_on_push": has_delivery_mechanism and (sp is None or sp.auto_analyze_enabled),
+        "sonar_project_id": sp.id if sp else None,
+        "language": sp.language if sp else None,
+        "auto_analyze_enabled": sp.auto_analyze_enabled if sp else None,
+        "auto_analyze_branches": sp.auto_analyze_branches if sp else None,
+        "project_id": project_id,
+        "project_name": project_name,
+    }
+
+
 @router.get("/repositories", dependencies=[Depends(RequirePermission("projects:read"))])
 async def list_all_repositories(
     session: Annotated[AsyncSession, Depends(get_session)],
@@ -363,38 +382,20 @@ async def list_all_repositories(
     ).scalars().all()
     for r in github_repos:
         sp = sonar_by_github.get(r.id)
-        out.append({
-            "source_module": "github",
-            "repository_id": r.id,
-            "full_name": r.full_name,
-            "default_branch": r.default_branch,
-            "auto_analyze_on_push": r.installation_id is not None and (sp is None or sp.auto_analyze_enabled),
-            "sonar_project_id": sp.id if sp else None,
-            "language": sp.language if sp else None,
-            "auto_analyze_enabled": sp.auto_analyze_enabled if sp else None,
-            "auto_analyze_branches": sp.auto_analyze_branches if sp else None,
-            "project_id": r.project_id,
-            "project_name": project_names.get(r.project_id),
-        })
+        out.append(_global_repo_row(
+            "github", r.id, r.full_name, r.default_branch, r.installation_id is not None, sp,
+            r.project_id, project_names.get(r.project_id),
+        ))
 
     gitlab_repos = (
         await session.execute(select(GitLabRepository).where(GitLabRepository.project_id.isnot(None)))
     ).scalars().all()
     for r in gitlab_repos:
         sp = sonar_by_gitlab.get(r.id)
-        out.append({
-            "source_module": "gitlab",
-            "repository_id": r.id,
-            "full_name": r.full_path,
-            "default_branch": r.default_branch,
-            "auto_analyze_on_push": r.webhook_id is not None and (sp is None or sp.auto_analyze_enabled),
-            "sonar_project_id": sp.id if sp else None,
-            "language": sp.language if sp else None,
-            "auto_analyze_enabled": sp.auto_analyze_enabled if sp else None,
-            "auto_analyze_branches": sp.auto_analyze_branches if sp else None,
-            "project_id": r.project_id,
-            "project_name": project_names.get(r.project_id),
-        })
+        out.append(_global_repo_row(
+            "gitlab", r.id, r.full_path, r.default_branch, r.webhook_id is not None, sp,
+            r.project_id, project_names.get(r.project_id),
+        ))
 
     out.sort(key=lambda row: row["full_name"])
     return out

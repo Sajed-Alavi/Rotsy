@@ -7,10 +7,11 @@ a synchronous 'download DB snapshot' endpoint for convenience.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, AsyncIterator, Callable
 
 from croniter import croniter
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
@@ -154,6 +155,24 @@ async def list_backup_archives(
     ]
 
 
+async def _stream_file_chunks(path: Path, *, cleanup: Callable[[], None] | None = None) -> AsyncIterator[bytes]:
+    """Stream a file's bytes off the event loop — a synchronous read would
+    block every other request and job this worker process is handling for
+    however long each chunk read takes. Optionally runs ``cleanup`` (e.g.
+    deleting a temp file) once the stream ends."""
+    f = await asyncio.to_thread(open, path, "rb")
+    try:
+        while True:
+            chunk = await asyncio.to_thread(f.read, 1024 * 1024)
+            if not chunk:
+                break
+            yield chunk
+    finally:
+        await asyncio.to_thread(f.close)
+        if cleanup is not None:
+            cleanup()
+
+
 @router.get("/backup/archive/{run_id}/download",
             dependencies=[Depends(RequirePermission(_BACKUP_JOB_PERM))])
 async def download_backup_archive(
@@ -167,7 +186,6 @@ async def download_backup_archive(
     ``<run_id>.tar.gz`` — that's streamed directly. A manual (uncompressed) run
     is still a directory, zipped on demand exactly as before.
     """
-    import asyncio
     import shutil
 
     run = await session.get(BackupRun, run_id)
@@ -177,24 +195,8 @@ async def download_backup_archive(
 
     if output_path.is_file():
         filename = output_path.name
-
-        async def gen_file():
-            # Reads off the event loop via to_thread (same pattern already
-            # used below for shutil.make_archive) — a synchronous read here
-            # would block every other request and job this worker process
-            # is handling for however long each chunk read takes.
-            f = await asyncio.to_thread(open, output_path, "rb")
-            try:
-                while True:
-                    chunk = await asyncio.to_thread(f.read, 1024 * 1024)
-                    if not chunk:
-                        break
-                    yield chunk
-            finally:
-                await asyncio.to_thread(f.close)
-
         return StreamingResponse(
-            gen_file(), media_type="application/gzip",
+            _stream_file_chunks(output_path), media_type="application/gzip",
             headers={"Content-Disposition": f'attachment; filename="{filename}"'},
         )
 
@@ -216,20 +218,9 @@ async def download_backup_archive(
             "by the application user — see the System troubleshooting docs.",
         ) from exc
 
-    async def gen():
-        f = await asyncio.to_thread(open, zip_path, "rb")
-        try:
-            while True:
-                chunk = await asyncio.to_thread(f.read, 1024 * 1024)
-                if not chunk:
-                    break
-                yield chunk
-        finally:
-            await asyncio.to_thread(f.close)
-            zip_path.unlink(missing_ok=True)
-
     return StreamingResponse(
-        gen(), media_type="application/zip",
+        _stream_file_chunks(zip_path, cleanup=lambda: zip_path.unlink(missing_ok=True)),
+        media_type="application/zip",
         headers={"Content-Disposition": f'attachment; filename="backup-{run_id}.zip"'},
     )
 

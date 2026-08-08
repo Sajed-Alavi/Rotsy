@@ -62,6 +62,24 @@ def _latest(*values: str | None) -> str | None:
     return max(present) if present else None
 
 
+def _accumulate_blobs(
+    image: str, tag: str, logical_size: int, blobs: list[tuple[str | None, int]],
+    image_tag_sizes: dict[str, dict[str, int]], unique_active_blobs: set[str],
+) -> int:
+    """Record one image:tag's logical size and any newly-seen active blobs.
+    Returns the additional active bytes this tag contributes (0 if none, or
+    if every blob was already counted via another tag)."""
+    if logical_size <= 0:
+        return 0
+    image_tag_sizes[image][tag] = logical_size
+    added = 0
+    for digest, size in blobs:
+        if digest and digest not in unique_active_blobs:
+            unique_active_blobs.add(digest)
+            added += size
+    return added
+
+
 def _manifest_layer_blobs(data: dict[str, Any]) -> tuple[int, list[tuple[str | None, int]]]:
     """Config + layer blobs of a single-arch docker/oci manifest."""
     local_size = 0
@@ -264,12 +282,9 @@ class StorageAnalyzer:
         async def worker(image: str, tag: str) -> None:
             nonlocal active_bytes, completed
             logical_size, blobs = await self._process_manifest(repo, image, tag, depth=0)
-            if logical_size > 0:
-                image_tag_sizes[image][tag] = logical_size
-                for digest, size in blobs:
-                    if digest and digest not in unique_active_blobs:
-                        unique_active_blobs.add(digest)
-                        active_bytes += size
+            active_bytes += _accumulate_blobs(
+                image, tag, logical_size, blobs, image_tag_sizes, unique_active_blobs,
+            )
             completed += 1
             if completed % 5 == 0 or completed == total:
                 pct = int(completed / total * 100) if total else 100

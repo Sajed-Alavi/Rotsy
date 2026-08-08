@@ -60,6 +60,37 @@ def _is_current(scanner: str, info: dict[str, Any]) -> str | None:
     return None
 
 
+async def _skip_current_scanners(enabled: list[str], emit) -> dict[str, Any]:
+    """Remove (in place) and record already-current scanners from ``enabled``."""
+    skipped: dict[str, Any] = {}
+    snapshot = status()
+    for name in list(enabled):
+        reason = _is_current(name, snapshot.get(name, {}))
+        if reason:
+            skipped[name] = {"ok": True, "skipped": True, "downloaded": False, "reason": reason}
+            await emit(50, f"{name}: {reason} — skipping download",
+                       {"scanner": name, "stage": "skipped", "reason": reason})
+            enabled.remove(name)
+    return skipped
+
+
+async def _run_isolated_update(
+    name: str, updater, emit, env: dict[str, str], results: dict[str, Any],
+) -> None:
+    """Run one scanner's update, isolating any crash so the other scanner is
+    still attempted. Previously an uncaught exception in one updater
+    propagated straight out of :func:`update`, so the other scanner was
+    silently never reached — this looked like "the database is never
+    downloaded" with nothing in the UI explaining why."""
+    try:
+        results[name] = await updater(emit, env)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - see docstring above
+        logger.exception("%s database update crashed", name)
+        results[name] = {"ok": False, "error": str(exc)}
+
+
 async def update(
     scanners: list[str],
     on_progress: ProgressCallback | None = None,
@@ -82,41 +113,18 @@ async def update(
     env = proxy_env(proxy)
 
     if not force:
-        snapshot = status()
-        for name in list(enabled):
-            reason = _is_current(name, snapshot.get(name, {}))
-            if reason:
-                results[name] = {"ok": True, "skipped": True, "downloaded": False, "reason": reason}
-                await emit(50, f"{name}: {reason} — skipping download",
-                           {"scanner": name, "stage": "skipped", "reason": reason})
-                enabled.remove(name)
+        results.update(await _skip_current_scanners(enabled, emit))
 
     if not enabled:
         await emit(100, "all databases current, nothing to download", {"stage": "done"})
         return results
 
-    # Each scanner is isolated: an unexpected crash in one (as opposed to the
-    # ok=False results both already return for their own handled failures)
-    # must not stop the other from being attempted. Previously an uncaught
-    # exception in _update_trivy propagated straight out of update(), so Grype
-    # was silently never reached — this looked like "the Grype database is
-    # never downloaded" with nothing in the UI explaining why.
+    # Each scanner is isolated: an unexpected crash in one must not stop the
+    # other from being attempted (see _run_isolated_update).
     if "trivy" in enabled:
-        try:
-            results["trivy"] = await _update_trivy(emit, env)
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:  # noqa: BLE001 - see comment above
-            logger.exception("trivy database update crashed")
-            results["trivy"] = {"ok": False, "error": str(exc)}
+        await _run_isolated_update("trivy", _update_trivy, emit, env, results)
     if "grype" in enabled:
-        try:
-            results["grype"] = await _update_grype(emit, env)
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:  # noqa: BLE001 - see comment above
-            logger.exception("grype database update crashed")
-            results["grype"] = {"ok": False, "error": str(exc)}
+        await _run_isolated_update("grype", _update_grype, emit, env, results)
 
     if not results:
         await emit(100, "no scanners enabled", {"stage": "done"})

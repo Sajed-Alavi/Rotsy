@@ -65,8 +65,8 @@ export default function OverviewPage() {
       ) : (
         <>
           <div>
-            <label className="mb-1 block font-mono text-[10px] uppercase tracking-wider text-slate-500">Repository</label>
-            <select value={selectedKey} onChange={(e) => setSelectedKey(e.target.value)} className={INPUT}>
+            <label htmlFor="cq-repo" className="mb-1 block font-mono text-[10px] uppercase tracking-wider text-slate-500">Repository</label>
+            <select id="cq-repo" value={selectedKey} onChange={(e) => setSelectedKey(e.target.value)} className={INPUT}>
               <option value="">Select a repository…</option>
               {repos.map((r) => (
                 <option key={`${r.source_module}:${r.repository_id}`} value={`${r.source_module}:${r.repository_id}`}>
@@ -78,14 +78,14 @@ export default function OverviewPage() {
 
           {selected && (
             <div>
-              <label className="mb-1 block font-mono text-[10px] uppercase tracking-wider text-slate-500">Branch</label>
+              <label htmlFor="cq-branch" className="mb-1 block font-mono text-[10px] uppercase tracking-wider text-slate-500">Branch</label>
               {branchesErr ? (
                 <p className="font-mono text-xs text-rose-600 dark:text-rose-400">{branchesErr}</p>
               ) : branches === null ? (
                 <p className="font-mono text-[11px] text-slate-500 dark:text-slate-500">loading branches…</p>
               ) : (
                 <>
-                  <select value={branch} onChange={(e) => setBranch(e.target.value)} className={INPUT}>
+                  <select id="cq-branch" value={branch} onChange={(e) => setBranch(e.target.value)} className={INPUT}>
                     {branches.map((b) => (
                       <option key={b} value={b}>{b}{b === selected.default_branch ? ' (default)' : ''}</option>
                     ))}

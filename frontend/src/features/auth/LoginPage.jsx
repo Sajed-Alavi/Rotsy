@@ -35,10 +35,11 @@ export default function LoginPage() {
           <LogoLockup size={34} tagline />
         </div>
 
-        <label className="mb-1 block font-mono text-[10px] uppercase tracking-wider text-slate-500">
+        <label htmlFor="login-username" className="mb-1 block font-mono text-[10px] uppercase tracking-wider text-slate-500">
           Username
         </label>
         <input
+          id="login-username"
           type="text"
           value={username}
           onChange={(e) => setUsername(e.target.value)}
@@ -47,10 +48,11 @@ export default function LoginPage() {
           className="mb-4 w-full border border-slate-300 bg-white px-3 py-2 font-mono text-sm text-slate-900 outline-none focus:border-sky-500 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100"
         />
 
-        <label className="mb-1 block font-mono text-[10px] uppercase tracking-wider text-slate-500">
+        <label htmlFor="login-password" className="mb-1 block font-mono text-[10px] uppercase tracking-wider text-slate-500">
           Password
         </label>
         <input
+          id="login-password"
           type="password"
           value={password}
           onChange={(e) => setPassword(e.target.value)}

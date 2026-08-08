@@ -33,6 +33,9 @@ function parse(path) {
 
 /** First `# Heading` in the file, falling back to a de-slugged filename. */
 function titleOf(source, slug) {
+  // `.+` here is a linter-flagged "potential" super-linear pattern, but
+  // `source` is always a markdown file from this repo, never user input —
+  // there's no adversarial input path for a ReDoS concern to apply to.
   const match = source.match(/^#\s+(.+)$/m);
   if (match) return match[1].trim();
   return slug.replaceAll('-', ' ').replace(/^\w/, (c) => c.toUpperCase());

@@ -19,6 +19,14 @@ import { Link } from 'react-router';
  * never reordered, filtered or mutated afterward — the one case where an
  * index is a perfectly stable React key, since "which markdown source line
  * is this" and "what's its position" are the same fact.
+ *
+ * A couple of regexes here use unbounded `.+`/`.*` or an alternation of
+ * overlapping branches, which a general linter flags as a potential
+ * super-linear-backtracking risk. Real ReDoS needs *adversarial* input
+ * reaching the pattern; every input here is a markdown file this project's
+ * own contributors wrote and committed, not user-submitted text — rewriting
+ * these into less readable forms to guard against an input source that
+ * doesn't exist isn't a trade worth making. Left as-is, deliberately.
  */
 
 /** Inline formatting: `code`, **bold**, *italic*, [text](href). */

@@ -54,8 +54,9 @@ export default function BrowsePage() {
 
       <div className="mb-4 flex flex-wrap items-end gap-3 border border-slate-200 bg-white p-3 dark:border-slate-800 dark:bg-slate-900/40">
         <div>
-          <label className="mb-1 block font-mono text-[10px] uppercase tracking-wider text-slate-500">Repository</label>
+          <label htmlFor="browse-repo" className="mb-1 block font-mono text-[10px] uppercase tracking-wider text-slate-500">Repository</label>
           <select
+            id="browse-repo"
             value={repo}
             onChange={(e) => setRepo(e.target.value)}
             disabled={loadingRepos}
@@ -70,8 +71,10 @@ export default function BrowsePage() {
         </div>
 
         <div>
-          <label className="mb-1 block font-mono text-[10px] uppercase tracking-wider text-slate-500">View</label>
-          <div className="flex">
+          {/* Not a <label>: this groups toggle buttons, not a labelable form
+              control — role="group" + aria-label is the correct pairing. */}
+          <div id="browse-view-label" className="mb-1 block font-mono text-[10px] uppercase tracking-wider text-slate-500">View</div>
+          <div className="flex" role="group" aria-labelledby="browse-view-label">
             {[
               ['images', selectedRepo?.format === 'docker' ? 'Images' : 'Components'],
               ['files', 'Files'],

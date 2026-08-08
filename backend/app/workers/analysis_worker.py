@@ -75,6 +75,100 @@ async def _build_provider(source_module: str, session: AsyncSession, settings: S
 _MEASURE_KEYS = ["bugs", "vulnerabilities", "code_smells", "security_hotspots", "coverage", "duplicated_lines_density"]
 
 
+async def _resolve_sonar_project(
+    session: AsyncSession, *, github_repository_id: int | None, gitlab_repository_id: int | None,
+    repo_external_id: str,
+) -> SonarProject:
+    """A Project can hold many repositories, each with its own SonarProject —
+    looked up by *which repository* this job is for, never just by
+    project_id (that would pick an arbitrary repo's analysis under the same
+    Project)."""
+    if github_repository_id:
+        sonar_project = await session.scalar(
+            select(SonarProject).where(SonarProject.github_repository_id == github_repository_id)
+        )
+    elif gitlab_repository_id:
+        sonar_project = await session.scalar(
+            select(SonarProject).where(SonarProject.gitlab_repository_id == gitlab_repository_id)
+        )
+    else:
+        raise ValueError("clone_and_analyze payload is missing github_repository_id/gitlab_repository_id")
+
+    if sonar_project is None:
+        raise ValueError(
+            f"{repo_external_id} has no Sonar project configured — "
+            "connect one from the Project page before pushing"
+        )
+    validate_language(sonar_project.language)
+    return sonar_project
+
+
+async def _get_or_create_run(
+    session: AsyncSession, *, sonar_project_id: int, sha: str, ref: str, trigger: str,
+) -> AnalysisRun:
+    """(sonar_project_id, commit_sha) is unique — a manual re-run (or a
+    retried webhook delivery that slipped past the cache-based dedupe in the
+    webhook receiver) can target a commit that already has a run, so this
+    reuses and resets that row instead of a second INSERT hitting the
+    constraint."""
+    run = await session.scalar(
+        select(AnalysisRun).where(
+            AnalysisRun.sonar_project_id == sonar_project_id, AnalysisRun.commit_sha == sha,
+        )
+    )
+    if run is None:
+        run = AnalysisRun(sonar_project_id=sonar_project_id, commit_sha=sha, ref=ref,
+                           status="running", trigger=trigger)
+        session.add(run)
+    else:
+        run.ref = ref
+        run.status = "running"
+        run.trigger = trigger
+        run.issues_count = run.bugs = run.vulnerabilities = run.code_smells = run.security_hotspots = None
+        run.coverage = run.duplication_pct = None
+        # Reset alongside everything else above: `started_at` only gets its
+        # DB-side default on the INSERT path. Left alone here, a re-run of
+        # the same commit kept the *original* run's start time while
+        # `finished_at` moved to whenever this re-run actually finished —
+        # every re-run made "duration" (computed in the UI as finished_at -
+        # started_at) larger and more wrong, not just stale.
+        run.started_at = datetime.now(timezone.utc)
+        run.finished_at = None
+        run.error = None
+    return run
+
+
+async def _store_findings_best_effort(
+    session: AsyncSession, sonar: SonarClient, sonar_project_key: str, run_id: int,
+) -> None:
+    """Best-effort, like ensure_quality_gate in provisioning.py: the gate
+    result and aggregate measures are recorded by the caller and are what
+    "analysis succeeded" means. Per-issue detail is supplementary — a hiccup
+    fetching it (a Sonar edition without the hotspots endpoint, a transient
+    timeout on a huge issue list) must not undo an otherwise-successful run."""
+    try:
+        issue_count, hotspot_count = await sync_findings(session, sonar, sonar_project_key, run_id)
+        logger.info("Stored %d issue(s) and %d hotspot(s) for analysis run %s",
+                    issue_count, hotspot_count, run_id)
+    except SonarError:
+        logger.warning("Failed to fetch issues/hotspots for analysis run %s — "
+                        "aggregate counts are still recorded.", run_id, exc_info=True)
+
+
+async def _report_failure_status(
+    provider: SourceProvider, credential_ref: str, repo_ref: RepoRef, sha: str, exc: Exception,
+    source_module: str, repo_external_id: str,
+) -> None:
+    try:
+        await provider.report_status(
+            credential_ref, repo_ref, sha,
+            state="error", description=str(exc)[:140], target_url="",
+        )
+    except Exception:  # noqa: BLE001
+        logger.warning("Failed to report failure status back to %s for %s@%s",
+                        source_module, repo_external_id, sha)
+
+
 async def handle_clone_and_analyze(job: Job, progress: ProgressCallback) -> dict:
     """The one and only analysis workflow — push-triggered, manual, and
     automatic on-connect runs all enqueue this same job type with the same
@@ -103,28 +197,10 @@ async def handle_clone_and_analyze(job: Job, progress: ProgressCallback) -> dict
     await progress(2, "queued")
     async with factory() as session:
         provider = await _build_provider(source_module, session, settings, cache)
-
-        # A Project can hold many repositories, each with its own
-        # SonarProject — looked up by *which repository* this job is for,
-        # never just by project_id (that would pick an arbitrary repo's
-        # analysis under the same Project).
-        if github_repository_id:
-            sonar_project = await session.scalar(
-                select(SonarProject).where(SonarProject.github_repository_id == github_repository_id)
-            )
-        elif gitlab_repository_id:
-            sonar_project = await session.scalar(
-                select(SonarProject).where(SonarProject.gitlab_repository_id == gitlab_repository_id)
-            )
-        else:
-            raise ValueError("clone_and_analyze payload is missing github_repository_id/gitlab_repository_id")
-
-        if sonar_project is None:
-            raise ValueError(
-                f"{repo_external_id} has no Sonar project configured — "
-                "connect one from the Project page before pushing"
-            )
-        validate_language(sonar_project.language)
+        sonar_project = await _resolve_sonar_project(
+            session, github_repository_id=github_repository_id, gitlab_repository_id=gitlab_repository_id,
+            repo_external_id=repo_external_id,
+        )
 
         sonar_conn = await get_sonar_connection(session, settings)
         if not sonar_conn.is_configured():
@@ -132,36 +208,9 @@ async def handle_clone_and_analyze(job: Job, progress: ProgressCallback) -> dict
                 "SonarQube is not configured. Set it up in Settings -> Integrations -> SonarQube."
             )
 
-        # A manual re-run (or a retried webhook delivery that slipped past the
-        # cache-based dedupe in the webhook receiver) can target a commit that
-        # already has a run — (sonar_project_id, commit_sha) is unique, so
-        # reuse and reset that row instead of a second INSERT hitting the
-        # constraint.
-        run = await session.scalar(
-            select(AnalysisRun).where(
-                AnalysisRun.sonar_project_id == sonar_project.id, AnalysisRun.commit_sha == sha,
-            )
+        run = await _get_or_create_run(
+            session, sonar_project_id=sonar_project.id, sha=sha, ref=ref, trigger=trigger,
         )
-        if run is None:
-            run = AnalysisRun(sonar_project_id=sonar_project.id, commit_sha=sha, ref=ref,
-                               status="running", trigger=trigger)
-            session.add(run)
-        else:
-            run.ref = ref
-            run.status = "running"
-            run.trigger = trigger
-            run.issues_count = run.bugs = run.vulnerabilities = run.code_smells = run.security_hotspots = None
-            run.coverage = run.duplication_pct = None
-            # Reset alongside everything else above: `started_at` only gets
-            # its DB-side default on the INSERT path. Left alone here, a
-            # re-run of the same commit kept the *original* run's start
-            # time while `finished_at` moved to whenever this re-run
-            # actually finished — every re-run made "duration" (computed in
-            # the UI as finished_at - started_at) larger and more wrong,
-            # not just stale.
-            run.started_at = datetime.now(timezone.utc)
-            run.finished_at = None
-            run.error = None
         await session.commit()
         await session.refresh(run)
 
@@ -224,21 +273,7 @@ async def handle_clone_and_analyze(job: Job, progress: ProgressCallback) -> dict
             ))
 
             await progress(85, "collecting issues and hotspots")
-            try:
-                issue_count, hotspot_count = await sync_findings(
-                    session, sonar, sonar_project_key, run.id,
-                )
-                logger.info("Stored %d issue(s) and %d hotspot(s) for analysis run %s",
-                            issue_count, hotspot_count, run.id)
-            except SonarError:
-                # Best-effort, like ensure_quality_gate in provisioning.py: the
-                # gate result and aggregate measures above already succeeded
-                # and are what "analysis succeeded" means. Per-issue detail is
-                # supplementary — a hiccup fetching it (a Sonar edition without
-                # the hotspots endpoint, a transient timeout on a huge issue
-                # list) must not undo an otherwise-successful run.
-                logger.warning("Failed to fetch issues/hotspots for analysis run %s — "
-                                "aggregate counts are still recorded.", run.id, exc_info=True)
+            await _store_findings_best_effort(session, sonar, sonar_project_key, run.id)
 
             await session.commit()
             await session.refresh(run)
@@ -272,14 +307,7 @@ async def handle_clone_and_analyze(job: Job, progress: ProgressCallback) -> dict
         logger.exception("clone_and_analyze failed for analysis run %s (%s@%s): %s",
                           run.id, repo_external_id, sha, exc)
         await _mark_failed(factory, run.id, str(exc) or f"{type(exc).__name__}: analysis failed unexpectedly.")
-        try:
-            await provider.report_status(
-                credential_ref, repo_ref, sha,
-                state="error", description=str(exc)[:140], target_url="",
-            )
-        except Exception:  # noqa: BLE001
-            logger.warning("Failed to report failure status back to %s for %s@%s",
-                            source_module, repo_external_id, sha)
+        await _report_failure_status(provider, credential_ref, repo_ref, sha, exc, source_module, repo_external_id)
         raise
     finally:
         shutil.rmtree(source_dir, ignore_errors=True)

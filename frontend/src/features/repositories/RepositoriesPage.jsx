@@ -8,6 +8,7 @@ const INPUT = 'w-full border border-slate-300 bg-white px-2 py-1.5 font-mono tex
 
 const FORMATS = ['docker', 'maven2', 'npm', 'pypi', 'nuget', 'raw', 'apt', 'yum', 'helm'];
 const TYPES = ['hosted', 'proxy', 'group'];
+const REPO_TYPE_TONE = { hosted: 'ok', proxy: 'info' };
 
 /** Repository management: list + create (hosted/proxy/group) + delete. */
 export default function RepositoriesPage() {
@@ -77,7 +78,7 @@ export default function RepositoriesPage() {
               <tr key={r.name} className="border-b border-slate-100 last:border-0 hover:bg-slate-50 dark:border-slate-800/60 dark:hover:bg-slate-800/30">
                 <td className="px-3 py-2 font-mono text-slate-800 dark:text-slate-200">{r.name}</td>
                 <td className="px-3 py-2 font-mono text-xs text-slate-500 dark:text-slate-400">{r.format}</td>
-                <td className="px-3 py-2"><Badge tone={r.type === 'hosted' ? 'ok' : r.type === 'proxy' ? 'info' : 'neutral'}>{r.type}</Badge></td>
+                <td className="px-3 py-2"><Badge tone={REPO_TYPE_TONE[r.type] || 'neutral'}>{r.type}</Badge></td>
                 <td className="px-3 py-2 font-mono text-[11px] text-slate-400 dark:text-slate-600 truncate max-w-xs" title={r.url}>{r.url}</td>
                 <td className="px-3 py-2 text-right">
                   <button onClick={() => remove(r.name)} className="border border-rose-200 px-2 py-0.5 font-mono text-[10px] uppercase text-rose-600 hover:bg-rose-50 dark:border-rose-800 dark:text-rose-400 dark:hover:bg-rose-950/40">delete</button>

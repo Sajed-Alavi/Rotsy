@@ -117,6 +117,9 @@ function TagRow({ repo, imageName, row, selected, onSelectTag, scanning, onScan 
   const scanKey = `${repo}/${row.image}`;
   const busy = !!scanning[scanKey] || row.state === 'queued';
   const failure = (row.reports || []).find((r) => r.status === 'failed' && r.error);
+  let scanLabel = 'scan';
+  if (busy) scanLabel = '···';
+  else if (row.scan_count > 0) scanLabel = 'rescan';
 
   return (
     <tr
@@ -157,7 +160,7 @@ function TagRow({ repo, imageName, row, selected, onSelectTag, scanning, onScan 
           disabled={busy}
           className="border border-sky-300 bg-sky-50 px-2 py-0.5 font-mono text-[10px] uppercase text-sky-700 hover:bg-sky-100 disabled:opacity-50 dark:border-sky-700 dark:bg-sky-950/40 dark:text-sky-300 dark:hover:bg-sky-900/40"
         >
-          {busy ? '···' : (row.scan_count > 0 ? 'rescan' : 'scan')}
+          {scanLabel}
         </button>
       </td>
     </tr>

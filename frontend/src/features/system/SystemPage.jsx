@@ -7,6 +7,7 @@ import DataTable from '../../components/DataTable.jsx';
 import { formatBytes, formatDateTime } from '../../lib/format.js';
 
 const DAYS_OF_WEEK = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+const ARCHIVE_STATUS_TONE = { success: 'ok', failed: 'bad' };
 
 /** System operations: backup (task trigger + DB download + real archive + schedules) + Nexus sync. */
 export default function SystemPage() {
@@ -213,7 +214,7 @@ export default function SystemPage() {
                   {archiveHistory.map((r) => (
                     <tr key={r.id} className="border-b border-slate-100 last:border-0 dark:border-slate-800/60">
                       <td className="px-3 py-1.5 font-mono text-xs text-slate-700 dark:text-slate-300">{r.mode}</td>
-                      <td className="px-3 py-1.5"><Badge tone={r.status === 'success' ? 'ok' : r.status === 'failed' ? 'bad' : 'info'}>{r.status}</Badge></td>
+                      <td className="px-3 py-1.5"><Badge tone={ARCHIVE_STATUS_TONE[r.status] || 'info'}>{r.status}</Badge></td>
                       <td className="px-3 py-1.5 text-right font-mono tabular-nums text-xs text-slate-500 dark:text-slate-400">{r.asset_count}</td>
                       <td className="px-3 py-1.5 text-right font-mono tabular-nums text-xs text-slate-500 dark:text-slate-400">{formatBytes(r.total_bytes || 0)}</td>
                       <td className="px-3 py-1.5 font-mono text-xs text-slate-400 dark:text-slate-600">{formatDateTime(r.started_at)}</td>

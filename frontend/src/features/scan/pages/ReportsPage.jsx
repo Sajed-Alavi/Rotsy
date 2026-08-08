@@ -9,6 +9,8 @@ import SeverityCounts from '../../../components/SeverityCounts.jsx';
 import { useResource, useStatus } from '../../../lib/useResource.js';
 import ReportDetailModal from '../components/ReportDetailModal.jsx';
 
+const REPORT_STATUS_TONE = { success: 'ok', failed: 'bad' };
+
 /** One row per scanner run. Clicking a row opens that run's CVE list. */
 export default function ReportsPage() {
   const { data: reports, loading, reload } = useResource(() => scanApi.reports(), []);
@@ -52,7 +54,7 @@ export default function ReportsPage() {
       className: 'text-center',
       render: (_v, row) => <SeverityCounts counts={row} />,
     },
-    { key: 'status', header: 'Status', render: (v) => <Badge tone={v === 'success' ? 'ok' : v === 'failed' ? 'bad' : 'info'}>{v}</Badge> },
+    { key: 'status', header: 'Status', render: (v) => <Badge tone={REPORT_STATUS_TONE[v] || 'info'}>{v}</Badge> },
     { key: 'started_at', header: 'When', render: (v) => <span className="font-mono text-xs text-slate-400 dark:text-slate-600">{formatDateTime(v)}</span> },
     {
       key: 'id',

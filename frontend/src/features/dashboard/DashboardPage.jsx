@@ -73,6 +73,13 @@ export default function DashboardPage() {
 
   const nexusTone = health?.nexus_reachable ? 'ok' : 'bad';
   const redisTone = health?.redis_reachable ? 'ok' : 'warn';
+  let nexusValue = 'unreachable';
+  if (loading) nexusValue = '···';
+  else if (health?.nexus_reachable) nexusValue = 'reachable';
+
+  let redisValue = 'degraded';
+  if (loading) redisValue = '···';
+  else if (health?.redis_reachable) redisValue = 'connected';
 
   const totals = scanSummary?.totals || { critical: 0, high: 0 };
   const totalStorage = overview.reduce((s, r) => s + (r.total_bytes || 0), 0);
@@ -82,7 +89,8 @@ export default function DashboardPage() {
   for (const r of repos) formatCounts[r.format] = (formatCounts[r.format] || 0) + 1;
   const formatItems = Object.entries(formatCounts).map(([label, value]) => ({ label, value }));
 
-  const jobStatusTone = (s) => (s === 'done' ? 'ok' : s === 'failed' ? 'bad' : s === 'cancelled' ? 'neutral' : 'info');
+  const JOB_STATUS_TONE = { done: 'ok', failed: 'bad', cancelled: 'neutral' };
+  const jobStatusTone = (s) => JOB_STATUS_TONE[s] || 'info';
 
   return (
     <div className="p-6">
@@ -97,8 +105,8 @@ export default function DashboardPage() {
 
       {/* Status + key repository metrics */}
       <div className="mb-6 grid grid-cols-2 gap-px border border-slate-200 bg-slate-200 sm:grid-cols-4 lg:grid-cols-7 dark:border-slate-800 dark:bg-slate-800">
-        <Stat label="Nexus" value={loading ? '···' : health?.nexus_reachable ? 'reachable' : 'unreachable'} tone={nexusTone} />
-        <Stat label="Redis Cache" value={loading ? '···' : health?.redis_reachable ? 'connected' : 'degraded'} tone={redisTone} />
+        <Stat label="Nexus" value={nexusValue} tone={nexusTone} />
+        <Stat label="Redis Cache" value={redisValue} tone={redisTone} />
         <Stat label="Repositories" count={repos.length} sub="all formats" />
         <Stat label="Total Storage" bytes={totalStorage} sub={`${overview.length} repos tracked`} />
         <Stat label="Disk Used" value={`${worstDiskPct.toFixed(0)}%`} sub="worst blobstore" tone={worstDiskPct > 85 ? 'warn' : 'info'} />

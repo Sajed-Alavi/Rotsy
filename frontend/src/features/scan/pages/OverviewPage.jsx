@@ -57,8 +57,11 @@ export default function OverviewPage() {
         <div className="flex flex-wrap gap-6">
           {['trivy', 'grype'].map((name) => {
             const info = dbStatus?.[name];
-            const tone = !info?.installed ? 'bad' : !info.present ? 'bad' : info.stale ? 'warn' : 'ok';
-            const label = !info?.installed ? 'not installed' : !info.present ? 'no database' : info.stale ? 'stale' : 'ready';
+            let tone = 'ok';
+            let label = 'ready';
+            if (!info?.installed) { tone = 'bad'; label = 'not installed'; }
+            else if (!info.present) { tone = 'bad'; label = 'no database'; }
+            else if (info.stale) { tone = 'warn'; label = 'stale'; }
             return (
               <div key={name} className="flex items-center gap-2">
                 <span className="font-mono text-xs text-slate-700 dark:text-slate-300">{name}</span>

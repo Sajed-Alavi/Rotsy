@@ -11,9 +11,9 @@ export default function SeverityCounts({ counts, placeholder = '—' }) {
   }
   return (
     <span className="font-mono text-xs tabular-nums">
-      <span className="text-rose-600 dark:text-rose-400">{counts.critical}</span>/
-      <span className="text-amber-600 dark:text-amber-400">{counts.high}</span>/
-      <span className="text-sky-600 dark:text-sky-400">{counts.medium}</span>/
+      <span className="text-rose-600 dark:text-rose-400">{counts.critical}</span>{'/'}
+      <span className="text-amber-600 dark:text-amber-400">{counts.high}</span>{'/'}
+      <span className="text-sky-600 dark:text-sky-400">{counts.medium}</span>{'/'}
       <span className="text-slate-500">{counts.low}</span>
     </span>
   );

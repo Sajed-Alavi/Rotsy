@@ -34,7 +34,11 @@ export default function TasksPage() {
     setBusy((b) => ({ ...b, [task.id]: true }));
     try {
       const r = await api.post(`/tasks/${encodeURIComponent(task.id)}/${action}`);
-      if (r.ok) say(r.note ? `${task.name}: ${r.note}` : `${task.name} ${action === 'run' ? 'started' : 'stopping'}.`, 'ok');
+      if (r.ok) {
+        let message = `${task.name}: ${r.note}`;
+        if (!r.note) message = `${task.name} ${action === 'run' ? 'started' : 'stopping'}.`;
+        say(message, 'ok');
+      }
       else fail(r.error || `could not ${action} ${task.name}`);
       setTimeout(reload, 1500);
     } catch (e) {

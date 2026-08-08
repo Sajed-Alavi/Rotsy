@@ -4,7 +4,29 @@ import { api } from '../../../lib/api.js';
 import Badge from '../../../components/Badge.jsx';
 import { relativeTime } from '../../../lib/format.js';
 
-const HEALTH_TONE = (score) => (score >= 80 ? 'ok' : score >= 50 ? 'warn' : 'bad');
+function HEALTH_TONE(score) {
+  if (score >= 80) return 'ok';
+  if (score >= 50) return 'warn';
+  return 'bad';
+}
+
+function healthLabel(score) {
+  if (score >= 80) return 'healthy';
+  if (score >= 50) return 'warning';
+  return 'at risk';
+}
+
+function insightTone(severity) {
+  if (severity === 'HIGH' || severity === 'CRITICAL') return 'bad';
+  if (severity === 'MEDIUM') return 'warn';
+  return 'neutral';
+}
+
+function gateTone(status) {
+  if (status === 'OK') return 'ok';
+  if (status === 'WARN') return 'warn';
+  return 'bad';
+}
 
 /**
  * Overview: the "understand this project without opening three tools"
@@ -71,7 +93,7 @@ export default function OverviewPage() {
             <span className="flex items-center gap-2">
               <span className="text-2xl font-semibold tabular-nums text-slate-900 dark:text-slate-100">{health.score}</span>
               <span className="font-mono text-[10px] text-slate-400">/ 100</span>
-              <Badge tone={HEALTH_TONE(health.score)}>{health.score >= 80 ? 'healthy' : health.score >= 50 ? 'warning' : 'at risk'}</Badge>
+              <Badge tone={HEALTH_TONE(health.score)}>{healthLabel(health.score)}</Badge>
             </span>
           ) : (
             <span className="font-mono text-xs text-slate-400 dark:text-slate-600">no data yet</span>
@@ -123,7 +145,7 @@ export default function OverviewPage() {
           insights.map((ins) => (
             <div key={ins.id} className="flex items-center justify-between gap-3 border-t border-slate-100 px-4 py-2.5 dark:border-slate-800/60">
               <span className="font-mono text-xs text-slate-700 dark:text-slate-300">{ins.title}</span>
-              <Badge tone={ins.severity === 'HIGH' || ins.severity === 'CRITICAL' ? 'bad' : ins.severity === 'MEDIUM' ? 'warn' : 'neutral'}>{ins.severity}</Badge>
+              <Badge tone={insightTone(ins.severity)}>{ins.severity}</Badge>
             </div>
           ))
         )}
@@ -145,5 +167,5 @@ function QualityGateBadge({ run, gate }) {
   if (!run) return <span className="font-mono text-xs text-slate-400 dark:text-slate-600">—</span>;
   if (run.status !== 'success') return <Badge tone={run.status === 'failed' ? 'bad' : 'neutral'}>{run.status}</Badge>;
   if (!gate) return <span className="font-mono text-xs text-slate-400 dark:text-slate-600">—</span>;
-  return <Badge tone={gate.status === 'OK' ? 'ok' : gate.status === 'WARN' ? 'warn' : 'bad'}>{gate.status}</Badge>;
+  return <Badge tone={gateTone(gate.status)}>{gate.status}</Badge>;
 }

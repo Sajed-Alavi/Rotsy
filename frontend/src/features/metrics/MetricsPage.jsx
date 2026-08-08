@@ -87,6 +87,20 @@ export default function MetricsPage() {
   const totalDiskCapacity = blobstores.reduce((s, b) => s + (b.capacity_bytes || 0), 0);
   const failingProbes = health?.failing ?? 0;
 
+  let nexusValue = 'unreachable';
+  if (loading) nexusValue = '···';
+  else if (system) nexusValue = system.version ? `v${system.version}` : 'reachable';
+
+  let healthValue = `${failingProbes} failing`;
+  if (loading) healthValue = '···';
+  else if (failingProbes === 0) healthValue = 'all green';
+
+  const diskTone = (pct) => {
+    if (pct > 90) return 'bad';
+    if (pct > 75) return 'warn';
+    return 'ok';
+  };
+
   return (
     <div className="p-6">
       <div className="mb-5 flex items-baseline justify-between">
@@ -113,12 +127,12 @@ export default function MetricsPage() {
       <div className="mb-6 grid grid-cols-2 gap-px border border-slate-200 bg-slate-200 sm:grid-cols-4 dark:border-slate-800 dark:bg-slate-800">
         <Stat
           label="Nexus"
-          value={loading ? '···' : system ? (system.version ? `v${system.version}` : 'reachable') : 'unreachable'}
+          value={nexusValue}
           sub={system?.edition || ''}
           tone={system?.version ? 'ok' : 'bad'}
         />
         <Stat label="Disk Used" bytes={totalDiskUsed} sub={`of ${formatBytes(totalDiskCapacity)}`} tone={totalDiskUsed / (totalDiskCapacity || 1) > 0.85 ? 'warn' : 'info'} series={diskSeries} />
-        <Stat label="Health" value={loading ? '···' : failingProbes === 0 ? 'all green' : `${failingProbes} failing`} tone={failingProbes === 0 ? 'ok' : 'bad'} sub={`${health?.total ?? 0} probes`} />
+        <Stat label="Health" value={healthValue} tone={failingProbes === 0 ? 'ok' : 'bad'} sub={`${health?.total ?? 0} probes`} />
         <Stat label="Security" value={system?.warnings?.length ? `${system.warnings.length} warnings` : 'clean'} tone={system?.warnings?.length ? 'warn' : 'ok'} />
       </div>
 
@@ -148,7 +162,7 @@ export default function MetricsPage() {
           ) : (
             blobstores.map((b) => (
               <div key={b.name}>
-                <ProgressBar used={b.used_bytes} total={b.capacity_bytes} label={`${b.name} (${b.type}, ${formatNumber(b.blob_count)} blobs)`} tone={b.used_pct > 90 ? 'bad' : b.used_pct > 75 ? 'warn' : 'ok'} />
+                <ProgressBar used={b.used_bytes} total={b.capacity_bytes} label={`${b.name} (${b.type}, ${formatNumber(b.blob_count)} blobs)`} tone={diskTone(b.used_pct)} />
                 {b.unavailable && <div className="mt-1 font-mono text-[10px] text-rose-600 dark:text-rose-400">⚠ unavailable</div>}
               </div>
             ))

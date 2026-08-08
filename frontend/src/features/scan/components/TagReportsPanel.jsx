@@ -16,6 +16,8 @@ import ReportDetailModal from './ReportDetailModal.jsx';
  * Selecting a report opens the existing `ReportDetailModal` unchanged — this
  * component only lists the history, it doesn't reimplement the detail view.
  */
+const REPORT_STATUS_TONE = { success: 'ok', failed: 'bad' };
+
 export default function TagReportsPanel({ repo, imageName, tag, onClose }) {
   const image = tag ? `${imageName}:${tag}` : imageName;
   const { data: reports, loading, reload } = useResource(
@@ -50,7 +52,7 @@ export default function TagReportsPanel({ repo, imageName, tag, onClose }) {
       className: 'text-center',
       render: (_v, row) => <SeverityCounts counts={row} />,
     },
-    { key: 'status', header: 'Status', render: (v) => <Badge tone={v === 'success' ? 'ok' : v === 'failed' ? 'bad' : 'info'}>{v}</Badge> },
+    { key: 'status', header: 'Status', render: (v) => <Badge tone={REPORT_STATUS_TONE[v] || 'info'}>{v}</Badge> },
     { key: 'started_at', header: 'When', render: (v) => <span className="font-mono text-xs text-slate-400 dark:text-slate-600">{formatDateTime(v)}</span> },
   ];
 

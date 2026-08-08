@@ -17,6 +17,8 @@ import DbPanel from '../components/DbPanel.jsx';
  * was no way to update one scanner, no way to force a re-download, and no way
  * to tell a finished run from one the timer had simply given up on.
  */
+const JOB_STATUS_TONE = { done: 'ok', failed: 'bad', cancelled: 'warn' };
+
 export default function DatabasePage() {
   const { data: dbStatus, reload: reloadStatus } = useResource(() => scanApi.dbStatus(), null);
   const { data: offline, reload: reloadOffline } = useResource(() => scanApi.offlineStatus(), null);
@@ -103,7 +105,7 @@ export default function DatabasePage() {
           )}
         >
           <div className="mb-3 flex flex-wrap items-center gap-3">
-            <Badge tone={running ? 'info' : job.status === 'done' ? 'ok' : job.status === 'failed' ? 'bad' : job.status === 'cancelled' ? 'warn' : 'neutral'}>
+            <Badge tone={running ? 'info' : (JOB_STATUS_TONE[job.status] || 'neutral')}>
               {running ? 'running' : job.status}
             </Badge>
             <span className="font-mono text-[11px] text-slate-500 dark:text-slate-400">{job.message}</span>

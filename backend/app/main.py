@@ -332,23 +332,9 @@ async def _backup_schedule_loop(settings: Settings, stop: asyncio.Event) -> None
             pass
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """Startup/shutdown lifecycle."""
-    settings = get_settings()
-    logging.basicConfig(
-        level=getattr(logging, settings.LOG_LEVEL.upper(), logging.INFO),
-        format="%(asctime)s %(levelname)s %(name)s :: %(message)s",
-    )
-    logger = logging.getLogger("nexus_wrapper")
-
-    nexus = NexusClient(settings)
-    cache = Cache(settings)
-    nexus.start()
-    await cache.start()
-
-    # Load the Nexus connection from the dashboard DB if an admin has saved
-    # one; otherwise the env-provided defaults remain in effect.
+async def _load_nexus_connection_from_db(nexus: NexusClient, settings: Settings, logger: logging.Logger) -> None:
+    """Load the Nexus connection from the dashboard DB if an admin has saved
+    one; otherwise the env-provided defaults remain in effect."""
     try:
         from .core.config_store import get_nexus_connection
         factory = get_session_factory()
@@ -365,11 +351,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     except Exception:  # noqa: BLE001
         logger.exception("Failed to load Nexus connection from DB; using env defaults.")
 
-    app.state.nexus = nexus
-    app.state.cache = cache
 
-    # Database hygiene, not work: close out scan reports left mid-flight by a
-    # previous process. This inspects rows only and starts no scans.
+async def _reap_stale_startup_state(cache: Cache, logger: logging.Logger) -> None:
+    """Database hygiene, not work: close out scan reports, jobs, and analysis
+    runs left mid-flight by a previous process. Each step is independent and
+    never blocks startup on failure."""
     try:
         from .modules.nexus import reap_stale_reports
         factory = get_session_factory()
@@ -378,21 +364,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     except Exception:  # noqa: BLE001 - never block startup on housekeeping
         logger.exception("Could not reap interrupted scan reports")
 
-    # Same for the job queue: a job whose worker died stays "running" forever,
-    # so the UI shows a database update that can never finish.
     try:
-        # cache was constructed unconditionally above (Cache(settings)), never
-        # reassigned since — always non-None here, unlike the module-scoped
-        # `_lifespan_state.get("cache")` used elsewhere in this file.
+        # cache was constructed unconditionally by the caller (Cache(settings)),
+        # never reassigned since — always non-None here, unlike the
+        # module-scoped `_lifespan_state.get("cache")` used elsewhere in this file.
         from .core.jobs import JobQueue
         await JobQueue(cache).reap_stranded()
     except Exception:  # noqa: BLE001 - never block startup on housekeeping
         logger.exception("Could not reap stranded jobs")
 
-    # And the Sonar analysis_runs table specifically: JobQueue.reap_stranded()
-    # above only fixes the Redis job's own status, not this separate DB row
-    # the UI actually reads for "Analysis" tab / Project Overview — without
-    # this an interrupted analysis shows RUNNING forever.
     try:
         from .modules.sonar.provisioning import reap_stale_analysis_runs
         factory = get_session_factory()
@@ -400,6 +380,37 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             await reap_stale_analysis_runs(session)
     except Exception:  # noqa: BLE001 - never block startup on housekeeping
         logger.exception("Could not reap interrupted analysis runs")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    """Startup/shutdown lifecycle."""
+    settings = get_settings()
+    logging.basicConfig(
+        level=getattr(logging, settings.LOG_LEVEL.upper(), logging.INFO),
+        format="%(asctime)s %(levelname)s %(name)s :: %(message)s",
+    )
+    logger = logging.getLogger("nexus_wrapper")
+
+    nexus = NexusClient(settings)
+    cache = Cache(settings)
+    nexus.start()
+    await cache.start()
+
+    await _load_nexus_connection_from_db(nexus, settings, logger)
+
+    app.state.nexus = nexus
+    app.state.cache = cache
+
+    # Database hygiene, not work: close out scan reports, jobs, and analysis
+    # runs left mid-flight by a previous process. This inspects rows only and
+    # starts no scans. Also covers the job queue (a job whose worker died
+    # stays "running" forever) and the Sonar analysis_runs table specifically
+    # (JobQueue.reap_stranded() only fixes the Redis job's own status, not
+    # this separate DB row the UI actually reads for the Analysis tab /
+    # Project Overview — without it an interrupted analysis shows RUNNING
+    # forever).
+    await _reap_stale_startup_state(cache, logger)
 
     # Populate the shared bag for job handlers.
     _lifespan_state.clear()

@@ -167,8 +167,9 @@ function ImagesView({ repo, onError }) {
 
   const deleteSelected = async (ids, label) => {
     if (!ids.length) return;
+    const from = label ? ` from ${label}` : '';
     if (!confirm(
-      `Delete ${ids.length} tag${ids.length > 1 ? 's' : ''}${label ? ` from ${label}` : ''}?\n\n` +
+      `Delete ${ids.length} tag${ids.length > 1 ? 's' : ''}${from}?\n\n` +
       'This removes them from Nexus. Disk space is only reclaimed once the ' +
       '"Compact blob store" task runs — it will be triggered automatically.',
     )) return;
@@ -199,7 +200,8 @@ function ImagesView({ repo, onError }) {
     setScanning((s) => ({ ...s, [key]: true }));
     try {
       await Promise.all(imageRefs.map((image) => scanApi.scanImage(repo, image)));
-      setScanMsg(`Scan queued for ${label || `${imageRefs.length} tag(s)`}.`);
+      const target = label || `${imageRefs.length} tag(s)`;
+      setScanMsg(`Scan queued for ${target}.`);
     } catch (err) {
       onError(`could not queue scan: ${err.message}`);
     } finally {
@@ -455,9 +457,8 @@ function FilesView({ repo, onError }) {
   const load = async (continuationToken = null) => {
     setLoading(true);
     try {
-      const res = await api.get(
-        `/repositories/${encodeURIComponent(repo)}/assets${continuationToken ? `?continuationToken=${encodeURIComponent(continuationToken)}` : ''}`,
-      );
+      const qs = continuationToken ? `?continuationToken=${encodeURIComponent(continuationToken)}` : '';
+      const res = await api.get(`/repositories/${encodeURIComponent(repo)}/assets${qs}`);
       setItems((prev) => (continuationToken ? [...prev, ...(res.items ?? [])] : (res.items ?? [])));
       setToken(res.continuationToken ?? null);
     } catch (err) {

@@ -126,8 +126,8 @@ function AnalysisDetailModal({ run, gate, onClose }) {
     >
       <div className="-mt-1 mb-3 flex gap-1 border-b border-slate-200 dark:border-slate-800">
         {tabButton('overview', 'Overview')}
-        {tabButton('issues', `Issues${run.issues_count != null ? ` (${run.issues_count})` : ''}`)}
-        {tabButton('hotspots', `Hotspots${run.security_hotspots != null ? ` (${run.security_hotspots})` : ''}`)}
+        {tabButton('issues', run.issues_count != null ? `Issues (${run.issues_count})` : 'Issues')}
+        {tabButton('hotspots', run.security_hotspots != null ? `Hotspots (${run.security_hotspots})` : 'Hotspots')}
       </div>
 
       {tab === 'overview' && (
@@ -168,6 +168,11 @@ function AnalysisDetailModal({ run, gate, onClose }) {
   );
 }
 
+function fileLineLabel(v, row) {
+  if (!v) return '—';
+  return row.line ? `${v}:${row.line}` : v;
+}
+
 function IssuesTable({ issues }) {
   if (issues === null) return <p className="font-mono text-[11px] text-slate-500 dark:text-slate-500">loading…</p>;
   const columns = [
@@ -176,7 +181,7 @@ function IssuesTable({ issues }) {
     { key: 'rule', header: 'Rule', mono: true },
     {
       key: 'component', header: 'File : Line', mono: true,
-      render: (v, row) => v ? `${v}${row.line ? `:${row.line}` : ''}` : '—',
+      render: fileLineLabel,
     },
     { key: 'message', header: 'Message' },
     { key: 'effort', header: 'Effort', mono: true, render: (v) => v || '—' },
@@ -202,7 +207,7 @@ function HotspotsTable({ hotspots }) {
     },
     {
       key: 'component', header: 'File : Line', mono: true,
-      render: (v, row) => v ? `${v}${row.line ? `:${row.line}` : ''}` : '—',
+      render: fileLineLabel,
     },
     { key: 'security_category', header: 'Category', render: (v) => v || '—' },
     { key: 'message', header: 'Message' },

@@ -27,7 +27,10 @@ const FILTERS = [
 export default function AuditPage() {
   const [resourceType, setResourceType] = useState('');
   const { data: entries, loading } = useResource(
-    () => api.get(`/audit?limit=200${resourceType ? `&resource_type=${encodeURIComponent(resourceType)}` : ''}`),
+    () => {
+      const qs = resourceType ? `&resource_type=${encodeURIComponent(resourceType)}` : '';
+      return api.get(`/audit?limit=200${qs}`);
+    },
     [],
     [resourceType],
   );

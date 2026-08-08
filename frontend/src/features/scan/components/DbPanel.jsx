@@ -36,6 +36,12 @@ function eta(seconds) {
   return `${(seconds / 3600).toFixed(1)}h`;
 }
 
+function builtLabel(info) {
+  if (info.built) return relativeTime(info.built);
+  if (info.downloaded_at) return relativeTime(info.downloaded_at);
+  return '—';
+}
+
 export default function DbPanel({ name, info, live, busy, onUpdate, onForce }) {
   const status = statusOf(info);
   const stage = live?.stage;
@@ -103,7 +109,7 @@ export default function DbPanel({ name, info, live, busy, onUpdate, onForce }) {
       {info?.present ? (
         <dl className="grid grid-cols-2 gap-x-4 gap-y-2 font-mono text-[11px] sm:grid-cols-4">
           <Field label="version" value={info.version || '—'} />
-          <Field label="built" value={info.built ? relativeTime(info.built) : (info.downloaded_at ? relativeTime(info.downloaded_at) : '—')} title={info.built || info.downloaded_at} />
+          <Field label="built" value={builtLabel(info)} title={info.built || info.downloaded_at} />
           <Field label="size" value={info.size_bytes ? formatBytes(info.size_bytes) : '—'} />
           <Field
             label="next update"

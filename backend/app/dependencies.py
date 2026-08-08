@@ -40,6 +40,28 @@ def _load_user_permissions(session: AsyncSession, user: User) -> list[str]:
     return sorted(keys)
 
 
+async def _resolve_bearer_token_user(session: AsyncSession, authorization: str) -> User | None:
+    """The user for a ``shp_``-prefixed API bearer token in the Authorization
+    header, or ``None`` if the header isn't a Rotsy API token at all (caller
+    falls through to the cookie path). Raises 401 if it IS one but
+    invalid/expired/revoked/the owner is deactivated."""
+    if not authorization.lower().startswith("bearer "):
+        return None
+    from .services.access_tokens import TOKEN_PREFIX, resolve_token
+
+    presented = authorization[7:].strip()
+    if not presented.startswith(TOKEN_PREFIX):
+        return None
+    resolved = await resolve_token(session, presented)
+    if resolved is None:
+        # Unknown, revoked, expired, or the owner was deactivated — all one
+        # answer, so a caller cannot probe which.
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid or expired API token.")
+    token_user, effective = resolved
+    token_user._effective_permissions = effective  # type: ignore[attr-defined]
+    return token_user
+
+
 async def get_current_user(
     request: Request,
     settings: Annotated[Settings, Depends(get_settings)],
@@ -58,20 +80,10 @@ async def get_current_user(
 
     Raises 401 if neither credential is present or valid.
     """
-    from .services.access_tokens import TOKEN_PREFIX, resolve_token
-
     authorization = request.headers.get("authorization", "")
-    if authorization.lower().startswith("bearer "):
-        presented = authorization[7:].strip()
-        if presented.startswith(TOKEN_PREFIX):
-            resolved = await resolve_token(session, presented)
-            if resolved is None:
-                # Unknown, revoked, expired, or the owner was deactivated — all
-                # one answer, so a caller cannot probe which.
-                raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid or expired API token.")
-            token_user, effective = resolved
-            token_user._effective_permissions = effective  # type: ignore[attr-defined]
-            return token_user
+    bearer_user = await _resolve_bearer_token_user(session, authorization)
+    if bearer_user is not None:
+        return bearer_user
 
     token = request.cookies.get("access_token")
     if not token:

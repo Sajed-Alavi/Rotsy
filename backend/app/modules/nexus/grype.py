@@ -38,19 +38,25 @@ def _normalise_severity(value: str | None) -> str:
     return _SEVERITY_ALIASES.get(raw, raw)
 
 
+def _highest_cvss(match: dict[str, Any]) -> float:
+    """The highest CVSS base score across every related vulnerability entry
+    a match carries — Grype lists CVSS per source (NVD, GHSA, ...), and the
+    highest one is the more conservative finding to surface."""
+    cvss = 0.0
+    for related in match.get("relatedVulnerabilities") or []:
+        for score in related.get("cvss") or []:
+            try:
+                cvss = max(cvss, float((score.get("metrics") or {}).get("baseScore") or score.get("score") or 0))
+            except (TypeError, ValueError):
+                continue
+    return cvss
+
+
 def parse(raw: dict[str, Any]) -> list[dict[str, Any]]:
     findings: list[dict[str, Any]] = []
     for match in raw.get("matches") or []:
         vuln = match.get("vulnerability") or {}
         artifact = match.get("artifact") or {}
-        cvss = 0.0
-        for related in match.get("relatedVulnerabilities") or []:
-            for score in related.get("cvss") or []:
-                try:
-                    cvss = max(cvss, float((score.get("metrics") or {}).get("baseScore")
-                                           or score.get("score") or 0))
-                except (TypeError, ValueError):
-                    continue
         fixed = ((vuln.get("fix") or {}).get("versions") or [])
         findings.append({
             "cve": vuln.get("id") or "UNKNOWN",
@@ -59,7 +65,7 @@ def parse(raw: dict[str, Any]) -> list[dict[str, Any]]:
             "installed_version": artifact.get("version") or "",
             "fixed_version": fixed[0] if fixed else "",
             "title": (vuln.get("description") or "")[:200],
-            "cvss": cvss,
+            "cvss": _highest_cvss(match),
         })
     return findings
 

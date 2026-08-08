@@ -257,8 +257,7 @@ class BackupScheduleBase(BaseModel):
     retention_max_age_days: int | None = Field(default=None, ge=1)
     enabled: bool = True
 
-    @model_validator(mode="after")
-    def _validate(self) -> "BackupScheduleBase":
+    def _validate_repos(self) -> None:
         if self.mode not in ("full", "selective"):
             raise ValueError("mode must be 'full' or 'selective'")
         if self.mode == "selective" and not self.repos:
@@ -270,26 +269,35 @@ class BackupScheduleBase(BaseModel):
                 except InvalidRepositoryName as exc:
                     raise ValueError(str(exc)) from exc
 
+    def _validate_cron(self) -> None:
+        if not self.cron_expression:
+            raise ValueError("cron frequency requires cron_expression")
+        if not croniter.is_valid(self.cron_expression):
+            raise ValueError(f"invalid cron expression: {self.cron_expression!r}")
+
+    def _validate_time_of_day(self) -> None:
+        if not self.time_of_day:
+            raise ValueError(f"{self.frequency} frequency requires time_of_day (HH:MM)")
+        try:
+            hh, mm = self.time_of_day.split(":")
+            if not (0 <= int(hh) <= 23 and 0 <= int(mm) <= 59):
+                raise ValueError
+        except ValueError:
+            raise ValueError("time_of_day must be 'HH:MM' 24h") from None
+        if self.frequency == "weekly" and self.day_of_week is None:
+            raise ValueError("weekly frequency requires day_of_week")
+        if self.frequency == "monthly" and self.day_of_month is None:
+            raise ValueError("monthly frequency requires day_of_month")
+
+    @model_validator(mode="after")
+    def _validate(self) -> "BackupScheduleBase":
+        self._validate_repos()
         if self.frequency not in backup_schedule_service.FREQUENCIES:
             raise ValueError(f"frequency must be one of {backup_schedule_service.FREQUENCIES}")
         if self.frequency == "cron":
-            if not self.cron_expression:
-                raise ValueError("cron frequency requires cron_expression")
-            if not croniter.is_valid(self.cron_expression):
-                raise ValueError(f"invalid cron expression: {self.cron_expression!r}")
+            self._validate_cron()
         else:
-            if not self.time_of_day:
-                raise ValueError(f"{self.frequency} frequency requires time_of_day (HH:MM)")
-            try:
-                hh, mm = self.time_of_day.split(":")
-                if not (0 <= int(hh) <= 23 and 0 <= int(mm) <= 59):
-                    raise ValueError
-            except ValueError:
-                raise ValueError("time_of_day must be 'HH:MM' 24h") from None
-            if self.frequency == "weekly" and self.day_of_week is None:
-                raise ValueError("weekly frequency requires day_of_week")
-            if self.frequency == "monthly" and self.day_of_month is None:
-                raise ValueError("monthly frequency requires day_of_month")
+            self._validate_time_of_day()
         return self
 
 

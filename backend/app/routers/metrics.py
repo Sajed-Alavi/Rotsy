@@ -186,45 +186,65 @@ async def host_metrics() -> dict[str, Any]:
     }
 
 
-@router.get("/system", dependencies=[Depends(RequirePermission("metrics:read"))])
-async def system_info(request: Request) -> dict[str, Any]:
-    """High-level system info: version, write mode, security warnings."""
-    nexus = app_state(request).nexus
-    if nexus is None:
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, _NEXUS_CLIENT_NOT_AVAILABLE)
-    out: dict[str, Any] = {"version": None, "writable": None, "edition": None,
-                           "anonymous_enabled": None, "warnings": []}
+async def _read_version_edition(nexus) -> tuple[str | None, str | None]:
     try:
         s = await nexus.client.get("/service/rest/v1/status")
         if s.status_code == 200:
             # Nexus returns "<version>/<edition>" plain text.
             text = s.text.strip()
             parts = text.split("/", 1)
-            out["version"] = parts[0] if parts else text
-            if len(parts) > 1:
-                out["edition"] = parts[1]
+            version = parts[0] if parts else text
+            edition = parts[1] if len(parts) > 1 else None
+            return version, edition
     except Exception:  # noqa: BLE001
         pass
+    return None, None
+
+
+async def _read_anonymous_enabled(nexus) -> bool | None:
     try:
         a = await nexus.client.get("/service/rest/v1/security/anonymous")
         if a.status_code == 200:
-            out["anonymous_enabled"] = bool((a.json() or {}).get("enabled"))
+            return bool((a.json() or {}).get("enabled"))
     except Exception:  # noqa: BLE001
         pass
-    # Pull the security-related probes from health checks to surface warnings.
+    return None
+
+
+_WARNING_PROBE_KEYWORDS = ("admin", "credential", "secret", "encryption", "default")
+
+
+async def _read_security_warnings(nexus) -> list[dict[str, Any]]:
+    """The security-related probes from health checks, surfaced as warnings."""
+    warnings: list[dict[str, Any]] = []
     try:
         hc = await nexus.client.get("/service/rest/v1/status/check")
         if hc.status_code == 200:
             for name, info in (hc.json() or {}).items():
-                if not info.get("healthy") and any(k in name.lower() for k in
-                                                    ("admin", "credential", "secret", "encryption", "default")):
-                    out["warnings"].append({
+                if not info.get("healthy") and any(k in name.lower() for k in _WARNING_PROBE_KEYWORDS):
+                    warnings.append({
                         "name": name,
                         "message": (info.get("message") or "").replace("<br>", " ").strip(),
                     })
     except Exception:  # noqa: BLE001
         pass
-    return out
+    return warnings
+
+
+@router.get("/system", dependencies=[Depends(RequirePermission("metrics:read"))])
+async def system_info(request: Request) -> dict[str, Any]:
+    """High-level system info: version, write mode, security warnings."""
+    nexus = app_state(request).nexus
+    if nexus is None:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, _NEXUS_CLIENT_NOT_AVAILABLE)
+    version, edition = await _read_version_edition(nexus)
+    return {
+        "version": version,
+        "writable": None,
+        "edition": edition,
+        "anonymous_enabled": await _read_anonymous_enabled(nexus),
+        "warnings": await _read_security_warnings(nexus),
+    }
 
 
 def _parse_status_version(text: str) -> str | None:

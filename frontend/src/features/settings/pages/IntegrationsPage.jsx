@@ -111,7 +111,7 @@ function NexusCard() {
         <label className="flex items-start gap-2 text-sm text-slate-700 dark:text-slate-300">
           <input type="checkbox" checked={form.verify_ssl} onChange={(e) => setForm({ ...form, verify_ssl: e.target.checked })} className="mt-0.5 accent-sky-500" />
           <span className="font-mono text-xs">
-            verify SSL (keep on in production)
+            verify SSL (keep on in production){' '}
             <span className="block text-[10px] text-slate-400 dark:text-slate-600">Applies to this REST connection only. How scanners reach each Docker connector is taken from the connector Nexus reports.</span>
           </span>
         </label>
@@ -212,13 +212,11 @@ function GitHubCard() {
     setPublicBusy(false);
   };
 
-  const status = !data
-    ? { tone: 'neutral', label: '…' }
-    : !data.configured
-      ? { tone: 'warn', label: 'Not Configured' }
-      : data.connected
-        ? { tone: 'ok', label: 'Connected' }
-        : { tone: 'warn', label: 'Configured — No Installations' };
+  let status;
+  if (!data) status = { tone: 'neutral', label: '…' };
+  else if (!data.configured) status = { tone: 'warn', label: 'Not Configured' };
+  else if (data.connected) status = { tone: 'ok', label: 'Connected' };
+  else status = { tone: 'warn', label: 'Configured — No Installations' };
 
   return (
     <IntegrationCard
@@ -389,11 +387,10 @@ function GitLabCard() {
     setSyncing(null);
   };
 
-  const status = !data
-    ? { tone: 'neutral', label: '…' }
-    : data.connected
-      ? { tone: 'ok', label: 'Connected' }
-      : { tone: 'warn', label: 'Not Configured' };
+  let status;
+  if (!data) status = { tone: 'neutral', label: '…' };
+  else if (data.connected) status = { tone: 'ok', label: 'Connected' };
+  else status = { tone: 'warn', label: 'Not Configured' };
 
   return (
     <IntegrationCard
@@ -562,13 +559,11 @@ function SonarCard() {
     setSaving(false);
   };
 
-  const status = !data
-    ? { tone: 'neutral', label: '…' }
-    : !data.configured
-      ? { tone: 'warn', label: 'Not Configured' }
-      : data.reachable
-        ? { tone: 'ok', label: 'Connected' }
-        : { tone: 'bad', label: 'Error' };
+  let status;
+  if (!data) status = { tone: 'neutral', label: '…' };
+  else if (!data.configured) status = { tone: 'warn', label: 'Not Configured' };
+  else if (data.reachable) status = { tone: 'ok', label: 'Connected' };
+  else status = { tone: 'bad', label: 'Error' };
 
   return (
     <IntegrationCard

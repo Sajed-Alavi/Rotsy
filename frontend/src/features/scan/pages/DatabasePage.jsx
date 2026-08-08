@@ -19,6 +19,100 @@ import DbPanel from '../components/DbPanel.jsx';
  */
 const JOB_STATUS_TONE = { done: 'ok', failed: 'bad', cancelled: 'warn' };
 
+function CurrentJobSection({ job, running, overall, log, logRef, onCancel, onDismiss }) {
+  if (!job) return null;
+  return (
+    <Section
+      title="Current job"
+      hint={job.id?.slice(0, 8)}
+      actions={running ? (
+        <button onClick={onCancel} className="border border-rose-300 px-2 py-0.5 font-mono text-[10px] uppercase text-rose-600 hover:bg-rose-50 dark:border-rose-800 dark:text-rose-400 dark:hover:bg-rose-950/40">cancel</button>
+      ) : (
+        <button onClick={onDismiss} className="border border-slate-300 px-2 py-0.5 font-mono text-[10px] uppercase text-slate-500 hover:bg-slate-100 dark:border-slate-700 dark:text-slate-400 dark:hover:bg-slate-800">dismiss</button>
+      )}
+    >
+      <div className="mb-3 flex flex-wrap items-center gap-3">
+        <Badge tone={running ? 'info' : (JOB_STATUS_TONE[job.status] || 'neutral')}>
+          {running ? 'running' : job.status}
+        </Badge>
+        <span className="font-mono text-[11px] text-slate-500 dark:text-slate-400">{job.message}</span>
+        <span className="ml-auto font-mono text-[11px] tabular-nums text-slate-400 dark:text-slate-600">{overall}%</span>
+      </div>
+      <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-200 dark:bg-slate-800">
+        <div
+          className={`h-full rounded-full transition-all duration-500 ${job.status === 'failed' ? 'bg-rose-500' : 'bg-sky-500'}`}
+          style={{ width: `${overall}%` }}
+        />
+      </div>
+
+      {log.length > 0 && (
+        <div ref={logRef} className="mt-3 max-h-48 overflow-y-auto border border-slate-200 bg-slate-50 p-2 font-mono text-[10px] leading-relaxed text-slate-600 dark:border-slate-800 dark:bg-slate-900/40 dark:text-slate-400">
+          {/* index is a safe key here: log only ever grows by appending
+              streamed lines, never reordered/filtered — and line text
+              alone isn't unique (repeated progress messages happen). */}
+          {log.map((line, i) => <div key={i}>{line}</div>)} {/* NOSONAR */}
+        </div>
+      )}
+    </Section>
+  );
+}
+
+function OfflineArchivesList({ offline }) {
+  return (
+    <>
+      <div className="mb-3 flex flex-wrap gap-4 font-mono text-[11px]">
+        <span className="flex items-center gap-1.5">
+          trivy archive <Badge tone={offline.trivy_db ? 'ok' : 'neutral'}>{offline.trivy_db ? 'found' : 'missing'}</Badge>
+        </span>
+        <span className="flex items-center gap-1.5">
+          grype archive <Badge tone={offline.grype_db ? 'ok' : 'neutral'}>{offline.grype_db ? 'found' : 'missing'}</Badge>
+        </span>
+      </div>
+      {(offline.files || []).length > 0 ? (
+        <ul className="font-mono text-[11px] text-slate-600 dark:text-slate-400">
+          {offline.files.map((f) => (
+            <li key={f.name} className="flex justify-between border-b border-slate-100 py-1 last:border-0 dark:border-slate-800/60">
+              <span>{f.name}</span>
+              <span className="tabular-nums text-slate-400 dark:text-slate-600">{formatBytes(f.size_bytes)}</span>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="font-mono text-[11px] text-slate-500 dark:text-slate-400">Directory exists but is empty.</p>
+      )}
+    </>
+  );
+}
+
+function OfflineImportSection({ offline, running, onImport }) {
+  return (
+    <Section
+      title="Offline / air-gapped import"
+      hint={offline?.dir}
+      actions={
+        <button
+          onClick={onImport}
+          disabled={running || !offline?.exists}
+          title={offline?.exists ? `Import from ${offline.dir}` : 'Offline directory not found — mount ./offline-db and drop the archives in'}
+          className="border border-slate-300 px-2.5 py-1 font-mono text-[11px] uppercase tracking-wider text-slate-600 hover:bg-slate-100 disabled:opacity-50 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
+        >
+          Import offline DBs
+        </button>
+      }
+    >
+      {!offline?.exists ? (
+        <p className="font-mono text-[11px] text-slate-500 dark:text-slate-400">
+          The offline directory does not exist. Create <code>./offline-db</code> on the host (it is already
+          mounted by docker-compose), populate it with <code>scripts/scanner/fetch-offline-db.sh</code> on a
+          connected machine, then import here. Use this when Docker Hub and ghcr.io are unreachable.
+        </p>
+      ) : (
+        <OfflineArchivesList offline={offline} />
+      )}
+    </Section>
+  );
+}
+
 export default function DatabasePage() {
   const { data: dbStatus, reload: reloadStatus } = useResource(() => scanApi.dbStatus(), null);
   const { data: offline, reload: reloadOffline } = useResource(() => scanApi.offlineStatus(), null);
@@ -94,86 +188,15 @@ export default function DatabasePage() {
       </Section>
 
       {/* Job state — visible whether or not this tab started the run. */}
-      {job && (
-        <Section
-          title="Current job"
-          hint={job.id?.slice(0, 8)}
-          actions={running ? (
-            <button onClick={cancelRun} className="border border-rose-300 px-2 py-0.5 font-mono text-[10px] uppercase text-rose-600 hover:bg-rose-50 dark:border-rose-800 dark:text-rose-400 dark:hover:bg-rose-950/40">cancel</button>
-          ) : (
-            <button onClick={dismiss} className="border border-slate-300 px-2 py-0.5 font-mono text-[10px] uppercase text-slate-500 hover:bg-slate-100 dark:border-slate-700 dark:text-slate-400 dark:hover:bg-slate-800">dismiss</button>
-          )}
-        >
-          <div className="mb-3 flex flex-wrap items-center gap-3">
-            <Badge tone={running ? 'info' : (JOB_STATUS_TONE[job.status] || 'neutral')}>
-              {running ? 'running' : job.status}
-            </Badge>
-            <span className="font-mono text-[11px] text-slate-500 dark:text-slate-400">{job.message}</span>
-            <span className="ml-auto font-mono text-[11px] tabular-nums text-slate-400 dark:text-slate-600">{overall}%</span>
-          </div>
-          <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-200 dark:bg-slate-800">
-            <div
-              className={`h-full rounded-full transition-all duration-500 ${job.status === 'failed' ? 'bg-rose-500' : 'bg-sky-500'}`}
-              style={{ width: `${overall}%` }}
-            />
-          </div>
+      <CurrentJobSection
+        job={job} running={running} overall={overall} log={log} logRef={logRef}
+        onCancel={cancelRun} onDismiss={dismiss}
+      />
 
-          {log.length > 0 && (
-            <div ref={logRef} className="mt-3 max-h-48 overflow-y-auto border border-slate-200 bg-slate-50 p-2 font-mono text-[10px] leading-relaxed text-slate-600 dark:border-slate-800 dark:bg-slate-900/40 dark:text-slate-400">
-              {/* index is a safe key here: log only ever grows by appending
-                  streamed lines, never reordered/filtered — and line text
-                  alone isn't unique (repeated progress messages happen). */}
-              {log.map((line, i) => <div key={i}>{line}</div>)} {/* NOSONAR */}
-            </div>
-          )}
-        </Section>
-      )}
-
-      <Section
-        title="Offline / air-gapped import"
-        hint={offline?.dir}
-        actions={
-          <button
-            onClick={() => run(() => scanApi.importDb(), 'Offline import')}
-            disabled={running || !offline?.exists}
-            title={offline?.exists ? `Import from ${offline.dir}` : 'Offline directory not found — mount ./offline-db and drop the archives in'}
-            className="border border-slate-300 px-2.5 py-1 font-mono text-[11px] uppercase tracking-wider text-slate-600 hover:bg-slate-100 disabled:opacity-50 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
-          >
-            Import offline DBs
-          </button>
-        }
-      >
-        {!offline?.exists ? (
-          <p className="font-mono text-[11px] text-slate-500 dark:text-slate-400">
-            The offline directory does not exist. Create <code>./offline-db</code> on the host (it is already
-            mounted by docker-compose), populate it with <code>scripts/scanner/fetch-offline-db.sh</code> on a
-            connected machine, then import here. Use this when Docker Hub and ghcr.io are unreachable.
-          </p>
-        ) : (
-          <>
-            <div className="mb-3 flex flex-wrap gap-4 font-mono text-[11px]">
-              <span className="flex items-center gap-1.5">
-                trivy archive <Badge tone={offline.trivy_db ? 'ok' : 'neutral'}>{offline.trivy_db ? 'found' : 'missing'}</Badge>
-              </span>
-              <span className="flex items-center gap-1.5">
-                grype archive <Badge tone={offline.grype_db ? 'ok' : 'neutral'}>{offline.grype_db ? 'found' : 'missing'}</Badge>
-              </span>
-            </div>
-            {(offline.files || []).length > 0 ? (
-              <ul className="font-mono text-[11px] text-slate-600 dark:text-slate-400">
-                {offline.files.map((f) => (
-                  <li key={f.name} className="flex justify-between border-b border-slate-100 py-1 last:border-0 dark:border-slate-800/60">
-                    <span>{f.name}</span>
-                    <span className="tabular-nums text-slate-400 dark:text-slate-600">{formatBytes(f.size_bytes)}</span>
-                  </li>
-                ))}
-              </ul>
-            ) : (
-              <p className="font-mono text-[11px] text-slate-500 dark:text-slate-400">Directory exists but is empty.</p>
-            )}
-          </>
-        )}
-      </Section>
+      <OfflineImportSection
+        offline={offline} running={running}
+        onImport={() => run(() => scanApi.importDb(), 'Offline import')}
+      />
     </>
   );
 }

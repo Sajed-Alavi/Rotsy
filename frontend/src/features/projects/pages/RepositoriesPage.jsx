@@ -72,6 +72,25 @@ export default function RepositoriesPage() {
 /** Lazy-fetched on open, not eagerly per row — a Project with many
  * repositories would otherwise fire one branch-listing call per row on
  * every page load, for data most visits never look at. */
+function BranchesModalBody({ err, branches, repo }) {
+  if (err) {
+    return <p className="font-mono text-xs text-rose-600 dark:text-rose-400">{err}</p>;
+  }
+  if (branches === null) {
+    return <p className="font-mono text-[11px] text-slate-500 dark:text-slate-500">loading…</p>;
+  }
+  return (
+    <ul className="max-h-64 space-y-1 overflow-y-auto font-mono text-xs text-slate-700 dark:text-slate-300">
+      {branches.map((b) => (
+        <li key={b} className="flex items-center justify-between border-b border-slate-100 py-1 last:border-0 dark:border-slate-800/60">
+          {b}
+          {b === repo.default_branch && <Badge tone="info">default</Badge>}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 function BranchesButton({ repo }) {
   const [open, setOpen] = useState(false);
   const [branches, setBranches] = useState(null);
@@ -95,20 +114,7 @@ function BranchesButton({ repo }) {
         View
       </button>
       <Modal open={open} title={`Branches · ${repo.full_name}`} onClose={() => setOpen(false)}>
-        {err ? (
-          <p className="font-mono text-xs text-rose-600 dark:text-rose-400">{err}</p>
-        ) : branches === null ? (
-          <p className="font-mono text-[11px] text-slate-500 dark:text-slate-500">loading…</p>
-        ) : (
-          <ul className="max-h-64 space-y-1 overflow-y-auto font-mono text-xs text-slate-700 dark:text-slate-300">
-            {branches.map((b) => (
-              <li key={b} className="flex items-center justify-between border-b border-slate-100 py-1 last:border-0 dark:border-slate-800/60">
-                {b}
-                {b === repo.default_branch && <Badge tone="info">default</Badge>}
-              </li>
-            ))}
-          </ul>
-        )}
+        <BranchesModalBody err={err} branches={branches} repo={repo} />
       </Modal>
     </>
   );
@@ -122,6 +128,27 @@ function BranchesButton({ repo }) {
  * attach the setting to yet, same reasoning as the Language column showing
  * "not analyzed yet" instead of an editable field.
  */
+function WatchedBranchesEditor({ branchesErr, branches, watched, toggleBranch, repo }) {
+  if (branchesErr) {
+    return <p className="font-mono text-xs text-rose-600 dark:text-rose-400">{branchesErr}</p>;
+  }
+  if (branches === null) {
+    return <p className="font-mono text-[11px] text-slate-500 dark:text-slate-500">loading branches…</p>;
+  }
+  return (
+    <div className="max-h-48 space-y-1 overflow-y-auto border border-slate-200 p-2 dark:border-slate-800">
+      {branches.map((b) => (
+        <label key={b} className="flex items-center gap-2 font-mono text-xs text-slate-700 dark:text-slate-300">
+          <input type="checkbox" checked={watched.has(b)} onChange={() => toggleBranch(b)} className="accent-sky-500" />
+          {b}
+          {b === repo.default_branch && <Badge tone="info">default</Badge>}
+          {b !== repo.default_branch && <span className="font-mono text-[10px] text-amber-600 dark:text-amber-400">requires Developer Edition+</span>}
+        </label>
+      ))}
+    </div>
+  );
+}
+
 function AutoAnalyzeCell({ repo, enabled, onDone }) {
   const [open, setOpen] = useState(false);
   const [branches, setBranches] = useState(null);
@@ -195,7 +222,7 @@ function AutoAnalyzeCell({ repo, enabled, onDone }) {
         <div className="space-y-3">
           <label className="flex items-center gap-2 font-mono text-xs text-slate-700 dark:text-slate-300">
             <input type="checkbox" checked={autoEnabled} onChange={(e) => setAutoEnabled(e.target.checked)} className="accent-sky-500" />
-            Analyze automatically on push
+            {' '}Analyze automatically on push
           </label>
 
           {autoEnabled && (
@@ -203,22 +230,10 @@ function AutoAnalyzeCell({ repo, enabled, onDone }) {
               <p className="mb-1 font-mono text-[10px] uppercase tracking-wider text-slate-500">
                 Watched branches — none selected means "{repo.default_branch} only"
               </p>
-              {branchesErr ? (
-                <p className="font-mono text-xs text-rose-600 dark:text-rose-400">{branchesErr}</p>
-              ) : branches === null ? (
-                <p className="font-mono text-[11px] text-slate-500 dark:text-slate-500">loading branches…</p>
-              ) : (
-                <div className="max-h-48 space-y-1 overflow-y-auto border border-slate-200 p-2 dark:border-slate-800">
-                  {branches.map((b) => (
-                    <label key={b} className="flex items-center gap-2 font-mono text-xs text-slate-700 dark:text-slate-300">
-                      <input type="checkbox" checked={watched.has(b)} onChange={() => toggleBranch(b)} className="accent-sky-500" />
-                      {b}
-                      {b === repo.default_branch && <Badge tone="info">default</Badge>}
-                      {b !== repo.default_branch && <span className="font-mono text-[10px] text-amber-600 dark:text-amber-400">requires Developer Edition+</span>}
-                    </label>
-                  ))}
-                </div>
-              )}
+              <WatchedBranchesEditor
+                branchesErr={branchesErr} branches={branches} watched={watched}
+                toggleBranch={toggleBranch} repo={repo}
+              />
             </div>
           )}
 

@@ -134,7 +134,7 @@ export default function StorageAnalyzerPage() {
     if (!q) return result.items;
     return result.items
       .map((it) => {
-        if (!it || !it.name) return null;
+        if (!it?.name) return null;
         if (it.name.toLowerCase().includes(q)) return it;
         const versions = (it.versions || []).filter((v) => (v.version || '').toLowerCase().includes(q));
         return versions.length ? { ...it, versions } : null;
@@ -164,8 +164,9 @@ export default function StorageAnalyzerPage() {
       {/* Controls */}
       <div className="mb-5 flex flex-wrap items-end gap-3 border border-slate-200 bg-white p-3 dark:border-slate-800 dark:bg-slate-900/40">
         <div>
-          <label className="mb-1 block font-mono text-[10px] uppercase tracking-wider text-slate-500">Repository</label>
+          <label htmlFor="storage-analyzer-repo" className="mb-1 block font-mono text-[10px] uppercase tracking-wider text-slate-500">Repository</label>
           <select
+            id="storage-analyzer-repo"
             value={repo}
             onChange={(e) => setRepo(e.target.value)}
             disabled={running || loadingRepos}
@@ -295,7 +296,7 @@ export default function StorageAnalyzerPage() {
                   <tr><td colSpan={5} className="px-3 py-8 text-center font-mono text-xs text-slate-400 dark:text-slate-600">no items match "{query}"</td></tr>
                 ) : (
                   filtered.map((it) => {
-                    if (!it || !it.name) return null;
+                    if (!it?.name) return null;
                     const open = expanded.has(it.name);
                     return (
                       <React.Fragment key={it.name}>

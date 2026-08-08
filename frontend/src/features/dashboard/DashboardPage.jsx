@@ -8,6 +8,84 @@ import { formatBytes, formatNumber, relativeTime } from '../../lib/format.js';
 const HOST_POLL_MS = 5000;
 const HOST_HISTORY_LEN = 20;
 
+function RecentActivityTable({ jobs, jobStatusTone }) {
+  if (jobs.length === 0) {
+    return <div className="py-6 text-center font-mono text-xs text-slate-400 dark:text-slate-600">no background jobs yet</div>;
+  }
+  return (
+    <table className="w-full border-collapse text-sm">
+      <tbody>
+        {jobs.map((j) => (
+          <tr key={j.id} className="border-b border-slate-100 last:border-0 dark:border-slate-800/60">
+            <td className="px-3 py-1.5 font-mono text-xs text-slate-700 dark:text-slate-300">{j.type}</td>
+            <td className="px-3 py-1.5"><Badge tone={jobStatusTone(j.status)}>{j.status}</Badge></td>
+            <td className="px-3 py-1.5 text-right font-mono text-[11px] text-slate-400 dark:text-slate-600">{relativeTime(j.updated_at)}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
+function HostResourcesSection({ host, cpuHistory, memHistory, diskHistory }) {
+  const cpuValue = host ? `${host.cpu_percent.toFixed(0)}%` : '···';
+  const cpuTone = host?.cpu_percent > 85 ? 'warn' : 'neutral';
+
+  const memValue = host ? `${host.memory_percent.toFixed(0)}%` : '···';
+  const memSub = host ? formatBytes(host.memory_used_bytes) : '';
+  const memTone = host?.memory_percent > 85 ? 'warn' : 'neutral';
+
+  const diskPct = host ? (host.disk_used_bytes / (host.disk_total_bytes || 1)) * 100 : null;
+  const diskValue = diskPct === null ? '···' : `${diskPct.toFixed(0)}%`;
+  const diskSub = host ? formatBytes(host.disk_used_bytes) : '';
+  const diskTone = diskPct !== null && diskPct > 85 ? 'warn' : 'neutral';
+
+  return (
+    <section className="mb-6">
+      <h2 className="mb-2 font-mono text-[10px] uppercase tracking-wider text-slate-500">Host resources</h2>
+      <div className="grid grid-cols-1 gap-px border border-slate-200 bg-slate-200 sm:grid-cols-3 dark:border-slate-800 dark:bg-slate-800">
+        <Stat label="CPU" value={cpuValue} series={cpuHistory} tone={cpuTone} />
+        <Stat label="Memory" value={memValue} sub={memSub} series={memHistory} tone={memTone} />
+        <Stat label="Disk" value={diskValue} sub={diskSub} series={diskHistory} tone={diskTone} />
+      </div>
+    </section>
+  );
+}
+
+function RepositoriesTable({ loading, repos }) {
+  let body;
+  if (loading) {
+    body = <tr><td colSpan={4} className="px-3 py-6 text-center font-mono text-xs text-slate-400 dark:text-slate-600">loading…</td></tr>;
+  } else if (repos.length === 0) {
+    body = <tr><td colSpan={4} className="px-3 py-6 text-center font-mono text-xs text-slate-400 dark:text-slate-600">no repositories</td></tr>;
+  } else {
+    body = repos.map((r) => (
+      <tr key={r.name} className="border-b border-slate-100 last:border-0 hover:bg-slate-50 dark:border-slate-800/60 dark:hover:bg-slate-800/30">
+        <td className="px-3 py-2 font-mono text-slate-800 dark:text-slate-200">{r.name}</td>
+        <td className="px-3 py-2"><Badge tone="info">{r.format}</Badge></td>
+        <td className="px-3 py-2 text-slate-500 dark:text-slate-400">{r.type}</td>
+        <td className="px-3 py-2"><Badge tone={r.online === false ? 'bad' : 'ok'}>{r.online === false ? 'offline' : 'online'}</Badge></td>
+      </tr>
+    ));
+  }
+
+  return (
+    <div className="border border-slate-200 dark:border-slate-800">
+      <table className="w-full border-collapse text-sm">
+        <thead>
+          <tr className="border-b border-slate-200 bg-slate-50 dark:border-slate-800 dark:bg-slate-900/60">
+            <th className="px-3 py-2 text-left font-mono text-[10px] uppercase tracking-wider text-slate-500">Name</th>
+            <th className="px-3 py-2 text-left font-mono text-[10px] uppercase tracking-wider text-slate-500">Format</th>
+            <th className="px-3 py-2 text-left font-mono text-[10px] uppercase tracking-wider text-slate-500">Type</th>
+            <th className="px-3 py-2 text-left font-mono text-[10px] uppercase tracking-wider text-slate-500">Status</th>
+          </tr>
+        </thead>
+        <tbody>{body}</tbody>
+      </table>
+    </div>
+  );
+}
+
 /** Dashboard: status overview + activity, storage, vulnerability and host-resource glance. */
 export default function DashboardPage() {
   const [health, setHealth] = useState(null);
@@ -127,67 +205,18 @@ export default function DashboardPage() {
         <section>
           <h2 className="mb-2 font-mono text-[10px] uppercase tracking-wider text-slate-500">Recent activity</h2>
           <div className="max-h-64 overflow-y-auto border border-slate-200 dark:border-slate-800">
-            {jobs.length === 0 ? (
-              <div className="py-6 text-center font-mono text-xs text-slate-400 dark:text-slate-600">no background jobs yet</div>
-            ) : (
-              <table className="w-full border-collapse text-sm">
-                <tbody>
-                  {jobs.map((j) => (
-                    <tr key={j.id} className="border-b border-slate-100 last:border-0 dark:border-slate-800/60">
-                      <td className="px-3 py-1.5 font-mono text-xs text-slate-700 dark:text-slate-300">{j.type}</td>
-                      <td className="px-3 py-1.5"><Badge tone={jobStatusTone(j.status)}>{j.status}</Badge></td>
-                      <td className="px-3 py-1.5 text-right font-mono text-[11px] text-slate-400 dark:text-slate-600">{relativeTime(j.updated_at)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
+            <RecentActivityTable jobs={jobs} jobStatusTone={jobStatusTone} />
           </div>
         </section>
       </div>
 
-      {/* Host resources */}
-      <section className="mb-6">
-        <h2 className="mb-2 font-mono text-[10px] uppercase tracking-wider text-slate-500">Host resources</h2>
-        <div className="grid grid-cols-1 gap-px border border-slate-200 bg-slate-200 sm:grid-cols-3 dark:border-slate-800 dark:bg-slate-800">
-          <Stat label="CPU" value={host ? `${host.cpu_percent.toFixed(0)}%` : '···'} series={cpuHistory} tone={host?.cpu_percent > 85 ? 'warn' : 'neutral'} />
-          <Stat label="Memory" value={host ? `${host.memory_percent.toFixed(0)}%` : '···'} sub={host ? formatBytes(host.memory_used_bytes) : ''} series={memHistory} tone={host?.memory_percent > 85 ? 'warn' : 'neutral'} />
-          <Stat label="Disk" value={host ? `${((host.disk_used_bytes / (host.disk_total_bytes || 1)) * 100).toFixed(0)}%` : '···'} sub={host ? formatBytes(host.disk_used_bytes) : ''} series={diskHistory} tone={host && host.disk_used_bytes / (host.disk_total_bytes || 1) > 0.85 ? 'warn' : 'neutral'} />
-        </div>
-      </section>
+      <HostResourcesSection host={host} cpuHistory={cpuHistory} memHistory={memHistory} diskHistory={diskHistory} />
 
       <div className="mb-3 flex items-center justify-between">
         <h2 className="font-mono text-[10px] uppercase tracking-wider text-slate-500">Repositories</h2>
       </div>
 
-      <div className="border border-slate-200 dark:border-slate-800">
-        <table className="w-full border-collapse text-sm">
-          <thead>
-            <tr className="border-b border-slate-200 bg-slate-50 dark:border-slate-800 dark:bg-slate-900/60">
-              <th className="px-3 py-2 text-left font-mono text-[10px] uppercase tracking-wider text-slate-500">Name</th>
-              <th className="px-3 py-2 text-left font-mono text-[10px] uppercase tracking-wider text-slate-500">Format</th>
-              <th className="px-3 py-2 text-left font-mono text-[10px] uppercase tracking-wider text-slate-500">Type</th>
-              <th className="px-3 py-2 text-left font-mono text-[10px] uppercase tracking-wider text-slate-500">Status</th>
-            </tr>
-          </thead>
-          <tbody>
-            {loading ? (
-              <tr><td colSpan={4} className="px-3 py-6 text-center font-mono text-xs text-slate-400 dark:text-slate-600">loading…</td></tr>
-            ) : repos.length === 0 ? (
-              <tr><td colSpan={4} className="px-3 py-6 text-center font-mono text-xs text-slate-400 dark:text-slate-600">no repositories</td></tr>
-            ) : (
-              repos.map((r) => (
-                <tr key={r.name} className="border-b border-slate-100 last:border-0 hover:bg-slate-50 dark:border-slate-800/60 dark:hover:bg-slate-800/30">
-                  <td className="px-3 py-2 font-mono text-slate-800 dark:text-slate-200">{r.name}</td>
-                  <td className="px-3 py-2"><Badge tone="info">{r.format}</Badge></td>
-                  <td className="px-3 py-2 text-slate-500 dark:text-slate-400">{r.type}</td>
-                  <td className="px-3 py-2"><Badge tone={r.online === false ? 'bad' : 'ok'}>{r.online === false ? 'offline' : 'online'}</Badge></td>
-                </tr>
-              ))
-            )}
-          </tbody>
-        </table>
-      </div>
+      <RepositoriesTable loading={loading} repos={repos} />
     </div>
   );
 }

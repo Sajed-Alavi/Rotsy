@@ -56,11 +56,17 @@ export default function TagReportsPanel({ repo, imageName, tag, onClose }) {
     { key: 'started_at', header: 'When', render: (v) => <span className="font-mono text-xs text-slate-400 dark:text-slate-600">{formatDateTime(v)}</span> },
   ];
 
+  let hint = 'loading…';
+  if (!loading) {
+    const plural = reports.length === 1 ? '' : 's';
+    hint = `${reports.length} report${plural}`;
+  }
+
   return (
     <>
       <Section
         title={`Report history · ${repo} / ${image}`}
-        hint={loading ? 'loading…' : `${reports.length} report${reports.length === 1 ? '' : 's'}`}
+        hint={hint}
         flush
         actions={
           <button

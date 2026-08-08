@@ -11,6 +11,26 @@ const TYPES = ['hosted', 'proxy', 'group'];
 const REPO_TYPE_TONE = { hosted: 'ok', proxy: 'info' };
 
 /** Repository management: list + create (hosted/proxy/group) + delete. */
+function RepoRows({ loading, repos, remove }) {
+  if (loading) {
+    return <tr><td colSpan={5} className="px-3 py-8 text-center font-mono text-xs text-slate-400 dark:text-slate-600">loading…</td></tr>;
+  }
+  if (repos.length === 0) {
+    return <tr><td colSpan={5} className="px-3 py-8 text-center font-mono text-xs text-slate-400 dark:text-slate-600">no repositories — click "Create repository"</td></tr>;
+  }
+  return repos.map((r) => (
+    <tr key={r.name} className="border-b border-slate-100 last:border-0 hover:bg-slate-50 dark:border-slate-800/60 dark:hover:bg-slate-800/30">
+      <td className="px-3 py-2 font-mono text-slate-800 dark:text-slate-200">{r.name}</td>
+      <td className="px-3 py-2 font-mono text-xs text-slate-500 dark:text-slate-400">{r.format}</td>
+      <td className="px-3 py-2"><Badge tone={REPO_TYPE_TONE[r.type] || 'neutral'}>{r.type}</Badge></td>
+      <td className="px-3 py-2 font-mono text-[11px] text-slate-400 dark:text-slate-600 truncate max-w-xs" title={r.url}>{r.url}</td>
+      <td className="px-3 py-2 text-right">
+        <button onClick={() => remove(r.name)} className="border border-rose-200 px-2 py-0.5 font-mono text-[10px] uppercase text-rose-600 hover:bg-rose-50 dark:border-rose-800 dark:text-rose-400 dark:hover:bg-rose-950/40">delete</button>
+      </td>
+    </tr>
+  ));
+}
+
 export default function RepositoriesPage() {
   const [repos, setRepos] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -70,21 +90,7 @@ export default function RepositoriesPage() {
             </tr>
           </thead>
           <tbody>
-            {loading ? (
-              <tr><td colSpan={5} className="px-3 py-8 text-center font-mono text-xs text-slate-400 dark:text-slate-600">loading…</td></tr>
-            ) : repos.length === 0 ? (
-              <tr><td colSpan={5} className="px-3 py-8 text-center font-mono text-xs text-slate-400 dark:text-slate-600">no repositories — click "Create repository"</td></tr>
-            ) : repos.map((r) => (
-              <tr key={r.name} className="border-b border-slate-100 last:border-0 hover:bg-slate-50 dark:border-slate-800/60 dark:hover:bg-slate-800/30">
-                <td className="px-3 py-2 font-mono text-slate-800 dark:text-slate-200">{r.name}</td>
-                <td className="px-3 py-2 font-mono text-xs text-slate-500 dark:text-slate-400">{r.format}</td>
-                <td className="px-3 py-2"><Badge tone={REPO_TYPE_TONE[r.type] || 'neutral'}>{r.type}</Badge></td>
-                <td className="px-3 py-2 font-mono text-[11px] text-slate-400 dark:text-slate-600 truncate max-w-xs" title={r.url}>{r.url}</td>
-                <td className="px-3 py-2 text-right">
-                  <button onClick={() => remove(r.name)} className="border border-rose-200 px-2 py-0.5 font-mono text-[10px] uppercase text-rose-600 hover:bg-rose-50 dark:border-rose-800 dark:text-rose-400 dark:hover:bg-rose-950/40">delete</button>
-                </td>
-              </tr>
-            ))}
+            <RepoRows loading={loading} repos={repos} remove={remove} />
           </tbody>
         </table>
       </div>

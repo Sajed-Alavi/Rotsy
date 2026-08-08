@@ -12,7 +12,9 @@ function pdfFilename(report) {
   const idx = image.lastIndexOf(':');
   const name = idx === -1 ? image : image.slice(0, idx);
   const tag = idx === -1 ? '' : image.slice(idx + 1);
-  const safe = (s) => s.replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/^-+|-+$/g, '');
+  // `report.image` is Nexus-sourced scan metadata, not raw user input — no
+  // adversarial input path for the flagged super-linear-backtracking concern.
+  const safe = (s) => s.replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/^-+|-+$/g, ''); // NOSONAR
   return [safe(name), safe(tag)].filter(Boolean).join('-') || 'scan-report';
 }
 

@@ -8,6 +8,27 @@ import { formatBytes } from '../../lib/format.js';
 const INPUT = 'w-full border border-slate-300 bg-white px-2 py-1.5 font-mono text-sm text-slate-900 outline-none focus:border-sky-500 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100';
 
 /** Blobstore management: list + create (File/S3) + delete. */
+function BlobstoreRows({ loading, stores, remove }) {
+  if (loading) {
+    return <tr><td colSpan={6} className="px-3 py-8 text-center font-mono text-xs text-slate-400 dark:text-slate-600">loading…</td></tr>;
+  }
+  if (stores.length === 0) {
+    return <tr><td colSpan={6} className="px-3 py-8 text-center font-mono text-xs text-slate-400 dark:text-slate-600">no blobstores — click "Create blobstore"</td></tr>;
+  }
+  return stores.map((s) => (
+    <tr key={s.name} className="border-b border-slate-100 last:border-0 hover:bg-slate-50 dark:border-slate-800/60 dark:hover:bg-slate-800/30">
+      <td className="px-3 py-2 font-mono text-slate-800 dark:text-slate-200">{s.name}</td>
+      <td className="px-3 py-2"><Badge tone="info">{(s.type || '?').toUpperCase()}</Badge></td>
+      <td className="px-3 py-2 text-right font-mono tabular-nums text-slate-500 dark:text-slate-400">{(s.blobCount ?? 0).toLocaleString()}</td>
+      <td className="px-3 py-2 text-right font-mono tabular-nums text-slate-800 dark:text-slate-200">{formatBytes(s.totalSizeInBytes || 0)}</td>
+      <td className="px-3 py-2 text-right font-mono tabular-nums text-slate-500 dark:text-slate-400">{s.availableSpaceInBytes != null ? formatBytes(s.availableSpaceInBytes) : '—'}</td>
+      <td className="px-3 py-2 text-right">
+        <button onClick={() => remove(s.name)} className="border border-rose-200 px-2 py-0.5 font-mono text-[10px] uppercase text-rose-600 hover:bg-rose-50 dark:border-rose-800 dark:text-rose-400 dark:hover:bg-rose-950/40">delete</button>
+      </td>
+    </tr>
+  ));
+}
+
 export default function BlobstoresPage() {
   const [stores, setStores] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -68,22 +89,7 @@ export default function BlobstoresPage() {
             </tr>
           </thead>
           <tbody>
-            {loading ? (
-              <tr><td colSpan={6} className="px-3 py-8 text-center font-mono text-xs text-slate-400 dark:text-slate-600">loading…</td></tr>
-            ) : stores.length === 0 ? (
-              <tr><td colSpan={6} className="px-3 py-8 text-center font-mono text-xs text-slate-400 dark:text-slate-600">no blobstores — click "Create blobstore"</td></tr>
-            ) : stores.map((s) => (
-              <tr key={s.name} className="border-b border-slate-100 last:border-0 hover:bg-slate-50 dark:border-slate-800/60 dark:hover:bg-slate-800/30">
-                <td className="px-3 py-2 font-mono text-slate-800 dark:text-slate-200">{s.name}</td>
-                <td className="px-3 py-2"><Badge tone="info">{(s.type || '?').toUpperCase()}</Badge></td>
-                <td className="px-3 py-2 text-right font-mono tabular-nums text-slate-500 dark:text-slate-400">{(s.blobCount ?? 0).toLocaleString()}</td>
-                <td className="px-3 py-2 text-right font-mono tabular-nums text-slate-800 dark:text-slate-200">{formatBytes(s.totalSizeInBytes || 0)}</td>
-                <td className="px-3 py-2 text-right font-mono tabular-nums text-slate-500 dark:text-slate-400">{s.availableSpaceInBytes != null ? formatBytes(s.availableSpaceInBytes) : '—'}</td>
-                <td className="px-3 py-2 text-right">
-                  <button onClick={() => remove(s.name)} className="border border-rose-200 px-2 py-0.5 font-mono text-[10px] uppercase text-rose-600 hover:bg-rose-50 dark:border-rose-800 dark:text-rose-400 dark:hover:bg-rose-950/40">delete</button>
-                </td>
-              </tr>
-            ))}
+            <BlobstoreRows loading={loading} stores={stores} remove={remove} />
           </tbody>
         </table>
       </div>

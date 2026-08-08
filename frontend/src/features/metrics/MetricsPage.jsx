@@ -7,6 +7,54 @@ import TimeSeriesChart from '../../components/TimeSeriesChart.jsx';
 import RankedBarList from '../../components/RankedBarList.jsx';
 import { formatBytes, formatNumber, relativeTime } from '../../lib/format.js';
 
+function BlobstoreUsageSection({ loading, blobstores, diskTone }) {
+  let body;
+  if (loading) {
+    body = <div className="py-6 text-center font-mono text-xs text-slate-400 dark:text-slate-600">loading…</div>;
+  } else if (blobstores.length === 0) {
+    body = <div className="py-6 text-center font-mono text-xs text-slate-400 dark:text-slate-600">no blobstores</div>;
+  } else {
+    body = blobstores.map((b) => (
+      <div key={b.name}>
+        <ProgressBar used={b.used_bytes} total={b.capacity_bytes} label={`${b.name} (${b.type}, ${formatNumber(b.blob_count)} blobs)`} tone={diskTone(b.used_pct)} />
+        {b.unavailable && <div className="mt-1 font-mono text-[10px] text-rose-600 dark:text-rose-400">⚠ unavailable</div>}
+      </div>
+    ));
+  }
+  return (
+    <section className="mb-6">
+      <h2 className="mb-2 font-mono text-[10px] uppercase tracking-wider text-slate-500">Blobstore disk usage</h2>
+      <div className="space-y-3 border border-slate-200 p-3 dark:border-slate-800">{body}</div>
+    </section>
+  );
+}
+
+function HealthChecksSection({ loading, health, failingProbes }) {
+  let body;
+  if (loading) {
+    body = <div className="col-span-full py-6 text-center font-mono text-xs text-slate-400 dark:text-slate-600">loading…</div>;
+  } else if (!health?.probes?.length) {
+    body = <div className="col-span-full py-6 text-center font-mono text-xs text-slate-400 dark:text-slate-600">no probes</div>;
+  } else {
+    body = health.probes.map((p) => (
+      <HealthTile key={p.name} name={p.name} healthy={p.healthy} message={p.message} category={p.category} />
+    ));
+  }
+  return (
+    <section className="mb-6">
+      <h2 className="mb-2 font-mono text-[10px] uppercase tracking-wider text-slate-500">
+        Nexus health checks · {health?.total ?? 0} probes{failingProbes > 0 && <span className="text-rose-500"> · {failingProbes} failing</span>}
+      </h2>
+      <div className="mb-2 flex gap-4 font-mono text-[10px] text-slate-400 dark:text-slate-600">
+        <span><span className="inline-block h-2 w-2 rounded-full bg-rose-500 align-middle mr-1" />critical</span>
+        <span><span className="inline-block h-2 w-2 rounded-full bg-amber-500 align-middle mr-1" />security advisory</span>
+        <span><span className="inline-block h-2 w-2 rounded-full bg-slate-400 align-middle mr-1" />info</span>
+      </div>
+      <div className="grid grid-cols-1 gap-1.5 border border-slate-200 p-3 sm:grid-cols-2 lg:grid-cols-3 dark:border-slate-800">{body}</div>
+    </section>
+  );
+}
+
 /**
  * Monitoring dashboard — real Nexus health, not just storage snapshots.
  * Sections:
@@ -151,47 +199,9 @@ export default function MetricsPage() {
         </section>
       )}
 
-      {/* Blobstore disk usage */}
-      <section className="mb-6">
-        <h2 className="mb-2 font-mono text-[10px] uppercase tracking-wider text-slate-500">Blobstore disk usage</h2>
-        <div className="space-y-3 border border-slate-200 p-3 dark:border-slate-800">
-          {loading ? (
-            <div className="py-6 text-center font-mono text-xs text-slate-400 dark:text-slate-600">loading…</div>
-          ) : blobstores.length === 0 ? (
-            <div className="py-6 text-center font-mono text-xs text-slate-400 dark:text-slate-600">no blobstores</div>
-          ) : (
-            blobstores.map((b) => (
-              <div key={b.name}>
-                <ProgressBar used={b.used_bytes} total={b.capacity_bytes} label={`${b.name} (${b.type}, ${formatNumber(b.blob_count)} blobs)`} tone={diskTone(b.used_pct)} />
-                {b.unavailable && <div className="mt-1 font-mono text-[10px] text-rose-600 dark:text-rose-400">⚠ unavailable</div>}
-              </div>
-            ))
-          )}
-        </div>
-      </section>
+      <BlobstoreUsageSection loading={loading} blobstores={blobstores} diskTone={diskTone} />
 
-      {/* Health checks */}
-      <section className="mb-6">
-        <h2 className="mb-2 font-mono text-[10px] uppercase tracking-wider text-slate-500">
-          Nexus health checks · {health?.total ?? 0} probes{failingProbes > 0 && <span className="text-rose-500"> · {failingProbes} failing</span>}
-        </h2>
-        <div className="mb-2 flex gap-4 font-mono text-[10px] text-slate-400 dark:text-slate-600">
-          <span><span className="inline-block h-2 w-2 rounded-full bg-rose-500 align-middle mr-1" />critical</span>
-          <span><span className="inline-block h-2 w-2 rounded-full bg-amber-500 align-middle mr-1" />security advisory</span>
-          <span><span className="inline-block h-2 w-2 rounded-full bg-slate-400 align-middle mr-1" />info</span>
-        </div>
-        <div className="grid grid-cols-1 gap-1.5 border border-slate-200 p-3 sm:grid-cols-2 lg:grid-cols-3 dark:border-slate-800">
-          {loading ? (
-            <div className="col-span-full py-6 text-center font-mono text-xs text-slate-400 dark:text-slate-600">loading…</div>
-          ) : !health?.probes?.length ? (
-            <div className="col-span-full py-6 text-center font-mono text-xs text-slate-400 dark:text-slate-600">no probes</div>
-          ) : (
-            health.probes.map((p) => (
-              <HealthTile key={p.name} name={p.name} healthy={p.healthy} message={p.message} category={p.category} />
-            ))
-          )}
-        </div>
-      </section>
+      <HealthChecksSection loading={loading} health={health} failingProbes={failingProbes} />
 
       {/* Top repositories by size — at-a-glance, no click-through needed */}
       <section className="mb-6">

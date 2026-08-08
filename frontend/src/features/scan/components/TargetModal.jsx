@@ -58,7 +58,7 @@ export default function TargetModal({ initial, onClose, onSaved }) {
         <label className="flex items-start gap-2 text-sm text-slate-700 dark:text-slate-300">
           <input type="checkbox" checked={form.auto_scan} onChange={(e) => setForm({ ...form, auto_scan: e.target.checked })} className="mt-0.5 accent-sky-500" />
           <span className="font-mono text-xs">
-            scan images pushed from now on
+            scan images pushed from now on{' '}
             <span className="block text-[10px] text-slate-400 dark:text-slate-600">Images already in this repository are recorded as baseline and left unscanned — scan those individually if you want them covered.</span>
           </span>
         </label>

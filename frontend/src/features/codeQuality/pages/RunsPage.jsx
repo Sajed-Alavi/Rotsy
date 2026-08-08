@@ -34,7 +34,11 @@ export default function RunsPage() {
       const successful = rows.filter((r) => r.status === 'success');
       const entries = await Promise.all(successful.map(async (r) => {
         try { return [r.id, (await codeQualityApi.qualityGate(r.id)).status]; }
-        catch (_) { return [r.id, null]; } // best-effort per-run gate lookup; a failure here just leaves that row's gate unknown
+        catch (e) {
+          // best-effort per-run gate lookup; a failure here just leaves that row's gate unknown
+          console.debug('quality gate lookup failed for run', r.id, e);
+          return [r.id, null];
+        }
       }));
       setGates(Object.fromEntries(entries));
     } catch (e) { setErr(e.message); }

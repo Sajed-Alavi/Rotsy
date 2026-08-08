@@ -18,22 +18,29 @@ import { Link } from 'react-router';
  * an oversight: every tree here is parsed once from a static doc string and
  * never reordered, filtered or mutated afterward — the one case where an
  * index is a perfectly stable React key, since "which markdown source line
- * is this" and "what's its position" are the same fact.
+ * is this" and "what's its position" are the same fact. Marked NOSONAR at
+ * each site below (S6479) for the same reason.
  *
  * A couple of regexes here use unbounded `.+`/`.*` or an alternation of
  * overlapping branches, which a general linter flags as a potential
- * super-linear-backtracking risk. Real ReDoS needs *adversarial* input
- * reaching the pattern; every input here is a markdown file this project's
- * own contributors wrote and committed, not user-submitted text — rewriting
- * these into less readable forms to guard against an input source that
- * doesn't exist isn't a trade worth making. Left as-is, deliberately.
+ * super-linear-backtracking risk (S8786). Real ReDoS needs *adversarial*
+ * input reaching the pattern; every input here is a markdown file this
+ * project's own contributors wrote and committed, not user-submitted text —
+ * rewriting these into less readable forms to guard against an input source
+ * that doesn't exist isn't a trade worth making. Marked NOSONAR at each site
+ * below, left as-is, deliberately.
+ *
+ * The block parser (Markdown/parse*) is a one-token-type-per-function
+ * dispatch: each parser recognizes its own block from `lines[i]` and returns
+ * `null` to decline, or `{ node, next }` to claim it and say where the next
+ * block starts. The main loop just tries them in order.
  */
 
 /** Inline formatting: `code`, **bold**, *italic*, [text](href). */
 function inline(text, keyPrefix = 'i') {
   const nodes = [];
   // Ordered by precedence: code first, so `**` inside a code span stays literal.
-  const pattern = /(`[^`]+`)|(\*\*[^*]+\*\*)|(\*[^*]+\*)|(\[[^\]]+\]\([^)]+\))/g;
+  const pattern = /(`[^`]+`)|(\*\*[^*]+\*\*)|(\*[^*]+\*)|(\[[^\]]+\]\([^)]+\))/g; // NOSONAR
   let last = 0;
   let match;
   let n = 0;
@@ -54,7 +61,7 @@ function inline(text, keyPrefix = 'i') {
     } else if (token.startsWith('*')) {
       nodes.push(<em key={key}>{token.slice(1, -1)}</em>);
     } else {
-      const [, label, href] = /\[([^\]]+)\]\(([^)]+)\)/.exec(token);
+      const [, label, href] = /\[([^\]]+)\]\(([^)]+)\)/.exec(token); // NOSONAR
       const internal = href.startsWith('/');
       nodes.push(internal
         ? <Link key={key} to={href} className="text-sky-600 underline underline-offset-2 hover:text-sky-500 dark:text-sky-400">{label}</Link>
@@ -90,136 +97,148 @@ const H = {
   4: 'mt-4 mb-2 font-mono text-[11px] uppercase tracking-wider text-slate-500',
 };
 
+function parseFencedCode(lines, i) {
+  const line = lines[i];
+  if (!line.startsWith('```')) return null;
+  const lang = line.slice(3).trim();
+  const body = [];
+  i++;
+  while (i < lines.length && !lines[i].startsWith('```')) body.push(lines[i++]);
+  i++; // closing fence
+  const node = (
+    <pre className="my-3 overflow-x-auto border border-slate-200 bg-slate-50 p-3 dark:border-slate-800 dark:bg-slate-900/40">
+      {lang && <div className="mb-1 font-mono text-[9px] uppercase tracking-wider text-slate-400 dark:text-slate-600">{lang}</div>}
+      <code className="font-mono text-[11px] leading-relaxed text-slate-700 dark:text-slate-300">{body.join('\n')}</code>
+    </pre>
+  );
+  return { node, next: i };
+}
+
+function parseHeading(lines, i, keyBase) {
+  const heading = /^(#{1,4})\s+(.*)$/.exec(lines[i]); // NOSONAR
+  if (!heading) return null;
+  const level = heading[1].length;
+  const text = heading[2].trim();
+  const Tag = `h${level}`;
+  const node = <Tag id={slugify(text)} className={H[level]}>{inline(text, `h${keyBase}`)}</Tag>;
+  return { node, next: i + 1 };
+}
+
+function parseHorizontalRule(lines, i) {
+  if (!/^(-{3,}|\*{3,})$/.test(lines[i].trim())) return null;
+  return { node: <hr className="my-6 border-slate-200 dark:border-slate-800" />, next: i + 1 };
+}
+
+/** A header row followed by a |---|---| separator. */
+function parseTable(lines, i) {
+  const line = lines[i];
+  if (!line.trim().startsWith('|') || !/^\s*\|[\s:|-]+\|\s*$/.test(lines[i + 1] || '')) return null;
+  const cells = (row) => row.trim().replace(/^\||\|$/g, '').split('|').map((c) => c.trim());
+  const header = cells(line);
+  i += 2;
+  const rows = [];
+  while (i < lines.length && lines[i].trim().startsWith('|')) rows.push(cells(lines[i++]));
+  const node = (
+    <div className="my-3 overflow-x-auto border border-slate-200 dark:border-slate-800">
+      <table className="w-full border-collapse text-sm">
+        <thead>
+          <tr className="border-b border-slate-200 bg-slate-50 dark:border-slate-800 dark:bg-slate-900/60">
+            {header.map((h, n) => (
+              <th key={n} className="px-3 py-2 text-left font-mono text-[10px] uppercase tracking-wider text-slate-500">{inline(h, `th${n}`)}</th> // NOSONAR
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r, ri) => (
+            <tr key={ri} className="border-b border-slate-100 last:border-0 dark:border-slate-800/60"> {/* NOSONAR */}
+              {r.map((c, ci) => (
+                <td key={ci} className="px-3 py-2 align-top text-slate-700 dark:text-slate-300">{inline(c, `td${ri}-${ci}`)}</td> // NOSONAR
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+  return { node, next: i };
+}
+
+function parseBlockquote(lines, i, keyBase) {
+  if (!lines[i].startsWith('> ')) return null;
+  const body = [];
+  while (i < lines.length && lines[i].startsWith('> ')) body.push(lines[i++].slice(2));
+  const node = (
+    <blockquote className="my-3 border-l-2 border-sky-300 bg-sky-50/40 py-2 pl-3 text-sm text-slate-600 dark:border-sky-800 dark:bg-sky-950/20 dark:text-slate-400">
+      {inline(body.join(' '), `bq${keyBase}`)}
+    </blockquote>
+  );
+  return { node, next: i };
+}
+
+/** Unordered or ordered, with indented-continuation-line folding. */
+function parseList(lines, i) {
+  const bullet = /^[-*]\s+/;
+  const numbered = /^\d+\.\s+/;
+  const line = lines[i];
+  if (!bullet.test(line) && !numbered.test(line)) return null;
+  const ordered = numbered.test(line);
+  const items = [];
+  const re = ordered ? numbered : bullet;
+  while (i < lines.length && re.test(lines[i])) {
+    let text = lines[i].replace(re, '');
+    i++;
+    // Fold continuation lines (indented) into the same item.
+    while (i < lines.length && /^\s{2,}\S/.test(lines[i]) && !re.test(lines[i].trim())) {
+      text += ` ${lines[i].trim()}`;
+      i++;
+    }
+    items.push(text);
+  }
+  const Tag = ordered ? 'ol' : 'ul';
+  const node = (
+    <Tag className={`my-3 space-y-1 pl-5 text-sm text-slate-700 dark:text-slate-300 ${ordered ? 'list-decimal' : 'list-disc'}`}>
+      {items.map((t, n) => <li key={n} className="leading-relaxed marker:text-slate-400">{inline(t, `li${n}`)}</li>)} {/* NOSONAR */}
+    </Tag>
+  );
+  return { node, next: i };
+}
+
+/** Consumes until a blank line or a new block starts — the fallback when
+ * nothing more specific matched. */
+function parseParagraph(lines, i, keyBase) {
+  const para = [];
+  while (
+    i < lines.length && lines[i].trim()
+    && !/^(#{1,4}\s|```|>\s|[-*]\s|\d+\.\s)/.test(lines[i])
+    && !lines[i].trim().startsWith('|')
+  ) {
+    para.push(lines[i++]);
+  }
+  if (!para.length) return { node: null, next: i };
+  const node = <p className="my-3 text-sm leading-relaxed text-slate-700 dark:text-slate-300">{inline(para.join(' '), `p${keyBase}`)}</p>;
+  return { node, next: i };
+}
+
 export function Markdown({ source }) {
   const lines = String(source || '').split('\n');
   const out = [];
   let i = 0;
   let key = 0;
 
-  const push = (node) => out.push(<div key={key++}>{node}</div>);
-
   while (i < lines.length) {
-    const line = lines[i];
+    if (!lines[i].trim()) { i++; continue; }
 
-    // Fenced code block
-    if (line.startsWith('```')) {
-      const lang = line.slice(3).trim();
-      const body = [];
-      i++;
-      while (i < lines.length && !lines[i].startsWith('```')) body.push(lines[i++]);
-      i++; // closing fence
-      push(
-        <pre className="my-3 overflow-x-auto border border-slate-200 bg-slate-50 p-3 dark:border-slate-800 dark:bg-slate-900/40">
-          {lang && <div className="mb-1 font-mono text-[9px] uppercase tracking-wider text-slate-400 dark:text-slate-600">{lang}</div>}
-          <code className="font-mono text-[11px] leading-relaxed text-slate-700 dark:text-slate-300">{body.join('\n')}</code>
-        </pre>,
-      );
-      continue;
-    }
+    const block =
+      parseFencedCode(lines, i)
+      || parseHeading(lines, i, key)
+      || parseHorizontalRule(lines, i)
+      || parseTable(lines, i)
+      || parseBlockquote(lines, i, key)
+      || parseList(lines, i)
+      || parseParagraph(lines, i, key);
 
-    // Heading
-    const heading = /^(#{1,4})\s+(.*)$/.exec(line);
-    if (heading) {
-      const level = heading[1].length;
-      const text = heading[2].trim();
-      const Tag = `h${level}`;
-      push(<Tag id={slugify(text)} className={H[level]}>{inline(text, `h${key}`)}</Tag>);
-      i++;
-      continue;
-    }
-
-    // Horizontal rule
-    if (/^(-{3,}|\*{3,})$/.test(line.trim())) {
-      push(<hr className="my-6 border-slate-200 dark:border-slate-800" />);
-      i++;
-      continue;
-    }
-
-    // Table — a header row followed by a |---|---| separator
-    if (line.trim().startsWith('|') && /^\s*\|[\s:|-]+\|\s*$/.test(lines[i + 1] || '')) {
-      const cells = (row) => row.trim().replace(/^\||\|$/g, '').split('|').map((c) => c.trim());
-      const header = cells(line);
-      i += 2;
-      const rows = [];
-      while (i < lines.length && lines[i].trim().startsWith('|')) rows.push(cells(lines[i++]));
-      push(
-        <div className="my-3 overflow-x-auto border border-slate-200 dark:border-slate-800">
-          <table className="w-full border-collapse text-sm">
-            <thead>
-              <tr className="border-b border-slate-200 bg-slate-50 dark:border-slate-800 dark:bg-slate-900/60">
-                {header.map((h, n) => (
-                  <th key={n} className="px-3 py-2 text-left font-mono text-[10px] uppercase tracking-wider text-slate-500">{inline(h, `th${n}`)}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((r, ri) => (
-                <tr key={ri} className="border-b border-slate-100 last:border-0 dark:border-slate-800/60">
-                  {r.map((c, ci) => (
-                    <td key={ci} className="px-3 py-2 align-top text-slate-700 dark:text-slate-300">{inline(c, `td${ri}-${ci}`)}</td>
-                  ))}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>,
-      );
-      continue;
-    }
-
-    // Blockquote
-    if (line.startsWith('> ')) {
-      const body = [];
-      while (i < lines.length && lines[i].startsWith('> ')) body.push(lines[i++].slice(2));
-      push(
-        <blockquote className="my-3 border-l-2 border-sky-300 bg-sky-50/40 py-2 pl-3 text-sm text-slate-600 dark:border-sky-800 dark:bg-sky-950/20 dark:text-slate-400">
-          {inline(body.join(' '), `bq${key}`)}
-        </blockquote>,
-      );
-      continue;
-    }
-
-    // Lists (unordered or ordered)
-    const bullet = /^[-*]\s+/;
-    const numbered = /^\d+\.\s+/;
-    if (bullet.test(line) || numbered.test(line)) {
-      const ordered = numbered.test(line);
-      const items = [];
-      const re = ordered ? numbered : bullet;
-      while (i < lines.length && re.test(lines[i])) {
-        let text = lines[i].replace(re, '');
-        i++;
-        // Fold continuation lines (indented) into the same item.
-        while (i < lines.length && /^\s{2,}\S/.test(lines[i]) && !re.test(lines[i].trim())) {
-          text += ` ${lines[i].trim()}`;
-          i++;
-        }
-        items.push(text);
-      }
-      const Tag = ordered ? 'ol' : 'ul';
-      push(
-        <Tag className={`my-3 space-y-1 pl-5 text-sm text-slate-700 dark:text-slate-300 ${ordered ? 'list-decimal' : 'list-disc'}`}>
-          {items.map((t, n) => <li key={n} className="leading-relaxed marker:text-slate-400">{inline(t, `li${n}`)}</li>)}
-        </Tag>,
-      );
-      continue;
-    }
-
-    // Blank line
-    if (!line.trim()) { i++; continue; }
-
-    // Paragraph — consume until a blank line or a new block starts.
-    const para = [];
-    while (
-      i < lines.length && lines[i].trim()
-      && !/^(#{1,4}\s|```|>\s|[-*]\s|\d+\.\s)/.test(lines[i])
-      && !lines[i].trim().startsWith('|')
-    ) {
-      para.push(lines[i++]);
-    }
-    if (para.length) {
-      push(<p className="my-3 text-sm leading-relaxed text-slate-700 dark:text-slate-300">{inline(para.join(' '), `p${key}`)}</p>);
-    }
+    i = block.next;
+    if (block.node) out.push(<div key={key++}>{block.node}</div>);
   }
 
   return <div className="max-w-3xl">{out}</div>;

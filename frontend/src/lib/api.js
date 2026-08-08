@@ -103,7 +103,7 @@ export async function request(path, opts) {
   try {
     return await rawRequest(path, opts);
   } catch (err) {
-    if (err instanceof ApiError && err.status === 401 && !(opts && opts._retried)) {
+    if (err instanceof ApiError && err.status === 401 && !opts?._retried) {
       const refreshed = await tryRefresh();
       if (refreshed) return rawRequest(path, { ...opts, _retried: true });
     }

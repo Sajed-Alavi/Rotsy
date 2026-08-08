@@ -234,6 +234,13 @@ export default function AccessRulesEditor({ roleId, repos, onChanged }) {
  * the pattern currently matches. Wildcards are only safe to write when their
  * blast radius is visible before saving.
  */
+function matchSummary(hits) {
+  if (hits.length === 0) return 'matches no repository that exists today';
+  const shown = hits.slice(0, 4).join(', ');
+  const more = hits.length > 4 ? '…' : '';
+  return `matches ${hits.length}: ${shown}${more}`;
+}
+
 function PatternField({ value, onChange, placeholder, candidates }) {
   const hits = candidates ? candidates.filter((name) => antMatch(value, name)) : null;
   return (
@@ -241,9 +248,7 @@ function PatternField({ value, onChange, placeholder, candidates }) {
       <input value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} className={INPUT} />
       {hits && value && (
         <div className="mt-1 font-mono text-[10px] text-slate-400 dark:text-slate-600">
-          {hits.length === 0
-            ? 'matches no repository that exists today'
-            : `matches ${hits.length}: ${hits.slice(0, 4).join(', ')}${hits.length > 4 ? '…' : ''}`}
+          {matchSummary(hits)}
         </div>
       )}
     </div>

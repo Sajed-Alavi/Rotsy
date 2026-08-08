@@ -70,11 +70,11 @@ export default function BrowsePage() {
           </select>
         </div>
 
-        <div>
-          {/* Not a <label>: this groups toggle buttons, not a labelable form
-              control — role="group" + aria-label is the correct pairing. */}
-          <div id="browse-view-label" className="mb-1 block font-mono text-[10px] uppercase tracking-wider text-slate-500">View</div>
-          <div className="flex" role="group" aria-labelledby="browse-view-label">
+        {/* Not a <label>: this groups toggle buttons, not a labelable form
+            control — <fieldset>/<legend> is the native grouping pairing. */}
+        <fieldset className="m-0 border-0 p-0">
+          <legend className="mb-1 block font-mono text-[10px] uppercase tracking-wider text-slate-500">View</legend>
+          <div className="flex">
             {[
               ['images', selectedRepo?.format === 'docker' ? 'Images' : 'Components'],
               ['files', 'Files'],
@@ -92,7 +92,7 @@ export default function BrowsePage() {
               </button>
             ))}
           </div>
-        </div>
+        </fieldset>
 
         {selectedRepo && (
           <div className="flex items-center gap-2 pb-1.5 font-mono text-[10px] text-slate-400 dark:text-slate-600">

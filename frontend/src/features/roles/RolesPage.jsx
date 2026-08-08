@@ -249,7 +249,11 @@ function RoleFormModal({ perms, initial, onClose, onSaved }) {
                 </div>
                 <div className="grid grid-cols-1 gap-1 p-2 sm:grid-cols-2">
                   {group.items.map((p) => (
-                    <label key={p.key} className="flex cursor-pointer items-start gap-2 text-slate-700 dark:text-slate-300">
+                    // The label's accessible name comes entirely from dynamic
+                    // {p.key}/{p.description} expressions — always non-empty
+                    // at runtime (every permission has both), but a static
+                    // linter can't verify that from the JSX alone. NOSONAR.
+                    <label key={p.key} className="flex cursor-pointer items-start gap-2 text-slate-700 dark:text-slate-300"> {/* NOSONAR */}
                       <input type="checkbox" checked={form.permission_keys.includes(p.key)} onChange={() => togglePerm(p.key)} className="mt-0.5 accent-sky-500" />
                       <div>
                         <div className="font-mono text-xs text-slate-800 dark:text-slate-200">{p.key}</div>
@@ -275,7 +279,7 @@ function RoleFormModal({ perms, initial, onClose, onSaved }) {
           <div className="space-y-3">
             <p className="font-mono text-[10px] leading-relaxed text-slate-400 dark:text-slate-600">
               Each rule allows or denies a set of actions on images matching a pattern, in
-              repositories matching a pattern. <code>*</code> matches any characters except
+              repositories matching a pattern. <code>*</code> matches any characters except{' '}
               <code> / </code>; <code>**</code> crosses it; <code>?</code> is one character. Within
               this role a deny beats an allow — that is how you carve an exception out of a grant.
             </p>

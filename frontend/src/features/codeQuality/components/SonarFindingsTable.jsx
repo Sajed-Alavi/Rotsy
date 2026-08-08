@@ -10,6 +10,10 @@ const SEVERITY_TONE = { BLOCKER: 'bad', CRITICAL: 'bad', MAJOR: 'warn', MINOR: '
 const TYPE_TONE = { BUG: 'bad', VULNERABILITY: 'bad', CODE_SMELL: 'neutral' };
 const PAGE_SIZE = 50;
 
+function toggledArray(arr, value) {
+  return arr.includes(value) ? arr.filter((x) => x !== value) : [...arr, value];
+}
+
 /**
  * Paginated, filterable, sortable Sonar findings table — same shape as
  * features/scan/components/VulnerabilityTable.jsx, adapted to issue fields.
@@ -47,12 +51,8 @@ export default function SonarFindingsTable() {
     return () => { cancelled = true; };
   }, [severities, types, q, sort, order, page]);
 
-  const toggle = (setter) => (v) => {
-    setPage(0);
-    setter((cur) => (cur.includes(v) ? cur.filter((x) => x !== v) : [...cur, v]));
-  };
-  const toggleSeverity = toggle(setSeverities);
-  const toggleType = toggle(setTypes);
+  const toggleSeverity = (v) => { setPage(0); setSeverities((cur) => toggledArray(cur, v)); };
+  const toggleType = (v) => { setPage(0); setTypes((cur) => toggledArray(cur, v)); };
 
   const toggleSort = (col) => {
     setPage(0);
@@ -72,6 +72,24 @@ export default function SonarFindingsTable() {
 
   const from = total === 0 ? 0 : page * PAGE_SIZE + 1;
   const to = Math.min(total, (page + 1) * PAGE_SIZE);
+
+  let rows;
+  if (loading) {
+    rows = <tr><td colSpan={6} className="px-3 py-8 text-center font-mono text-xs text-slate-400 dark:text-slate-600">loading…</td></tr>;
+  } else if (items.length === 0) {
+    rows = <tr><td colSpan={6} className="px-3 py-8 text-center font-mono text-xs text-slate-400 dark:text-slate-600">no findings</td></tr>;
+  } else {
+    rows = items.map((i) => (
+      <tr key={i.id} className="border-b border-slate-100 last:border-0 dark:border-slate-800/60">
+        <td className="px-3 py-1.5"><Badge tone={SEVERITY_TONE[i.severity] || 'neutral'}>{i.severity}</Badge></td>
+        <td className="px-3 py-1.5"><Badge tone={TYPE_TONE[i.type] || 'neutral'}>{i.type?.replace('_', ' ')}</Badge></td>
+        <td className="px-3 py-1.5 font-mono text-xs text-slate-700 dark:text-slate-300">{i.rule}</td>
+        <td className="px-3 py-1.5 font-mono text-xs text-slate-500 dark:text-slate-400">{i.component}{i.line ? `:${i.line}` : ''}</td>
+        <td className="px-3 py-1.5 text-xs text-slate-700 dark:text-slate-300">{i.message}</td>
+        <td className="px-3 py-1.5 font-mono text-xs text-slate-500 dark:text-slate-400">{i.effort || '—'}</td>
+      </tr>
+    ));
+  }
 
   return (
     <div>
@@ -118,22 +136,7 @@ export default function SonarFindingsTable() {
               <th className="px-3 py-2 text-left font-mono text-[10px] uppercase tracking-wider text-slate-500">Effort</th>
             </tr>
           </thead>
-          <tbody>
-            {loading ? (
-              <tr><td colSpan={6} className="px-3 py-8 text-center font-mono text-xs text-slate-400 dark:text-slate-600">loading…</td></tr>
-            ) : items.length === 0 ? (
-              <tr><td colSpan={6} className="px-3 py-8 text-center font-mono text-xs text-slate-400 dark:text-slate-600">no findings</td></tr>
-            ) : items.map((i) => (
-              <tr key={i.id} className="border-b border-slate-100 last:border-0 dark:border-slate-800/60">
-                <td className="px-3 py-1.5"><Badge tone={SEVERITY_TONE[i.severity] || 'neutral'}>{i.severity}</Badge></td>
-                <td className="px-3 py-1.5"><Badge tone={TYPE_TONE[i.type] || 'neutral'}>{i.type?.replace('_', ' ')}</Badge></td>
-                <td className="px-3 py-1.5 font-mono text-xs text-slate-700 dark:text-slate-300">{i.rule}</td>
-                <td className="px-3 py-1.5 font-mono text-xs text-slate-500 dark:text-slate-400">{i.component}{i.line ? `:${i.line}` : ''}</td>
-                <td className="px-3 py-1.5 text-xs text-slate-700 dark:text-slate-300">{i.message}</td>
-                <td className="px-3 py-1.5 font-mono text-xs text-slate-500 dark:text-slate-400">{i.effort || '—'}</td>
-              </tr>
-            ))}
-          </tbody>
+          <tbody>{rows}</tbody>
         </table>
       </div>
 

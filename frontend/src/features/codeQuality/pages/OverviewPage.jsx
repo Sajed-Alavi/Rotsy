@@ -5,6 +5,30 @@ import { codeQualityApi } from '../api.js';
 
 const INPUT = 'w-full border border-slate-300 bg-white px-2 py-1.5 font-mono text-sm text-slate-900 outline-none focus:border-sky-500 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100';
 
+function BranchPicker({ branchesErr, branches, branch, setBranch, selected }) {
+  if (branchesErr) {
+    return <p className="font-mono text-xs text-rose-600 dark:text-rose-400">{branchesErr}</p>;
+  }
+  if (branches === null) {
+    return <p className="font-mono text-[11px] text-slate-500 dark:text-slate-500">loading branches…</p>;
+  }
+  return (
+    <>
+      <select id="cq-branch" value={branch} onChange={(e) => setBranch(e.target.value)} className={INPUT}>
+        {branches.map((b) => (
+          <option key={b} value={b}>{b}{b === selected.default_branch ? ' (default)' : ''}</option>
+        ))}
+      </select>
+      {branch !== selected.default_branch && (
+        <p className="mt-1 font-mono text-[10px] text-amber-600 dark:text-amber-400">
+          Non-default branches require SonarQube Developer Edition or above — this will fail
+          clearly on Community Edition rather than silently falling back to the default branch.
+        </p>
+      )}
+    </>
+  );
+}
+
 /**
  * The picker: choose a synced repository, choose a branch, run analysis.
  * Deliberately just the picker + trigger — run history lives on the
@@ -79,25 +103,10 @@ export default function OverviewPage() {
           {selected && (
             <div>
               <label htmlFor="cq-branch" className="mb-1 block font-mono text-[10px] uppercase tracking-wider text-slate-500">Branch</label>
-              {branchesErr ? (
-                <p className="font-mono text-xs text-rose-600 dark:text-rose-400">{branchesErr}</p>
-              ) : branches === null ? (
-                <p className="font-mono text-[11px] text-slate-500 dark:text-slate-500">loading branches…</p>
-              ) : (
-                <>
-                  <select id="cq-branch" value={branch} onChange={(e) => setBranch(e.target.value)} className={INPUT}>
-                    {branches.map((b) => (
-                      <option key={b} value={b}>{b}{b === selected.default_branch ? ' (default)' : ''}</option>
-                    ))}
-                  </select>
-                  {branch !== selected.default_branch && (
-                    <p className="mt-1 font-mono text-[10px] text-amber-600 dark:text-amber-400">
-                      Non-default branches require SonarQube Developer Edition or above — this will fail
-                      clearly on Community Edition rather than silently falling back to the default branch.
-                    </p>
-                  )}
-                </>
-              )}
+              <BranchPicker
+                branchesErr={branchesErr} branches={branches} branch={branch}
+                setBranch={setBranch} selected={selected}
+              />
             </div>
           )}
 

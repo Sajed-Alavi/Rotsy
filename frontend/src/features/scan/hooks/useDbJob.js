@@ -42,7 +42,7 @@ export function useDbJob(onFinished) {
     if (!name) return;
     setScanners((prev) => ({
       ...prev,
-      [name]: { ...(prev[name] || {}), ...detail, message },
+      [name]: { ...prev[name], ...detail, message },
     }));
   }, []);
 
@@ -56,7 +56,7 @@ export function useDbJob(onFinished) {
     src.addEventListener('progress', (e) => {
       const d = safeParse(e.data);
       if (!d) return;
-      setJob((j) => ({ ...(j || {}), id: jobId, status: 'running', progress: d.percent, message: d.message, detail: d.detail }));
+      setJob((j) => ({ ...j, id: jobId, status: 'running', progress: d.percent, message: d.message, detail: d.detail }));
       applyDetail(d.detail, d.message);
       if (d.message) setLog((l) => [...l.slice(-199), d.message]);
     });
@@ -65,7 +65,7 @@ export function useDbJob(onFinished) {
       const d = safeParse(e.data) || {};
       if (d.message) setLog((l) => [...l.slice(-199), d.message]);
       if (TERMINAL.has(d.status)) {
-        setJob((j) => ({ ...(j || {}), id: jobId, status: d.status, message: d.message }));
+        setJob((j) => ({ ...j, id: jobId, status: d.status, message: d.message }));
         closeStream();
         finishedRef.current?.(d.status);
       }
@@ -73,7 +73,7 @@ export function useDbJob(onFinished) {
 
     src.addEventListener('result', (e) => {
       const d = safeParse(e.data) || {};
-      setJob((j) => ({ ...(j || {}), id: jobId, status: 'done', result: d.result }));
+      setJob((j) => ({ ...j, id: jobId, status: 'done', result: d.result }));
       closeStream();
       finishedRef.current?.('done');
     });
@@ -84,7 +84,7 @@ export function useDbJob(onFinished) {
       // EventSource reconnects on transient drops; only a CLOSED socket means
       // it has given up. Same distinction the storage analyzer makes.
       if (src.readyState === EventSource.CLOSED) {
-        setJob((j) => ({ ...(j || {}), status: 'failed', message: d?.message || 'connection lost' }));
+        setJob((j) => ({ ...j, status: 'failed', message: d?.message || 'connection lost' }));
         closeStream();
         finishedRef.current?.('failed');
       }

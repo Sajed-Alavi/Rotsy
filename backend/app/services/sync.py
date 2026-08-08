@@ -32,6 +32,41 @@ async def _enumerate_components(nexus: NexusClient, repo: str) -> list[dict[str,
     return out
 
 
+async def _copy_asset(
+    source: NexusClient, target: httpx.AsyncClient, target_repo: str, asset: dict[str, Any],
+) -> tuple[bool, str | None]:
+    """Copy one asset from source to target.
+
+    Returns ``(copied, error)``: ``(True, None)`` on success, ``(False,
+    None)`` when there was nothing to copy (no download URL/path — not an
+    error), ``(False, message)`` on failure.
+    """
+    download_url = asset.get("downloadUrl")
+    path = (asset.get("path") or "").lstrip("/")
+    if not download_url or not path:
+        return False, None
+    try:
+        # Download from source.
+        src_resp = await source.client.get(download_url)
+        src_resp.raise_for_status()
+        content = src_resp.content
+
+        # Upload to target via the components upload endpoint. The exact
+        # multipart shape varies by format; the generic form works for
+        # raw/maven2/nuget/npm.
+        files = {"asset": (path.rsplit("/", 1)[-1], content, asset.get("contentType") or "application/octet-stream")}
+        upload_resp = await target.post(
+            f"/service/rest/v1/components?repository={target_repo}",
+            data={},
+            files=files,
+        )
+        if upload_resp.status_code in (200, 201, 204):
+            return True, None
+        return False, f"{path}: target returned {upload_resp.status_code}"
+    except Exception as exc:  # noqa: BLE001
+        return False, f"{path}: {exc}"
+
+
 async def sync_repository(
     source: NexusClient,
     source_repo: str,
@@ -71,33 +106,12 @@ async def sync_repository(
             if fmt == "docker":
                 skipped += 1
                 continue
-            assets = c.get("assets") or []
-            for asset in assets:
-                download_url = asset.get("downloadUrl")
-                path = (asset.get("path") or "").lstrip("/")
-                if not download_url or not path:
-                    continue
-                try:
-                    # Download from source.
-                    src_resp = await source.client.get(download_url)
-                    src_resp.raise_for_status()
-                    content = src_resp.content
-
-                    # Upload to target via the components upload endpoint. The
-                    # exact multipart shape varies by format; the generic form
-                    # works for raw/maven2/nuget/npm.
-                    files = {"asset": (path.rsplit("/", 1)[-1], content, asset.get("contentType") or "application/octet-stream")}
-                    upload_resp = await target.post(
-                        f"/service/rest/v1/components?repository={target_repo}",
-                        data={},
-                        files=files,
-                    )
-                    if upload_resp.status_code in (200, 201, 204):
-                        copied += 1
-                    else:
-                        errors.append(f"{path}: target returned {upload_resp.status_code}")
-                except Exception as exc:  # noqa: BLE001
-                    errors.append(f"{path}: {exc}")
+            for asset in c.get("assets") or []:
+                success, error = await _copy_asset(source, target, target_repo, asset)
+                if success:
+                    copied += 1
+                elif error:
+                    errors.append(error)
             await emit(10 + int((i + 1) / total * 85), f"synced {i + 1}/{len(components)}")
 
     await emit(100, "done")

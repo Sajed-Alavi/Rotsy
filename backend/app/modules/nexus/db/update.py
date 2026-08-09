@@ -28,6 +28,7 @@ from .paths import (
     TRIVY_DB_MB,
     TRIVY_JAVA_DB_DIR,
     TRIVY_JAVA_DB_IMAGE,
+    TRIVY_JAVA_DB_IMAGE_FALLBACK,
     TRIVY_JAVA_DB_MB,
     TRIVY_DB_DIR,
     ProgressCallback,
@@ -269,6 +270,18 @@ async def _update_trivy(emit: ProgressCallback, env: dict[str, str]) -> dict[str
                 emit=emit, env=env, progress_range=(35, 46),
                 label="trivy-java-db", scanner="trivy", total_bytes=java_size,
             )
+            if not java_ok:
+                # ghcr.io (and the mirror.gcr.io it falls back to) throttles
+                # anonymous pulls hard enough in practice that the primary
+                # image plus its own retries can still come up empty; a
+                # second, independently hosted mirror is a genuine alternate
+                # path rather than another attempt at the same throttled one.
+                fallback_size = await _oras_manifest_size(oras, TRIVY_JAVA_DB_IMAGE_FALLBACK, env)
+                java_ok = await _oras_pull_retrying(
+                    oras=oras, image=TRIVY_JAVA_DB_IMAGE_FALLBACK, out_dir=tmp, expected_mb=TRIVY_JAVA_DB_MB,
+                    emit=emit, env=env, progress_range=(35, 46),
+                    label="trivy-java-db (fallback mirror)", scanner="trivy", total_bytes=fallback_size,
+                )
             await emit(46, "trivy: extracting database",
                        {"scanner": "trivy", "stage": "extracting"})
             db_tar, java_tar = Path(tmp) / "db.tar.gz", Path(tmp) / "javadb.tar.gz"

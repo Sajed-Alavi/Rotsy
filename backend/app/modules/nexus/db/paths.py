@@ -72,6 +72,15 @@ TRIVY_JAVA_DB_MB = 125
 
 TRIVY_DB_IMAGE = "registry-1.docker.io/aquasec/trivy-db:2"
 TRIVY_JAVA_DB_IMAGE = "ghcr.io/aquasecurity/trivy-java-db:1"
+# ghcr.io (and its mirror.gcr.io fallback, which Trivy itself falls back to)
+# rate-limits/throttles anonymous pulls hard enough in practice that a Java DB
+# fetch can stall for many minutes rather than fail fast — see
+# https://github.com/aquasecurity/trivy/discussions/8224 and
+# https://github.com/aquasecurity/trivy/issues/7938. A second, independently
+# hosted mirror gives both our own update job and a scan's own first-run
+# fetch (see trivy.py) a real alternate path, not just a retry of the same
+# throttled one.
+TRIVY_JAVA_DB_IMAGE_FALLBACK = "public.ecr.aws/aquasecurity/trivy-java-db:1"
 
 # Grype's progress line: "Vulnerability DB [30 MB / 208 MB]".
 #

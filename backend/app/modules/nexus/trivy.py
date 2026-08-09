@@ -61,7 +61,19 @@ def _replica_stale(slot: int) -> bool:
     if not canonical.is_file():
         return False  # nothing to copy — readiness() already gates scans on this
     replica = _replica_dir(slot) / "db" / "trivy.db"
-    return not replica.is_file() or canonical.stat().st_mtime > replica.stat().st_mtime
+    if not replica.is_file() or canonical.stat().st_mtime > replica.stat().st_mtime:
+        return True
+    # Checked independently of the main db: the Java DB can go from absent to
+    # present on its own (e.g. a later background update job finally reaches
+    # it via the fallback mirror — see db/update.py) without the main db ever
+    # changing, and a replica that never notices would keep forcing every scan
+    # through the inline first-run fetch this pool exists to avoid.
+    canonical_java = scanner_db.TRIVY_JAVA_DB_DIR / "metadata.json"
+    if canonical_java.is_file():
+        replica_java = _replica_dir(slot) / "java-db" / "metadata.json"
+        if not replica_java.is_file() or canonical_java.stat().st_mtime > replica_java.stat().st_mtime:
+            return True
+    return False
 
 
 def _refresh_replica(slot: int) -> None:
@@ -165,6 +177,19 @@ async def run(
         # on disk (in this replica) to skip updating.
         if (cache_dir / "java-db" / "metadata.json").is_file():
             args.append("--skip-java-db-update")
+        else:
+            # A first run for this replica: Trivy fetches the Java DB inline
+            # regardless of what we pass, and its default registry (ghcr.io,
+            # falling back to mirror.gcr.io) throttles anonymous pulls hard
+            # enough in practice to stall the whole scan for many minutes
+            # rather than fail fast (github.com/aquasecurity/trivy/discussions/8224,
+            # /issues/7938). Giving Trivy the same second mirror our own
+            # background update job uses (see db/update.py) means a throttled
+            # primary doesn't leave the scan with nowhere else to go.
+            args += [
+                "--java-db-repository", scanner_db.TRIVY_JAVA_DB_IMAGE,
+                "--java-db-repository", scanner_db.TRIVY_JAVA_DB_IMAGE_FALLBACK,
+            ]
         # A plaintext connector needs Trivy to talk HTTP; a TLS connector we cannot
         # verify needs certificate checks relaxed. Both are covered by --insecure.
         insecure = registry.is_plaintext or not verify_tls

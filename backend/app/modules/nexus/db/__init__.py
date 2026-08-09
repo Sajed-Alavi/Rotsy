@@ -41,6 +41,8 @@ from .paths import (
     TRIVY_CACHE_ROOT,
     TRIVY_DB_DIR,
     TRIVY_JAVA_DB_DIR,
+    TRIVY_JAVA_DB_IMAGE,
+    TRIVY_JAVA_DB_IMAGE_FALLBACK,
     ProgressCallback,
     which,
 )
@@ -57,6 +59,8 @@ __all__ = [
     "TRIVY_CACHE_ROOT",
     "TRIVY_DB_DIR",
     "TRIVY_JAVA_DB_DIR",
+    "TRIVY_JAVA_DB_IMAGE",
+    "TRIVY_JAVA_DB_IMAGE_FALLBACK",
     "import_offline",
     "offline_status",
     "proxy_env",

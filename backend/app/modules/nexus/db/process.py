@@ -35,11 +35,16 @@ def proxy_env(proxy: str) -> dict[str, str]:
 async def run_streaming(
     args: list[str],
     *,
-    timeout: float,
+    timeout: float,  # NOSONAR
     env: dict[str, str] | None = None,
     on_line: Callable[[str], Awaitable[None]] | None = None,
 ) -> tuple[int, list[str]]:
     """Run a command, streaming merged stdout/stderr through ``on_line``.
+
+    ``timeout`` stays part of this function's own signature rather than a
+    caller-side ``asyncio.timeout()`` (a linter's generic preference): on
+    expiry this also kills the subprocess and cancels the line-pump task,
+    cleanup only possible here, where ``proc`` and ``pump_task`` are in scope.
 
     Returns ``(returncode, lines)``. The line callback is awaited, so it can
     emit progress events.

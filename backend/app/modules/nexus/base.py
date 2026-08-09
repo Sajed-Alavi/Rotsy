@@ -72,9 +72,17 @@ def redact(args: list[str], secrets: list[str]) -> str:
 
 
 async def exec_scanner(
-    args: list[str], env: dict[str, str], timeout: float = SCAN_TIMEOUT, cwd: str | None = None,
+    args: list[str], env: dict[str, str], timeout: float = SCAN_TIMEOUT, cwd: str | None = None,  # NOSONAR
 ) -> tuple[int, str, str]:
     """Run a scanner, capturing stdout and stderr separately.
+
+    ``timeout`` is deliberately part of this function's own signature, not
+    left to callers to enforce with their own ``asyncio.timeout()`` (a
+    linter's generic preference): the timeout and the subprocess kill/wait
+    cleanup on expiry are one unit here — the caller has no handle on
+    ``proc`` to clean it up itself, so pushing the timeout out to the call
+    site would either leak the subprocess or force every caller to duplicate
+    this cleanup.
 
     stdout carries the JSON report, so unlike the database helpers it must not
     be merged with the log stream.

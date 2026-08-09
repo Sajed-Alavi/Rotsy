@@ -101,6 +101,29 @@ def _parse_job_events(raw_events: list) -> list[tuple[str, dict[str, Any]]]:
     return parsed
 
 
+async def _stream_job_events(request: Request, job_id: str, queue: JobQueue, r) -> AsyncIterator[dict[str, Any]]:
+    """Replay a job's buffered Redis events until it reaches a terminal status."""
+    last_idx = 0
+    while True:
+        if await request.is_disconnected():
+            return
+        job = await queue.get(job_id)
+        if job is None:
+            yield {"event": "error", "data": {"message": "job not found"}}
+            return
+        raw_events = await r.lrange(f"job:{job_id}:events", last_idx, -1)
+        for ev_type, ev in _parse_job_events(raw_events):
+            yield event(ev_type, ev)
+        last_idx += max(0, len(raw_events))
+        # "cancelled" belongs here too: POST /jobs/{id}/cancel sets it, but
+        # this loop used to wait only for done/failed, so cancelling a job
+        # left every subscribed stream polling until the client gave up.
+        if job.status in ("done", "failed", "cancelled"):
+            yield event("phase", {"status": job.status, "message": job.message})
+            return
+        await asyncio.sleep(1)
+
+
 @router.get("/{job_id}/stream", dependencies=[Depends(RequirePermission("jobs:read"))])
 async def stream_job(request: Request, job_id: str) -> EventSourceResponse:
     """Stream progress events for a job until it terminates.
@@ -111,32 +134,10 @@ async def stream_job(request: Request, job_id: str) -> EventSourceResponse:
     cache = app_state(request).cache
     if cache is None or cache.redis is None:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, _CACHE_UNAVAILABLE)
-    r = cache.redis
     queue = _queue(request)
-
-    async def gen() -> AsyncIterator[dict[str, Any]]:
-        # First, replay any buffered events.
-        last_idx = 0
-        while True:
-            if await request.is_disconnected():
-                return
-            job = await queue.get(job_id)
-            if job is None:
-                yield {"event": "error", "data": {"message": "job not found"}}
-                return
-            raw_events = await r.lrange(f"job:{job_id}:events", last_idx, -1)
-            for ev_type, ev in _parse_job_events(raw_events):
-                yield event(ev_type, ev)
-            last_idx += max(0, len(raw_events))
-            # "cancelled" belongs here too: POST /jobs/{id}/cancel sets it, but
-            # this loop used to wait only for done/failed, so cancelling a job
-            # left every subscribed stream polling until the client gave up.
-            if job.status in ("done", "failed", "cancelled"):
-                yield event("phase", {"status": job.status, "message": job.message})
-                return
-            await asyncio.sleep(1)
-
-    return EventSourceResponse(gen(), media_type="text/event-stream")
+    return EventSourceResponse(
+        _stream_job_events(request, job_id, queue, cache.redis), media_type="text/event-stream",
+    )
 
 
 class RepoPayload(BaseModel):

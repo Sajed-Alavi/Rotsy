@@ -242,11 +242,14 @@ async def analyze(
     return _scope_result(result, allowed)
 
 
-async def _wait_for_event(queue: asyncio.Queue, timeout: float = 15.0) -> dict[str, Any] | None:
+_KEEPALIVE_SECONDS = 15.0
+
+
+async def _wait_for_event(queue: asyncio.Queue) -> dict[str, Any] | None:
     """The next analyzer event, or ``None`` on a timeout (caller should emit
     a keepalive and retry)."""
     try:
-        async with asyncio.timeout(timeout):
+        async with asyncio.timeout(_KEEPALIVE_SECONDS):
             return await queue.get()
     except TimeoutError:
         return None

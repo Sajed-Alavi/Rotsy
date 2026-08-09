@@ -12,15 +12,15 @@ export default function Modal({ open, title, onClose, children, footer, wide }) 
 
   if (!open) return null;
   return (
-    <div
+    // A real <button> can't be used here (S6819's suggested fix): it would
+    // wrap the modal panel, and HTML forbids interactive elements — buttons,
+    // inputs, links, all of which the panel's children/footer contain — as
+    // descendants of a <button>. role="button" + tabIndex + a keydown
+    // handler is the standard accessible pattern for a click-to-dismiss
+    // backdrop that must wrap interactive content.
+    <div // NOSONAR
       className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/40 p-4 pt-16 dark:bg-black/60"
-      // A real <button> can't be used here (S6819's suggested fix): it would
-      // wrap the modal panel, and HTML forbids interactive elements —
-      // buttons, inputs, links, all of which the panel's children/footer
-      // contain — as descendants of a <button>. role="button" + tabIndex +
-      // a keydown handler is the standard accessible pattern for a
-      // click-to-dismiss backdrop that must wrap interactive content.
-      role="button" // NOSONAR
+      role="button"
       tabIndex={-1}
       aria-label="Close modal"
       // Closes only when the backdrop itself is the click target, not when a

@@ -86,7 +86,7 @@ function AnalysisDetailModal({ run, gate, onClose }) {
   }, [run?.id]);
 
   useEffect(() => {
-    if (!run || run.status !== 'success') return;
+    if (run?.status !== 'success') return;
     if (tab === 'issues' && issues === null) {
       codeQualityApi.issuesForRun(run.id, new URLSearchParams({ limit: '100' }))
         .then(setIssues).catch((e) => setFindingsErr(e.message));

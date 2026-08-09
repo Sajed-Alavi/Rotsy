@@ -29,6 +29,17 @@ _RUNTIME_SCHEMES = (
 
 SEVERITIES = ("CRITICAL", "HIGH", "MEDIUM", "LOW", "UNKNOWN")
 
+# Trivy's cache directory holds a BoltDB file that only one process can open at
+# a time. Two trivy invocations against the same --cache-dir at once — two
+# scans, or a scan overlapping a database update's own-downloader fallback —
+# collide on that lock ("cache may be in use by another process: timeout"), and
+# a scan stuck waiting on it can run past even its own --timeout, surfacing as
+# our SCAN_TIMEOUT kill ("scanner exceeded 600s") instead of the real cause.
+# Every trivy binary invocation that touches the cache dir takes this lock
+# first, so at most one runs at a time; grype has no such shared-lock file and
+# does not need one.
+TRIVY_LOCK = asyncio.Lock()
+
 
 @dataclass
 class Credentials:

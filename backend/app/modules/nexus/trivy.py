@@ -13,6 +13,7 @@ from typing import Any
 from . import db as scanner_db
 from .base import (
     TOOL_TIMEOUT,
+    TRIVY_LOCK,
     Credentials,
     ScanOutcome,
     assert_static_ref,
@@ -107,7 +108,8 @@ async def run(
 
     started = time.monotonic()
     try:
-        code, stdout, stderr = await exec_scanner(args, env)
+        async with TRIVY_LOCK:
+            code, stdout, stderr = await exec_scanner(args, env)
     except TimeoutError as exc:
         return ScanOutcome("trivy", False, error=str(exc),
                            detail=redact(args, [creds.password]),

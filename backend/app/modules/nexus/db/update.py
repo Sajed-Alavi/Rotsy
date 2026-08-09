@@ -35,6 +35,7 @@ from .paths import (
 )
 from .process import extract, oras_pull, proxy_env, prune_trivy, rate, run_streaming
 from .status import as_datetime, dir_size, grype_db_usable, grype_status, status
+from ..base import TRIVY_LOCK
 from ....services import make_detail_emitter
 
 logger = logging.getLogger(__name__)
@@ -293,10 +294,11 @@ async def _update_trivy(emit: ProgressCallback, env: dict[str, str]) -> dict[str
                {"scanner": "trivy", "stage": "downloading", "indeterminate": True,
                 "note": "trivy's own downloader reports no progress"})
     try:
-        rc, lines = await _run_streaming_retrying(
-            [trivy, "image", "--download-db-only", "--cache-dir", str(TRIVY_CACHE_ROOT)],
-            timeout=900, env=env, emit=emit, pct=25, label="trivy-db", scanner="trivy",
-        )
+        async with TRIVY_LOCK:
+            rc, lines = await _run_streaming_retrying(
+                [trivy, "image", "--download-db-only", "--cache-dir", str(TRIVY_CACHE_ROOT)],
+                timeout=900, env=env, emit=emit, pct=25, label="trivy-db", scanner="trivy",
+            )
     except Exception as exc:  # noqa: BLE001
         await emit(50, f"trivy: database update failed — {exc}",
                    {"scanner": "trivy", "stage": "failed", "error": str(exc)})

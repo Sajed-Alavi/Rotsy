@@ -13,6 +13,7 @@ from typing import Any
 
 from .paths import OFFLINE_DB_DIR, TRIVY_DB_DIR, TRIVY_JAVA_DB_DIR, ProgressCallback, which
 from .process import extract, prune_trivy, run_streaming
+from ..base import TRIVY_LOCK
 from ....services import make_detail_emitter
 
 
@@ -100,13 +101,17 @@ async def _import_trivy(emit: ProgressCallback) -> dict[str, Any]:
         await emit(15, f"trivy: extracting {db_tar.name}",
                    {"scanner": "trivy", "stage": "extracting", "artifact": db_tar.name,
                     "total_bytes": db_tar.stat().st_size, "estimated": False})
-        extract(db_tar, TRIVY_DB_DIR)
-        if java_tar is not None:
-            await emit(30, f"trivy: extracting {java_tar.name}",
-                       {"scanner": "trivy", "stage": "extracting", "artifact": java_tar.name,
-                        "total_bytes": java_tar.stat().st_size, "estimated": False})
-            extract(java_tar, TRIVY_JAVA_DB_DIR)
-        prune_trivy()
+        # Held for the write to the canonical dir: trivy.py's scan replicas
+        # are copied from here under the same lock, and must never see it
+        # mid-write.
+        async with TRIVY_LOCK:
+            extract(db_tar, TRIVY_DB_DIR)
+            if java_tar is not None:
+                await emit(30, f"trivy: extracting {java_tar.name}",
+                           {"scanner": "trivy", "stage": "extracting", "artifact": java_tar.name,
+                            "total_bytes": java_tar.stat().st_size, "estimated": False})
+                extract(java_tar, TRIVY_JAVA_DB_DIR)
+            prune_trivy()
         await emit(50, "trivy: offline database imported", {"scanner": "trivy", "stage": "done"})
         return {"ok": True, "source": db_tar.name, "java_db": java_tar is not None}
     except Exception as exc:  # noqa: BLE001

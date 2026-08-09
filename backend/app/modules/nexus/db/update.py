@@ -274,10 +274,14 @@ async def _update_trivy(emit: ProgressCallback, env: dict[str, str]) -> dict[str
             db_tar, java_tar = Path(tmp) / "db.tar.gz", Path(tmp) / "javadb.tar.gz"
             if not db_tar.exists():
                 raise RuntimeError("oras pull succeeded but db.tar.gz is missing from the artifact")
-            extract(db_tar, TRIVY_DB_DIR)
-            if java_ok and java_tar.exists():
-                extract(java_tar, TRIVY_JAVA_DB_DIR)
-            prune_trivy()
+            # Held for the actual write to the canonical dir: trivy.py's scan
+            # replicas are copied from here under the same lock, and must
+            # never see it mid-write.
+            async with TRIVY_LOCK:
+                extract(db_tar, TRIVY_DB_DIR)
+                if java_ok and java_tar.exists():
+                    extract(java_tar, TRIVY_JAVA_DB_DIR)
+                prune_trivy()
             await emit(50, "trivy: database updated", {"scanner": "trivy", "stage": "done"})
             return {"ok": True, "downloaded": True, "java_db": java_ok, "via": "oras"}
         except Exception as exc:  # noqa: BLE001 - fall through to Trivy's own downloader

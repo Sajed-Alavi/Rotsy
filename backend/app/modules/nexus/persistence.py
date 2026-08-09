@@ -8,6 +8,7 @@ without a session.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from datetime import datetime, timezone
@@ -15,6 +16,7 @@ from datetime import datetime, timezone
 from sqlalchemy import update as sql_update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ...config import get_settings
 from ...models import ScanReport, Vulnerability
 from . import db as scanner_db
 from . import grype, trivy
@@ -26,6 +28,20 @@ logger = logging.getLogger(__name__)
 # The scanner registry. Adding a backend means adding a module with a `run`
 # coroutine and one entry here.
 _RUNNERS = {"trivy": trivy.run, "grype": grype.run}
+
+# How many images run their scanners at once. Enqueuing and registry discovery
+# stay unbounded (cheap Nexus API calls) — this only throttles the expensive
+# part, so a bulk "scan all" of e.g. 100 images doesn't fire 100 trivy/grype
+# processes at the machine at once. Lazily built from settings rather than at
+# import time so tests that construct their own Settings still take effect.
+_scan_semaphore: asyncio.Semaphore | None = None
+
+
+def _get_scan_semaphore() -> asyncio.Semaphore:
+    global _scan_semaphore
+    if _scan_semaphore is None:
+        _scan_semaphore = asyncio.Semaphore(max(1, get_settings().SCANNER_MAX_CONCURRENCY))
+    return _scan_semaphore
 
 
 async def scan_image(
@@ -48,18 +64,19 @@ async def scan_image(
     ready = scanner_db.readiness(scanners)
     reports: list[ScanReport] = []
 
-    for name in scanners:
-        name = name.lower()
-        report = ScanReport(
-            target_repo=registry.repo, image=image, scanner=name, status="running",
-            registry_ref=image_ref,
-        )
-        session.add(report)
-        await session.flush()
+    async with _get_scan_semaphore():
+        for name in scanners:
+            name = name.lower()
+            report = ScanReport(
+                target_repo=registry.repo, image=image, scanner=name, status="running",
+                registry_ref=image_ref,
+            )
+            session.add(report)
+            await session.flush()
 
-        outcome = await _run_one(name, registry, image_ref, creds, ready, verify_tls=verify_tls)
-        apply_outcome(session, report, outcome, registry.repo)
-        reports.append(report)
+            outcome = await _run_one(name, registry, image_ref, creds, ready, verify_tls=verify_tls)
+            apply_outcome(session, report, outcome, registry.repo)
+            reports.append(report)
 
     await session.commit()
     return reports

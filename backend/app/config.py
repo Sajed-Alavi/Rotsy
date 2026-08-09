@@ -143,6 +143,13 @@ class Settings(BaseSettings):
     # Comma-separated scanner binaries to enable: "trivy", "grype". Order is
     # the order they run in when both are enabled.
     SCANNERS_ENABLED: str
+    # How many scan_image jobs actually run their scanners at once. Enqueuing
+    # (registry discovery, DB writes) is cheap and unbounded; the scanners
+    # themselves are not — Trivy's cache is BoltDB, one writer/reader per
+    # process per --cache-dir, so this is also how many private cache-dir
+    # replicas get kept warm for Trivy (see trivy.py's replica pool). Raising
+    # it trades disk (replica count x the on-disk DB size) for scan throughput.
+    SCANNER_MAX_CONCURRENCY: int = 4
     # Optional HTTP/HTTPS proxy for scanner DB downloads. Leave empty for
     # direct. Mirrors HTTP_PROXY/HTTPS_PROXY behaviour for the subprocess env.
     SCANNER_PROXY: str = ""

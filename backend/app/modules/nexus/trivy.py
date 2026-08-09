@@ -6,10 +6,14 @@ local docker/containerd/podman daemons.
 
 from __future__ import annotations
 
+import asyncio
 import json
+import shutil
 import time
+from pathlib import Path
 from typing import Any
 
+from ...config import get_settings
 from . import db as scanner_db
 from .base import (
     TOOL_TIMEOUT,
@@ -24,6 +28,73 @@ from .base import (
     tail,
 )
 from .registry import DockerRegistry
+
+# Trivy's cache is a BoltDB file, and only one process can hold it open at a
+# time — concurrent scans against one shared --cache-dir collide on that lock
+# (see TRIVY_LOCK's docstring in base.py). Instead each scan checks out one of
+# a small pool of private cache-dir replicas — plain copies of the canonical
+# database — so up to SCANNER_MAX_CONCURRENCY scans run genuinely in parallel
+# with no file shared between them. A replica is refreshed lazily, the first
+# time a scan checks it out after the canonical database has moved on; TRIVY_
+# LOCK is held for that refresh (and by db/update.py's writes to the canonical
+# dir) so a copy never reads it mid-write.
+_REPLICA_ROOT = scanner_db.TRIVY_CACHE_ROOT / "scan-replicas"
+_replica_slots: asyncio.Queue[int] | None = None
+
+
+def _slots() -> asyncio.Queue[int]:
+    global _replica_slots
+    if _replica_slots is None:
+        n = max(1, get_settings().SCANNER_MAX_CONCURRENCY)
+        _replica_slots = asyncio.Queue()
+        for i in range(n):
+            _replica_slots.put_nowait(i)
+    return _replica_slots
+
+
+def _replica_dir(slot: int) -> Path:
+    return _REPLICA_ROOT / str(slot)
+
+
+def _replica_stale(slot: int) -> bool:
+    canonical = scanner_db.TRIVY_DB_DIR / "trivy.db"
+    if not canonical.is_file():
+        return False  # nothing to copy — readiness() already gates scans on this
+    replica = _replica_dir(slot) / "db" / "trivy.db"
+    return not replica.is_file() or canonical.stat().st_mtime > replica.stat().st_mtime
+
+
+def _refresh_replica(slot: int) -> None:
+    """Copy the canonical database into one replica slot.
+
+    Runs off the event loop via ``asyncio.to_thread`` at the call site — the
+    on-disk database can be well over a gigabyte, and copying it inline would
+    stall every other coroutine in this single-process backend for however
+    long that takes.
+    """
+    dest = _replica_dir(slot)
+    shutil.rmtree(dest, ignore_errors=True)
+    dest.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(scanner_db.TRIVY_DB_DIR, dest / "db", dirs_exist_ok=True)
+    if scanner_db.TRIVY_JAVA_DB_DIR.is_dir():
+        shutil.copytree(scanner_db.TRIVY_JAVA_DB_DIR, dest / "java-db", dirs_exist_ok=True)
+
+
+async def _checkout_replica() -> int:
+    slot = await _slots().get()
+    try:
+        if _replica_stale(slot):
+            async with TRIVY_LOCK:
+                if _replica_stale(slot):  # a concurrent checkout may have just refreshed it
+                    await asyncio.to_thread(_refresh_replica, slot)
+    except Exception:
+        _slots().put_nowait(slot)  # don't leak the slot on a failed refresh
+        raise
+    return slot
+
+
+def _checkin_replica(slot: int) -> None:
+    _slots().put_nowait(slot)
 
 
 def cvss(entry: dict[str, Any]) -> float:
@@ -65,64 +136,70 @@ async def run(
         return ScanOutcome("trivy", False, error="trivy binary not installed in this image")
     assert_static_ref(image_ref)
 
-    args = [
-        binary, "image",
-        "--quiet",
-        "--format", "json",
-        # OS packages + language dependencies. Excludes secret/misconfig
-        # scanning, which needs neither and would slow every scan down.
-        "--scanners", "vuln",
-        # Read from the registry, never from a local container runtime.
-        "--image-src", "remote",
-        # The database is managed by app.modules.nexus.db. Without this,
-        # Trivy tries to download it mid-scan and fails the scan when it cannot.
-        "--skip-db-update",
-        "--cache-dir", str(scanner_db.TRIVY_CACHE_ROOT),
-        "--timeout", TOOL_TIMEOUT,
-    ]
-    # The Java DB is optional (readiness() never requires it — see
-    # db/status.py's java_db_present) so it can legitimately be absent even
-    # when the core DB is present, e.g. its own download failed or was never
-    # attempted. --skip-java-db-update is only valid once Trivy has downloaded
-    # it at least once; passing it on a first run is a hard error ("cannot be
-    # specified on the first run"), not a graceful skip. Only pass it when
-    # there is actually something on disk to skip updating.
-    if (scanner_db.TRIVY_JAVA_DB_DIR / "metadata.json").is_file():
-        args.append("--skip-java-db-update")
-    # A plaintext connector needs Trivy to talk HTTP; a TLS connector we cannot
-    # verify needs certificate checks relaxed. Both are covered by --insecure.
-    insecure = registry.is_plaintext or not verify_tls
-    if insecure:
-        args.append("--insecure")
-    args.append(image_ref)
-
-    env = {
-        # Credentials via the environment so they stay out of the process table.
-        "TRIVY_USERNAME": creds.username,
-        "TRIVY_PASSWORD": creds.password,
-        # Belt and braces across Trivy versions: some releases key plaintext
-        # registry access off these variables rather than off --insecure.
-        # Unrecognised TRIVY_* variables are ignored by Trivy.
-        **({"TRIVY_INSECURE": "true", "TRIVY_NON_SSL": "true"} if registry.is_plaintext else {}),
-    }
-
-    started = time.monotonic()
+    slot = await _checkout_replica()
     try:
-        async with TRIVY_LOCK:
+        cache_dir = _replica_dir(slot)
+        args = [
+            binary, "image",
+            "--quiet",
+            "--format", "json",
+            # OS packages + language dependencies. Excludes secret/misconfig
+            # scanning, which needs neither and would slow every scan down.
+            "--scanners", "vuln",
+            # Read from the registry, never from a local container runtime.
+            "--image-src", "remote",
+            # The database is managed by app.modules.nexus.db (via the replica
+            # pool above). Without this, Trivy tries to download it mid-scan
+            # and fails the scan when it cannot.
+            "--skip-db-update",
+            "--cache-dir", str(cache_dir),
+            "--timeout", TOOL_TIMEOUT,
+        ]
+        # The Java DB is optional (readiness() never requires it — see
+        # db/status.py's java_db_present) so it can legitimately be absent even
+        # when the core DB is present, e.g. its own download failed or was
+        # never attempted. --skip-java-db-update is only valid once Trivy has
+        # downloaded it at least once into *this* cache dir; passing it on a
+        # first run is a hard error ("cannot be specified on the first run"),
+        # not a graceful skip. Only pass it when there is actually something
+        # on disk (in this replica) to skip updating.
+        if (cache_dir / "java-db" / "metadata.json").is_file():
+            args.append("--skip-java-db-update")
+        # A plaintext connector needs Trivy to talk HTTP; a TLS connector we cannot
+        # verify needs certificate checks relaxed. Both are covered by --insecure.
+        insecure = registry.is_plaintext or not verify_tls
+        if insecure:
+            args.append("--insecure")
+        args.append(image_ref)
+
+        env = {
+            # Credentials via the environment so they stay out of the process table.
+            "TRIVY_USERNAME": creds.username,
+            "TRIVY_PASSWORD": creds.password,
+            # Belt and braces across Trivy versions: some releases key plaintext
+            # registry access off these variables rather than off --insecure.
+            # Unrecognised TRIVY_* variables are ignored by Trivy.
+            **({"TRIVY_INSECURE": "true", "TRIVY_NON_SSL": "true"} if registry.is_plaintext else {}),
+        }
+
+        started = time.monotonic()
+        try:
             code, stdout, stderr = await exec_scanner(args, env)
-    except TimeoutError as exc:
-        return ScanOutcome("trivy", False, error=str(exc),
-                           detail=redact(args, [creds.password]),
-                           duration_ms=int((time.monotonic() - started) * 1000))
-    elapsed = int((time.monotonic() - started) * 1000)
-    detail = f"$ {redact(args, [creds.password])}\nexit {code}\n{tail(stderr or stdout)}"
+        except TimeoutError as exc:
+            return ScanOutcome("trivy", False, error=str(exc),
+                               detail=redact(args, [creds.password]),
+                               duration_ms=int((time.monotonic() - started) * 1000))
+        elapsed = int((time.monotonic() - started) * 1000)
+        detail = f"$ {redact(args, [creds.password])}\nexit {code}\n{tail(stderr or stdout)}"
 
-    if code != 0:
-        return ScanOutcome("trivy", False, error=first_error_line(stderr) or f"trivy exited {code}",
-                           detail=detail, duration_ms=elapsed)
-    try:
-        raw = parse_json_report(stdout)
-    except json.JSONDecodeError as exc:
-        return ScanOutcome("trivy", False, error=f"could not parse trivy JSON output: {exc}",
-                           detail=detail, duration_ms=elapsed)
-    return ScanOutcome("trivy", True, parse(raw), detail=detail, duration_ms=elapsed)
+        if code != 0:
+            return ScanOutcome("trivy", False, error=first_error_line(stderr) or f"trivy exited {code}",
+                               detail=detail, duration_ms=elapsed)
+        try:
+            raw = parse_json_report(stdout)
+        except json.JSONDecodeError as exc:
+            return ScanOutcome("trivy", False, error=f"could not parse trivy JSON output: {exc}",
+                               detail=detail, duration_ms=elapsed)
+        return ScanOutcome("trivy", True, parse(raw), detail=detail, duration_ms=elapsed)
+    finally:
+        _checkin_replica(slot)

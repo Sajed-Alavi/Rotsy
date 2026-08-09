@@ -40,8 +40,16 @@ export const scanApi = {
 
   dbStatus: () => api.get('/scan/db-status'),
   offlineStatus: () => api.get('/scan/db-offline'),
-  /** `force` re-downloads a database the backend would otherwise skip as current. */
-  updateDb: (force = false) => api.post(`/scan/db-update${force ? '?force=true' : ''}`),
+  /** `force` re-downloads a database the backend would otherwise skip as
+   * current; `scanner` scopes the refresh to just "trivy" or "grype" —
+   * omitted (or falsy) updates every enabled scanner. */
+  updateDb: (force = false, scanner = null) => {
+    const params = new URLSearchParams();
+    if (force) params.set('force', 'true');
+    if (scanner) params.set('scanner', scanner);
+    const qs = params.toString();
+    return api.post(`/scan/db-update${qs ? `?${qs}` : ''}`);
+  },
   importDb: () => api.post('/scan/db-import'),
   /** The in-flight (or most recent) DB job, so the UI can reattach after a reload. */
   dbJob: () => api.get('/scan/db-job'),

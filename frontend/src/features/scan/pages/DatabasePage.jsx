@@ -180,8 +180,8 @@ export default function DatabasePage() {
               info={dbStatus?.[name]}
               live={scanners[name]}
               busy={running}
-              onUpdate={() => run(() => scanApi.updateDb(false), `${name} update`)}
-              onForce={() => run(() => scanApi.updateDb(true), `${name} forced re-download`)}
+              onUpdate={() => run(() => scanApi.updateDb(false, name), `${name} update`)}
+              onForce={() => run(() => scanApi.updateDb(true, name), `${name} forced re-download`)}
             />
           ))}
         </div>

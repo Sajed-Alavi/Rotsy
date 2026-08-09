@@ -32,10 +32,17 @@ async def scanner_db_status() -> dict[str, Any]:
 async def enqueue_db_update(
     request: Request,
     force: Annotated[bool, Query(description="Download even if the local database is current")] = False,
+    scanner: Annotated[
+        str | None,
+        Query(description="Update only this scanner (\"trivy\" or \"grype\"). Omit to update every enabled one."),
+    ] = None,
 ) -> dict[str, str]:
     """Refresh the vulnerability databases over the network."""
     _, cache = require_backend(request)
-    return {"job_id": await enqueue_db_job(cache, "scanner_db_update", {"force": force})}
+    payload: dict[str, Any] = {"force": force}
+    if scanner:
+        payload["scanners"] = [scanner]
+    return {"job_id": await enqueue_db_job(cache, "scanner_db_update", payload)}
 
 
 @router.post("/db-import", status_code=status.HTTP_202_ACCEPTED,

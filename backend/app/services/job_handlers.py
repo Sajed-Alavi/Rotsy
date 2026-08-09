@@ -429,9 +429,26 @@ async def _scanner_proxy() -> str:
     return getattr(settings, "SCANNER_PROXY", "") if settings else ""
 
 
+def _requested_scanners(job: Job) -> list[str]:
+    """The scanners a job payload asked for, scoped to what's actually enabled.
+
+    ``scanners`` lets a caller (the per-scanner "Update"/"Force" buttons) ask
+    for just one; an empty/missing list falls back to every enabled scanner
+    (the "Update all" button). Anything requested that isn't in the enabled
+    set is dropped rather than trusted outright — the payload comes from an
+    API caller, not from this process.
+    """
+    enabled = _default_scanners()
+    requested = job.payload.get("scanners") or []
+    if not isinstance(requested, list):
+        return enabled
+    scoped = [s for s in requested if s in enabled]
+    return scoped or enabled
+
+
 async def handle_scanner_db_update(job: Job, progress: ProgressCallback) -> dict:
-    """Refresh vulnerability databases for the configured scanners."""
-    scanners = _default_scanners()
+    """Refresh vulnerability databases for the requested (or all enabled) scanners."""
+    scanners = _requested_scanners(job)
     proxy = await _scanner_proxy()
     await progress(2, f"updating databases: {', '.join(scanners)}{' via proxy' if proxy else ''}",
                    {"stage": "connecting", "scanners": scanners})

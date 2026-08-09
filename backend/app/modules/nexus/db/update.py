@@ -11,7 +11,7 @@ import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 import httpx
 
@@ -193,6 +193,57 @@ async def _oras_pull_retrying(*, retries: int = 2, backoff: float = 5.0, **kwarg
         await asyncio.sleep(backoff)
 
 
+async def _run_streaming_retrying(
+    args: list[str],
+    *,
+    timeout: float,
+    env: dict[str, str],
+    emit: ProgressCallback,
+    pct: int,
+    label: str,
+    scanner: str,
+    on_line: Callable[[str], Awaitable[None]] | None = None,
+    retries: int = 2,
+    backoff: float = 15.0,
+) -> tuple[int, list[str]]:
+    """``run_streaming`` with a couple of retries for transient failures.
+
+    Mirrors ``_oras_pull_retrying``: a multi-hundred-MB-to-multi-GB database
+    transfer that drops partway through (a reset connection, a registry
+    hiccup) is retried automatically instead of being left failed for the
+    operator to notice and re-trigger by hand — which, since neither trivy's
+    nor grype's own downloader exposes byte-range resume, would otherwise
+    mean starting the whole transfer over from zero regardless. What resume
+    there is comes from the destination being the same persistent directory
+    across attempts (trivy's cache dir, grype's TMPDIR): whatever either
+    tool's downloader can itself reuse from a previous attempt, it gets the
+    chance to. A non-zero exit is retried the same as a raised exception; a
+    deliberate cancellation is not retried — it propagates immediately.
+    """
+    attempt = 0
+    while True:
+        attempt += 1
+        try:
+            rc, lines = await run_streaming(args, timeout=timeout, env=env, on_line=on_line)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - retried below, or re-raised past the last attempt
+            if attempt > retries:
+                raise
+            reason = str(exc)
+        else:
+            if rc == 0 or attempt > retries:
+                return rc, lines
+            reason = f"exit {rc}"
+        logger.warning("%s: attempt %d/%d failed (%s), retrying in %.0fs",
+                        label, attempt, retries + 1, reason, backoff)
+        await emit(
+            pct, f"{label}: attempt {attempt} failed ({reason}), retrying in {backoff:.0f}s",
+            {"scanner": scanner, "stage": "connecting", "note": f"retry {attempt}/{retries}"},
+        )
+        await asyncio.sleep(backoff)
+
+
 async def _update_trivy(emit: ProgressCallback, env: dict[str, str]) -> dict[str, Any]:
     trivy = which("trivy")
     if trivy is None:
@@ -242,9 +293,9 @@ async def _update_trivy(emit: ProgressCallback, env: dict[str, str]) -> dict[str
                {"scanner": "trivy", "stage": "downloading", "indeterminate": True,
                 "note": "trivy's own downloader reports no progress"})
     try:
-        rc, lines = await run_streaming(
+        rc, lines = await _run_streaming_retrying(
             [trivy, "image", "--download-db-only", "--cache-dir", str(TRIVY_CACHE_ROOT)],
-            timeout=900, env=env,
+            timeout=900, env=env, emit=emit, pct=25, label="trivy-db", scanner="trivy",
         )
     except Exception as exc:  # noqa: BLE001
         await emit(50, f"trivy: database update failed — {exc}",
@@ -446,8 +497,9 @@ async def _update_grype(emit: ProgressCallback, env: dict[str, str]) -> dict[str
     try:
         # The subprocess ceiling must exceed Grype's own download timeout, or
         # this would kill a transfer that was still within its budget.
-        rc, lines = await run_streaming(
+        rc, lines = await _run_streaming_retrying(
             [grype, "db", "update", "-v"], timeout=3600, env=env, on_line=on_line,
+            emit=emit, pct=52, label="grype-db", scanner="grype",
         )
     except Exception as exc:  # noqa: BLE001
         await emit(100, f"grype: database update failed — {exc}",

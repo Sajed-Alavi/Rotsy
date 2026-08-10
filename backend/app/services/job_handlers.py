@@ -370,7 +370,7 @@ async def handle_scan_image(job: Job, progress: ProgressCallback) -> dict:
     repo, image = payload.get("repo"), payload.get("image")
     if not repo or not image:
         raise ValueError("payload.repo and payload.image are required")
-    scanners = payload.get("scanners") or _default_scanners()
+    scanners = payload.get("scanners") or await _default_scanners()
 
     await progress(5, f"resolving the Docker registry endpoint for '{repo}'")
     try:
@@ -406,8 +406,14 @@ async def handle_scan_image(job: Job, progress: ProgressCallback) -> dict:
     }
 
 
-def _default_scanners() -> list[str]:
-    return _lifespan_state.get("scanners") or ["trivy", "grype"]
+async def _default_scanners() -> list[str]:
+    """Enabled scanners — the dashboard toggle first, then the env default
+    this process booted with."""
+    from .scanner_config import get_enabled_scanners
+    settings = _lifespan_state.get("settings")
+    if settings is None:
+        return _lifespan_state.get("scanners") or ["trivy", "grype"]
+    return await get_enabled_scanners(settings)
 
 
 async def _scanner_proxy() -> str:
@@ -429,7 +435,7 @@ async def _scanner_proxy() -> str:
     return getattr(settings, "SCANNER_PROXY", "") if settings else ""
 
 
-def _requested_scanners(job: Job) -> list[str]:
+async def _requested_scanners(job: Job) -> list[str]:
     """The scanners a job payload asked for, scoped to what's actually enabled.
 
     ``scanners`` lets a caller (the per-scanner "Update"/"Force" buttons) ask
@@ -438,7 +444,7 @@ def _requested_scanners(job: Job) -> list[str]:
     set is dropped rather than trusted outright — the payload comes from an
     API caller, not from this process.
     """
-    enabled = _default_scanners()
+    enabled = await _default_scanners()
     requested = job.payload.get("scanners") or []
     if not isinstance(requested, list):
         return enabled
@@ -448,7 +454,7 @@ def _requested_scanners(job: Job) -> list[str]:
 
 async def handle_scanner_db_update(job: Job, progress: ProgressCallback) -> dict:
     """Refresh vulnerability databases for the requested (or all enabled) scanners."""
-    scanners = _requested_scanners(job)
+    scanners = await _requested_scanners(job)
     proxy = await _scanner_proxy()
     await progress(2, f"updating databases: {', '.join(scanners)}{' via proxy' if proxy else ''}",
                    {"stage": "connecting", "scanners": scanners})
@@ -467,8 +473,7 @@ async def handle_scanner_db_import(job: Job, progress: ProgressCallback) -> dict
     Docker Hub / ghcr.io. The operator drops the archives into the mounted
     offline directory; this extracts/imports them into the scanner caches.
     """
-    del job  # every JobHandler takes (job, progress); this one needs no payload
-    scanners = _default_scanners()
+    scanners = await _requested_scanners(job)
     await progress(2, f"importing offline databases: {', '.join(scanners)}",
                    {"stage": "importing", "scanners": scanners})
     result = await scanner_db.import_offline(scanners, on_progress=progress)

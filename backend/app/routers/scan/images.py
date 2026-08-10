@@ -135,5 +135,5 @@ async def scan_one_image(
     _, cache = require_backend(request)
     return await scan_events.request_manual_scan(
         session, cache, body.repo, body.image,
-        scanners=body.scanners, default_scanners=default_scanners(settings),
+        scanners=body.scanners, default_scanners=await default_scanners(settings, session),
     )

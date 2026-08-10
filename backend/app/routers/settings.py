@@ -223,3 +223,35 @@ async def set_scanner_proxy(body: ScannerProxyUpdate,
         row.value_json = blob
     await session.commit()
     return {"ok": True, "proxy": body.proxy}
+
+
+# ---------------------------------------------------------------------------
+# Which scanners are enabled — a dashboard toggle over SCANNERS_ENABLED, so a
+# scanner can be turned off (and hidden from the Database page, scans, DB
+# jobs, ...) without a redeploy, and so a scanner added to the codebase later
+# has somewhere to be turned on.
+# ---------------------------------------------------------------------------
+class ScannersEnabledUpdate(BaseModel):
+    scanners: list[str] = Field(default_factory=list, description="Enabled scanner names; empty = all")
+
+
+@router.get("/scanners-enabled", dependencies=[Depends(RequirePermission("system:execute"))])
+async def get_scanners_enabled(
+    session: Annotated[AsyncSession, Depends(get_session)],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> dict[str, Any]:
+    """Which scanners are enabled, plus every scanner the app knows about —
+    the settings UI needs the full list to offer a toggle for a disabled one."""
+    from ..services.scanner_config import ALL_KNOWN_SCANNERS, get_enabled_scanners
+    return {"enabled": await get_enabled_scanners(settings, session), "known": list(ALL_KNOWN_SCANNERS)}
+
+
+@router.put("/scanners-enabled", dependencies=[Depends(RequirePermission("system:execute"))])
+async def set_scanners_enabled(
+    body: ScannersEnabledUpdate, session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict[str, Any]:
+    """Save which scanners are enabled. An empty list resets to "all" (the
+    env var default) rather than disabling every scanner."""
+    from ..services.scanner_config import ALL_KNOWN_SCANNERS, set_enabled_scanners
+    enabled = await set_enabled_scanners(session, body.scanners)
+    return {"ok": True, "enabled": enabled, "known": list(ALL_KNOWN_SCANNERS)}

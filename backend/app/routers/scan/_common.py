@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import HTTPException, Request, status
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...config import Settings
 from ...state import app_state
@@ -18,5 +19,6 @@ def require_backend(request: Request) -> tuple[Any, Any]:
     return state.nexus, state.cache
 
 
-def default_scanners(settings: Settings) -> list[str]:
-    return settings.scanners_enabled
+async def default_scanners(settings: Settings, session: AsyncSession | None = None) -> list[str]:
+    from ...services.scanner_config import get_enabled_scanners
+    return await get_enabled_scanners(settings, session)

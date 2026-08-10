@@ -66,7 +66,7 @@ async def nexus_webhook(
     _, cache = require_backend(request)
     result = await scan_events.ingest_push_event(
         session, cache, repo, ref, source="webhook",
-        default_scanners=default_scanners(settings),
+        default_scanners=await default_scanners(settings, session),
     )
     if not result.get("scanned"):
         response.status_code = status.HTTP_200_OK

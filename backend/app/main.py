@@ -247,10 +247,13 @@ async def _push_watch_loop(settings: Settings, stop: asyncio.Event) -> None:
     except asyncio.TimeoutError:
         pass
 
+    from .services.scanner_config import get_enabled_scanners
+
     factory = get_session_factory()
     while not stop.is_set():
         try:
             async with factory() as session:
+                enabled_scanners = await get_enabled_scanners(settings, session)
                 targets = (await session.execute(
                     select(ScanTarget).where(
                         ScanTarget.enabled.is_(True), ScanTarget.auto_scan.is_(True),
@@ -259,7 +262,7 @@ async def _push_watch_loop(settings: Settings, stop: asyncio.Event) -> None:
                 for target in targets:
                     try:
                         await scan_events.observe_target(
-                            nexus, session, cache, target, settings.scanners_enabled,
+                            nexus, session, cache, target, enabled_scanners,
                         )
                     except Exception:  # noqa: BLE001 - one repo must not stop the others
                         logger.exception("Could not observe repository '%s'", target.repo)

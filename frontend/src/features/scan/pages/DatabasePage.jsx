@@ -173,7 +173,9 @@ export default function DatabasePage() {
         }
       >
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-          {['trivy', 'grype'].map((name) => (
+          {/* Which scanners appear here — a disabled one is toggled off in
+              Settings and the backend omits it entirely, not just this loop. */}
+          {Object.keys(dbStatus || {}).map((name) => (
             <DbPanel
               key={name}
               name={name}

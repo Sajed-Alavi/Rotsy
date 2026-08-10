@@ -27,8 +27,74 @@ export default function ScanningPage() {
     <div className="grid grid-cols-1 gap-6">
       <RegistryDiscoverySection />
       <WebhookSection />
+      <ScannerToggleSection />
       <ScannerProxySection />
     </div>
+  );
+}
+
+/**
+ * Which scanners are active. Turning one off hides it everywhere (Database
+ * page, scan-image runs, DB update/import) rather than just skipping it —
+ * for a scanner you don't have licensed, don't want to maintain a database
+ * for, or haven't finished wiring up yet.
+ */
+function ScannerToggleSection() {
+  const [known, setKnown] = useState([]);
+  const [enabled, setEnabled] = useState(null); // null while loading
+  const [msg, setMsg] = useState('');
+  const [err, setErr] = useState('');
+  const [saving, setSaving] = useState(false);
+
+  const load = () => {
+    api.get('/settings/scanners-enabled')
+      .then((d) => { setKnown(d.known || []); setEnabled(d.enabled || []); })
+      .catch((e) => setErr(e.message));
+  };
+  useEffect(() => { load(); }, []);
+
+  const toggle = async (name) => {
+    if (saving || enabled === null) return;
+    const next = enabled.includes(name) ? enabled.filter((s) => s !== name) : [...enabled, name];
+    if (next.length === 0) {
+      setErr('At least one scanner must stay enabled.');
+      return;
+    }
+    setSaving(true); setErr(''); setMsg('');
+    try {
+      const r = await api.put('/settings/scanners-enabled', { scanners: next });
+      setEnabled(r.enabled);
+      setMsg('Saved.');
+    } catch (e) { setErr(e.message); }
+    setSaving(false);
+  };
+
+  return (
+    <section className="border border-slate-200 p-4 dark:border-slate-800">
+      <h2 className="mb-1 font-mono text-[10px] uppercase tracking-wider text-slate-500">Active scanners</h2>
+      <p className="mb-3 font-mono text-[11px] text-slate-500 dark:text-slate-500">
+        A disabled scanner disappears from the Database page and every scan — takes effect immediately,
+        no restart. New scanners land here too as they're added.
+      </p>
+      {enabled === null && !err && <p className="font-mono text-[11px] text-slate-400 dark:text-slate-600">loading…</p>}
+      {known.length > 0 && (
+        <div className="flex flex-wrap gap-3">
+          {known.map((name) => (
+            <label key={name} className="flex items-center gap-2 border border-slate-200 px-3 py-1.5 font-mono text-xs uppercase tracking-wider text-slate-700 dark:border-slate-700 dark:text-slate-300">
+              <input
+                type="checkbox"
+                checked={enabled?.includes(name) ?? false}
+                onChange={() => toggle(name)}
+                disabled={saving}
+              />
+              {name}
+            </label>
+          ))}
+        </div>
+      )}
+      {msg && <div className="mt-2 font-mono text-xs text-emerald-600 dark:text-emerald-400">{msg}</div>}
+      {err && <div className="mt-2 font-mono text-xs text-rose-600 dark:text-rose-400">{err}</div>}
+    </section>
   );
 }
 

@@ -5,19 +5,29 @@ from __future__ import annotations
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Query, Request, status
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from ...dependencies import RequirePermission
+from ...config import Settings
+from ...dependencies import RequirePermission, get_session, get_settings
 from ...modules.nexus import db as scanner_db
 from ...modules.nexus.db.tracking import current_db_job, enqueue_db_job
+from ...services.scanner_config import get_enabled_scanners
 from ._common import require_backend
 
 router = APIRouter()
 
 
 @router.get("/db-status", dependencies=[Depends(RequirePermission("scan:read"))])
-async def scanner_db_status() -> dict[str, Any]:
-    """Each scanner's database: version, build date, size, install state, readiness."""
-    snapshot = scanner_db.status()
+async def scanner_db_status(
+    session: Annotated[AsyncSession, Depends(get_session)],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> dict[str, Any]:
+    """Each enabled scanner's database: version, build date, size, install
+    state, readiness. A scanner turned off in Settings is omitted entirely —
+    not just marked not-ready — so the Database page doesn't show a card for
+    something the operator deliberately doesn't want to run."""
+    enabled = set(await get_enabled_scanners(settings, session))
+    snapshot = {name: info for name, info in scanner_db.status().items() if name in enabled}
     ready = scanner_db.readiness(list(snapshot.keys()))
     for name, info in snapshot.items():
         check = ready.get(name)

@@ -55,7 +55,7 @@ export default function OverviewPage() {
         actions={<Link to="/scan/database" className="border border-slate-300 px-2.5 py-1 font-mono text-[11px] uppercase tracking-wider text-slate-600 hover:bg-slate-100 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800">Manage</Link>}
       >
         <div className="flex flex-wrap gap-6">
-          {['trivy', 'grype'].map((name) => {
+          {Object.keys(dbStatus || {}).map((name) => {
             const info = dbStatus?.[name];
             let tone = 'ok';
             let label = 'ready';

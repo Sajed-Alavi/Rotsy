@@ -17,9 +17,9 @@ from typing import Any
 from .paths import (
     GRYPE_CACHE_ROOT,
     STALE_AFTER,
-    TRIVY_CACHE_ROOT,
     TRIVY_DB_DIR,
     TRIVY_JAVA_DB_DIR,
+    TRIVY_SCAN_REPLICAS_DIR,
     which,
 )
 
@@ -99,7 +99,14 @@ def _trivy_status() -> dict[str, Any]:
         "next_update": parse_iso(meta.get("NextUpdate")),
         "downloaded_at": parse_iso(meta.get("DownloadedAt")),
         "java_db_present": (TRIVY_JAVA_DB_DIR / _METADATA_FILENAME).is_file(),
-        "size_bytes": dir_size(TRIVY_CACHE_ROOT),
+        # The database itself only — deliberately excludes scan-replicas/
+        # (trivy.py's per-scan copy pool), which is disk spent on running
+        # scans in parallel, not on the database. Reported separately below
+        # so it stays visible without being counted as if it were the same
+        # thing; a naive dir_size(TRIVY_CACHE_ROOT) here once made the UI show
+        # a multi-GB "database size" that was mostly replica duplication.
+        "size_bytes": dir_size(TRIVY_DB_DIR) + dir_size(TRIVY_JAVA_DB_DIR),
+        "replica_pool_size_bytes": dir_size(TRIVY_SCAN_REPLICAS_DIR),
         "path": str(TRIVY_DB_DIR),
     })
     return out

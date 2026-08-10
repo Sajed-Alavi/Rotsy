@@ -43,6 +43,7 @@ from .paths import (
     TRIVY_JAVA_DB_DIR,
     TRIVY_JAVA_DB_IMAGE,
     TRIVY_JAVA_DB_IMAGE_FALLBACK,
+    TRIVY_SCAN_REPLICAS_DIR,
     ProgressCallback,
     which,
 )
@@ -61,6 +62,7 @@ __all__ = [
     "TRIVY_JAVA_DB_DIR",
     "TRIVY_JAVA_DB_IMAGE",
     "TRIVY_JAVA_DB_IMAGE_FALLBACK",
+    "TRIVY_SCAN_REPLICAS_DIR",
     "import_offline",
     "offline_status",
     "proxy_env",

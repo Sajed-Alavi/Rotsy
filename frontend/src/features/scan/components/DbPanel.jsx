@@ -118,6 +118,10 @@ export default function DbPanel({ name, info, live, busy, onUpdate, onForce }) {
           {name === 'trivy' && (
             <Field label="java db" value={info.java_db_present ? 'present' : 'absent'} />
           )}
+          {name === 'trivy' && info.replica_pool_size_bytes > 0 && (
+            <Field label="scan replicas" value={formatBytes(info.replica_pool_size_bytes)}
+              title="Per-scan private copies of this database, used to run scans in parallel — not counted in the size above." />
+          )}
           {info.schema_version && <Field label="schema" value={info.schema_version} />}
         </dl>
       ) : (

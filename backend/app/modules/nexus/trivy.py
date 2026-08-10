@@ -38,7 +38,7 @@ from .registry import DockerRegistry
 # time a scan checks it out after the canonical database has moved on; TRIVY_
 # LOCK is held for that refresh (and by db/update.py's writes to the canonical
 # dir) so a copy never reads it mid-write.
-_REPLICA_ROOT = scanner_db.TRIVY_CACHE_ROOT / "scan-replicas"
+_REPLICA_ROOT = scanner_db.TRIVY_SCAN_REPLICAS_DIR
 _replica_slots: asyncio.Queue[int] | None = None
 
 

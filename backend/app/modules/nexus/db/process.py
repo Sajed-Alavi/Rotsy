@@ -10,11 +10,14 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import shutil
 import tarfile
 import time
 from pathlib import Path
 from typing import Awaitable, Callable
+
+import httpx
 
 from .paths import TRIVY_DB_DIR, ProgressCallback
 from .status import dir_size
@@ -258,6 +261,171 @@ async def oras_pull(
                    {"scanner": scanner, "stage": "failed", "artifact": label,
                     "error": f"exit {proc.returncode}: {detail_msg}"})
     return ok
+
+
+_OCI_CHALLENGE_FIELD = re.compile(r'(\w+)="([^"]*)"')
+
+
+def _parse_oci_ref(image: str) -> tuple[str, str, str]:
+    """Split "registry.host/namespace/repo:tag" into (registry, repo, tag)."""
+    registry, _, rest = image.partition("/")
+    repo, _, tag = rest.rpartition(":")
+    return registry, repo, tag or "latest"
+
+
+async def _oci_bearer_token(client: httpx.AsyncClient, challenge: str, repo: str) -> str | None:
+    """Exchange a ``WWW-Authenticate: Bearer ...`` challenge for a pull token.
+
+    The standard Docker Registry v2 auth flow: an anonymous request gets a
+    401 naming a token endpoint (``realm``) plus ``service``/``scope``; that
+    endpoint, hit anonymously in turn, hands back a short-lived token good for
+    the manifest and blob requests that follow.
+    """
+    params = dict(_OCI_CHALLENGE_FIELD.findall(challenge))
+    realm = params.get("realm")
+    if not realm:
+        return None
+    resp = await client.get(realm, params={
+        "service": params.get("service", ""),
+        "scope": params.get("scope") or f"repository:{repo}:pull",
+    })
+    if resp.status_code != 200:
+        return None
+    data = resp.json()
+    return data.get("token") or data.get("access_token")
+
+
+async def resumable_oci_pull(
+    image: str,
+    dest: Path,
+    *,
+    emit: ProgressCallback,
+    scanner: str,
+    label: str,
+    progress_range: tuple[int, int],
+    env: dict[str, str],
+    timeout: float = 3600.0,  # NOSONAR
+) -> bool:
+    """Pull a single-layer OCI artifact's blob directly over HTTPS, resuming
+    a dropped transfer with an HTTP ``Range`` request instead of restarting it.
+
+    Last-resort fallback for the Java DB (see ``_update_trivy`` in
+    ``update.py``): ``oras pull`` has no concept of resume at all, so on a
+    slow or flaky link a multi-hundred-MB transfer that keeps resetting
+    (``stream error ... PROTOCOL_ERROR``, seen in practice against both
+    ghcr.io and its mirrors) can never complete — every retry pays for the
+    same bytes again. The blob endpoint behind an OCI registry is ordinary
+    HTTPS and, unlike ``oras``'s own transport, does honor ``Range``.
+
+    ``dest`` is written via a same-named ``.partial`` file that is only
+    renamed into place once its size matches the manifest — the caller is
+    expected to pass a stable, persistent path (not a per-job tempdir) so a
+    partial transfer surviving past this call's own timeout, or past the
+    whole job failing, can still be resumed by a later run.
+    """
+    registry, repo, tag = _parse_oci_ref(image)
+    proxy = env.get("HTTPS_PROXY") or env.get("https_proxy") or None
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    partial = dest.with_suffix(dest.suffix + ".partial")
+    low, high = progress_range
+
+    async with httpx.AsyncClient(timeout=30.0, proxy=proxy, follow_redirects=True) as client:
+        await emit(low, f"{label}: resolving the manifest",
+                   {"scanner": scanner, "stage": "connecting", "artifact": label})
+        headers = {"Accept": "application/vnd.oci.image.manifest.v1+json, "
+                              "application/vnd.docker.distribution.manifest.v2+json"}
+        manifest_url = f"https://{registry}/v2/{repo}/manifests/{tag}"
+        try:
+            resp = await client.get(manifest_url, headers=headers)
+            if resp.status_code == 401:
+                token = await _oci_bearer_token(client, resp.headers.get("www-authenticate", ""), repo)
+                if not token:
+                    raise RuntimeError("registry did not accept an anonymous pull")
+                headers["Authorization"] = f"Bearer {token}"
+                resp = await client.get(manifest_url, headers=headers)
+            resp.raise_for_status()
+            layers = resp.json().get("layers") or []
+            if not layers:
+                raise RuntimeError("manifest has no layers")
+            digest, size = layers[0]["digest"], int(layers[0]["size"])
+        except (httpx.HTTPError, RuntimeError, KeyError, ValueError) as exc:
+            await emit(high, f"{label}: could not resolve the manifest — {exc}",
+                       {"scanner": scanner, "stage": "failed", "artifact": label, "error": str(exc)})
+            return False
+
+        done = partial.stat().st_size if partial.exists() else 0
+        if done > size:  # a stale partial from a different build; start clean
+            done = 0
+            partial.unlink(missing_ok=True)
+
+        blob_url = f"https://{registry}/v2/{repo}/blobs/{digest}"
+        deadline = time.monotonic() + timeout
+        prev_bytes, prev_time = done, time.monotonic()
+        while done < size:
+            if time.monotonic() > deadline:
+                await emit(high, f"{label}: timed out after {timeout / 60:.0f} minutes "
+                                  f"({done / 1e6:.1f} / {size / 1e6:.0f} MB kept for next time)",
+                           {"scanner": scanner, "stage": "failed", "artifact": label,
+                            "done_bytes": done, "total_bytes": size})
+                return False
+            req_headers = dict(headers)
+            if done:
+                req_headers["Range"] = f"bytes={done}-"
+            try:
+                async with client.stream("GET", blob_url, headers=req_headers) as stream:
+                    if stream.status_code == 401:
+                        # A transfer of this size at these speeds can easily
+                        # outlive a short-lived registry token — refresh it
+                        # and retry right away rather than treating this as
+                        # the kind of transient fault worth backing off for.
+                        token = await _oci_bearer_token(client, stream.headers.get("www-authenticate", ""), repo)
+                        if not token:
+                            raise RuntimeError("token refresh failed after a 401")
+                        headers["Authorization"] = f"Bearer {token}"
+                        continue
+                    if stream.status_code not in (200, 206):
+                        raise httpx.HTTPStatusError(
+                            f"HTTP {stream.status_code}", request=stream.request, response=stream,
+                        )
+                    # The server may not honor Range and send the whole blob
+                    # back (status 200) even though we asked to resume — in
+                    # that case what's already on disk is not a prefix of
+                    # what's coming, so start the file over.
+                    if done and stream.status_code == 200:
+                        done = 0
+                    with open(partial, "ab" if done else "wb") as f:
+                        async for chunk in stream.aiter_bytes(262_144):
+                            f.write(chunk)
+                            done += len(chunk)
+                            now = time.monotonic()
+                            elapsed = now - prev_time
+                            if elapsed > 1.0:
+                                speed_mbps = (done - prev_bytes) / elapsed / 1e6
+                                pct = low + (int(min(high - low, done / size * (high - low))) if size else 0)
+                                await emit(
+                                    pct,
+                                    f"{label}: {done / 1e6:.1f} / {size / 1e6:.0f} MB"
+                                    + rate(speed_mbps, max(0.0, (size - done) / 1e6)),
+                                    {"scanner": scanner, "stage": "downloading", "artifact": label,
+                                     "done_bytes": done, "total_bytes": size, "estimated": False},
+                                )
+                                prev_bytes, prev_time = done, now
+            except (httpx.HTTPError, OSError, RuntimeError) as exc:
+                await emit(
+                    low + (int(min(high - low, done / size * (high - low))) if size else 0),
+                    f"{label}: dropped at {done / 1e6:.1f} / {size / 1e6:.0f} MB ({exc}); resuming in 10s",
+                    {"scanner": scanner, "stage": "connecting", "artifact": label,
+                     "done_bytes": done, "total_bytes": size},
+                )
+                await asyncio.sleep(10)
+
+    if done != size:
+        return False
+    partial.replace(dest)
+    await emit(high, f"{label}: {size / 1e6:.1f} MB downloaded",
+               {"scanner": scanner, "stage": "downloading", "artifact": label,
+                "done_bytes": size, "total_bytes": size, "estimated": False})
+    return True
 
 
 def rate(speed_mbps: float, remaining_mb: float) -> str:

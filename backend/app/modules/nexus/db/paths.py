@@ -57,6 +57,12 @@ TRIVY_JAVA_DB_DIR = TRIVY_CACHE_ROOT / "java-db"
 # TRIVY_DB_DIR/TRIVY_JAVA_DB_DIR so status.py's reported database size isn't
 # inflated by what is disk spent on parallelism, not on the database itself.
 TRIVY_SCAN_REPLICAS_DIR = TRIVY_CACHE_ROOT / "scan-replicas"
+# Stable location for the Java DB's resumable-range fallback download (see
+# process.py's resumable_oci_pull) — deliberately NOT inside the per-job
+# tempdir _update_trivy() otherwise uses, so a partial transfer survives past
+# that job ending and a later run picks up from the same bytes instead of
+# starting over.
+TRIVY_JAVA_DB_DOWNLOAD_DIR = TRIVY_CACHE_ROOT / "downloads"
 GRYPE_CACHE_ROOT = Path(os.environ.get("GRYPE_CACHE_DIR") or (Path.home() / ".cache" / "grype"))
 
 # Offline / air-gapped import directory. Where Docker Hub, ghcr.io and github.com

@@ -27,6 +27,7 @@ from .paths import (
     TRIVY_DB_IMAGE,
     TRIVY_DB_MB,
     TRIVY_JAVA_DB_DIR,
+    TRIVY_JAVA_DB_DOWNLOAD_DIR,
     TRIVY_JAVA_DB_IMAGE,
     TRIVY_JAVA_DB_IMAGE_FALLBACK,
     TRIVY_JAVA_DB_MB,
@@ -34,7 +35,7 @@ from .paths import (
     ProgressCallback,
     which,
 )
-from .process import extract, oras_pull, proxy_env, prune_trivy, rate, run_streaming
+from .process import extract, oras_pull, proxy_env, prune_trivy, rate, resumable_oci_pull, run_streaming
 from .status import as_datetime, dir_size, grype_db_usable, grype_status, status
 from ..base import TRIVY_LOCK
 from ....services import make_detail_emitter
@@ -292,9 +293,24 @@ async def _update_trivy(emit: ProgressCallback, env: dict[str, str]) -> dict[str
                     emit=emit, env=env, progress_range=(35, 46), timeout=3600.0,
                     label="trivy-java-db (fallback mirror)", scanner="trivy", total_bytes=fallback_size,
                 )
+            java_tar = java_dir / "javadb.tar.gz"
+            if not java_ok:
+                # Both oras attempts failed outright — on a connection this
+                # unstable, oras's all-or-nothing transfer may simply never
+                # survive long enough to finish even once. This pulls the
+                # same blob over plain HTTPS with Range-header resume (oras
+                # has none) and writes to a path outside this job's tempdir,
+                # so a transfer interrupted by this job ending still has
+                # something to resume from the next time "Update" runs.
+                java_tar = TRIVY_JAVA_DB_DOWNLOAD_DIR / "javadb.tar.gz"
+                java_ok = await resumable_oci_pull(
+                    TRIVY_JAVA_DB_IMAGE_FALLBACK, java_tar,
+                    emit=emit, scanner="trivy", label="trivy-java-db (resumable)",
+                    progress_range=(35, 46), env=env, timeout=3600.0,
+                )
             await emit(46, "trivy: extracting database",
                        {"scanner": "trivy", "stage": "extracting"})
-            db_tar, java_tar = db_dir / "db.tar.gz", java_dir / "javadb.tar.gz"
+            db_tar = db_dir / "db.tar.gz"
             if not db_tar.exists():
                 raise RuntimeError("oras pull succeeded but db.tar.gz is missing from the artifact")
             # Held for the actual write to the canonical dir: trivy.py's scan
@@ -304,6 +320,11 @@ async def _update_trivy(emit: ProgressCallback, env: dict[str, str]) -> dict[str
                 extract(db_tar, TRIVY_DB_DIR)
                 if java_ok and java_tar.exists():
                     extract(java_tar, TRIVY_JAVA_DB_DIR)
+                    if java_tar.parent == TRIVY_JAVA_DB_DOWNLOAD_DIR:
+                        # Extracted successfully — nothing left to resume, and
+                        # this one (unlike java_dir) isn't inside tmp, so it
+                        # would otherwise sit on disk forever.
+                        java_tar.unlink(missing_ok=True)
                 prune_trivy()
             await emit(50, "trivy: database updated", {"scanner": "trivy", "stage": "done"})
             return {"ok": True, "downloaded": True, "java_db": java_ok, "via": "oras"}

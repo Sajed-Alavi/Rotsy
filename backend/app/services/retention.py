@@ -19,6 +19,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..modules.nexus.connector import NexusClient
@@ -228,7 +229,6 @@ async def run_policy(
 
 async def run_all_enabled(nexus: NexusClient, session: AsyncSession, *, dry_run: bool = False, on_progress=None) -> list[dict]:
     """Run every enabled retention policy. Returns per-policy results."""
-    from sqlalchemy import select
     rows = (await session.execute(select(RetentionPolicy).where(RetentionPolicy.enabled.is_(True)))).scalars().all()
     results = []
     for p in rows:
@@ -238,3 +238,60 @@ async def run_all_enabled(nexus: NexusClient, session: AsyncSession, *, dry_run:
             logger.exception("Retention policy %s failed", p.name)
             results.append({"repo": p.repo, "policy": p.name, "error": str(exc)})
     return results
+
+
+def compute_next_run(policy: RetentionPolicy, *, after: datetime | None = None) -> datetime:
+    """Next UTC run time for an interval-scheduled policy, strictly after ``after``.
+
+    Only meaningful when ``interval_minutes`` is set — a policy left on the
+    legacy shared schedule has no ``next_run_at`` of its own; see
+    ``app.main._retention_scheduler``.
+    """
+    if not policy.interval_minutes or policy.interval_minutes <= 0:
+        raise ValueError("interval_minutes must be a positive number of minutes")
+    after = after or datetime.now(timezone.utc)
+    if after.tzinfo is None:
+        after = after.replace(tzinfo=timezone.utc)
+    return after + timedelta(minutes=policy.interval_minutes)
+
+
+async def poll_due_policies(cache, session: AsyncSession) -> list[str]:
+    """Enqueue a ``run_retention`` job for every due, enabled, interval-scheduled policy.
+
+    Policies without ``interval_minutes`` set are untouched here — they stay on
+    the shared daily sweep. ``next_run_at`` is recomputed and persisted right
+    after enqueuing, before the job itself has run, so a slow poll tick (or a
+    job that outlives the poll interval) can't fire the same policy twice —
+    the same reasoning as ``app.services.backup_schedule.poll_due_schedules``.
+    """
+    from ..core.jobs import JobQueue
+
+    now = datetime.now(timezone.utc)
+    rows = (await session.execute(
+        select(RetentionPolicy).where(
+            RetentionPolicy.enabled.is_(True),
+            RetentionPolicy.interval_minutes.is_not(None),
+            RetentionPolicy.next_run_at.is_not(None),
+            RetentionPolicy.next_run_at <= now,
+        )
+    )).scalars().all()
+
+    enqueued: list[str] = []
+    queue = JobQueue(cache)
+    for policy in rows:
+        try:
+            job_id = await queue.enqueue("run_retention", {"policy_id": policy.id})
+        except Exception:  # noqa: BLE001 - one policy must not block the others
+            logger.exception("Failed to enqueue interval retention run for policy %s", policy.id)
+            continue
+        enqueued.append(job_id)
+        try:
+            policy.next_run_at = compute_next_run(policy, after=now)
+        except ValueError:
+            logger.exception("Could not compute next run for policy %s; disabling its interval", policy.id)
+            policy.interval_minutes = None
+            policy.next_run_at = None
+
+    if rows:
+        await session.commit()
+    return enqueued

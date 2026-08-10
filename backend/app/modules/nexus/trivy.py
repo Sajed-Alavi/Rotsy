@@ -42,10 +42,23 @@ _REPLICA_ROOT = scanner_db.TRIVY_CACHE_ROOT / "scan-replicas"
 _replica_slots: asyncio.Queue[int] | None = None
 
 
+def _prune_orphaned_replicas(n: int) -> None:
+    """Drop replica directories left over from a higher SCANNER_MAX_CONCURRENCY
+    in a previous run — this pool's own slots only ever populate 0..n-1, so
+    without this, turning the setting back down would leave the old, higher-
+    numbered replicas (each a full copy of the database) on disk forever."""
+    if not _REPLICA_ROOT.exists():
+        return
+    for entry in _REPLICA_ROOT.iterdir():
+        if entry.is_dir() and entry.name.isdigit() and int(entry.name) >= n:
+            shutil.rmtree(entry, ignore_errors=True)
+
+
 def _slots() -> asyncio.Queue[int]:
     global _replica_slots
     if _replica_slots is None:
         n = max(1, get_settings().SCANNER_MAX_CONCURRENCY)
+        _prune_orphaned_replicas(n)
         _replica_slots = asyncio.Queue()
         for i in range(n):
             _replica_slots.put_nowait(i)

@@ -254,20 +254,30 @@ async def _update_trivy(emit: ProgressCallback, env: dict[str, str]) -> dict[str
     oras = which("oras")
     if oras is not None:
         tmp = tempfile.mkdtemp(prefix="trivy-db-")
+        # Each artifact gets its own subdirectory. oras_pull wipes out_dir at
+        # the start of every attempt (it has no resume, so a retry restarts
+        # that artifact from zero regardless) — sharing one directory between
+        # the main db and the java db would mean a java-db retry wiping out
+        # an already-downloaded db.tar.gz still sitting there.
+        db_dir, java_dir = Path(tmp) / "db", Path(tmp) / "java-db"
         try:
             db_size = await _oras_manifest_size(oras, TRIVY_DB_IMAGE, env)
             if not await _oras_pull_retrying(
-                oras=oras, image=TRIVY_DB_IMAGE, out_dir=tmp, expected_mb=TRIVY_DB_MB,
+                oras=oras, image=TRIVY_DB_IMAGE, out_dir=str(db_dir), expected_mb=TRIVY_DB_MB,
                 emit=emit, env=env, progress_range=(2, 35),
                 label="trivy-db", scanner="trivy", total_bytes=db_size,
             ):
                 raise RuntimeError(f"oras pull {TRIVY_DB_IMAGE} failed")
             # The Java database is optional: without it Trivy still scans OS
-            # packages and every non-Java language ecosystem.
+            # packages and every non-Java language ecosystem. It is also close
+            # to a gigabyte, so on a slow link the default 30-minute oras_pull
+            # timeout can expire well before a real transfer completes —
+            # give it a much longer leash than the ~50 MB main db gets, since
+            # this runs in the background and nothing is blocked waiting on it.
             java_size = await _oras_manifest_size(oras, TRIVY_JAVA_DB_IMAGE, env)
             java_ok = await _oras_pull_retrying(
-                oras=oras, image=TRIVY_JAVA_DB_IMAGE, out_dir=tmp, expected_mb=TRIVY_JAVA_DB_MB,
-                emit=emit, env=env, progress_range=(35, 46),
+                oras=oras, image=TRIVY_JAVA_DB_IMAGE, out_dir=str(java_dir), expected_mb=TRIVY_JAVA_DB_MB,
+                emit=emit, env=env, progress_range=(35, 46), timeout=3600.0,
                 label="trivy-java-db", scanner="trivy", total_bytes=java_size,
             )
             if not java_ok:
@@ -278,13 +288,13 @@ async def _update_trivy(emit: ProgressCallback, env: dict[str, str]) -> dict[str
                 # path rather than another attempt at the same throttled one.
                 fallback_size = await _oras_manifest_size(oras, TRIVY_JAVA_DB_IMAGE_FALLBACK, env)
                 java_ok = await _oras_pull_retrying(
-                    oras=oras, image=TRIVY_JAVA_DB_IMAGE_FALLBACK, out_dir=tmp, expected_mb=TRIVY_JAVA_DB_MB,
-                    emit=emit, env=env, progress_range=(35, 46),
+                    oras=oras, image=TRIVY_JAVA_DB_IMAGE_FALLBACK, out_dir=str(java_dir), expected_mb=TRIVY_JAVA_DB_MB,
+                    emit=emit, env=env, progress_range=(35, 46), timeout=3600.0,
                     label="trivy-java-db (fallback mirror)", scanner="trivy", total_bytes=fallback_size,
                 )
             await emit(46, "trivy: extracting database",
                        {"scanner": "trivy", "stage": "extracting"})
-            db_tar, java_tar = Path(tmp) / "db.tar.gz", Path(tmp) / "javadb.tar.gz"
+            db_tar, java_tar = db_dir / "db.tar.gz", java_dir / "javadb.tar.gz"
             if not db_tar.exists():
                 raise RuntimeError("oras pull succeeded but db.tar.gz is missing from the artifact")
             # Held for the actual write to the canonical dir: trivy.py's scan

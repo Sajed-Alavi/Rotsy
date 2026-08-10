@@ -57,7 +57,11 @@ function buildTree(images) {
       const images = [...imagesInRepo.entries()]
         .map(([name, tags]) => ({
           name,
-          tags: [...tags].sort((a, b) => a.tag.localeCompare(b.tag)),
+          // { numeric: true } compares embedded digit runs by value, not by
+          // character, so "9" sorts before "41" instead of after it — plain
+          // localeCompare treated tags as opaque strings ("4", "40", "41",
+          // "5", ...).
+          tags: [...tags].sort((a, b) => a.tag.localeCompare(b.tag, undefined, { numeric: true })),
           counts: sumSeverity(tags),
         }))
         .sort((a, b) => a.name.localeCompare(b.name));

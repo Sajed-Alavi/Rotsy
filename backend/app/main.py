@@ -310,6 +310,37 @@ async def _retention_scheduler(settings: Settings, stop: asyncio.Event) -> None:
             logger.exception("Failed to enqueue daily retention sweep")
 
 
+async def _retention_interval_loop(settings: Settings, stop: asyncio.Event) -> None:
+    """Poll RetentionPolicy rows with their own ``interval_minutes`` set.
+
+    The original daily sweep (``_retention_scheduler`` above) is a single
+    sleep-until-one-shared-time timer, which only works because every policy
+    used to share it. A policy that opts into its own cadence instead needs
+    polling on a short fixed interval, the same shape as
+    ``_backup_schedule_loop``/``_scanner_db_loop``/``_push_watch_loop``.
+    """
+    logger = logging.getLogger("retention_interval_loop")
+    cache = _lifespan_state.get("cache")
+    if cache is None:
+        return
+    interval = settings.RETENTION_SCHEDULER_POLL_SECONDS
+    factory = get_session_factory()
+
+    while not stop.is_set():
+        try:
+            from .services import retention as retention_service
+            async with factory() as session:
+                enqueued = await retention_service.poll_due_policies(cache, session)
+            if enqueued:
+                logger.info("Enqueued %d interval-scheduled retention run(s)", len(enqueued))
+        except Exception:  # noqa: BLE001
+            logger.exception("Retention interval poll cycle failed")
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=interval)
+        except asyncio.TimeoutError:
+            pass
+
+
 async def _backup_schedule_loop(settings: Settings, stop: asyncio.Event) -> None:
     """Poll BackupSchedule rows whose next_run_at is due, every
     BACKUP_SCHEDULER_POLL_SECONDS.
@@ -477,12 +508,23 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     stop_backup_schedule = asyncio.Event()
     backup_schedule_task = asyncio.create_task(_backup_schedule_loop(settings, stop_backup_schedule))
 
+    # Start the interval-scheduled retention poll loop (policies with their
+    # own interval_minutes, separate from the daily sweep above).
+    stop_retention_interval = asyncio.Event()
+    retention_interval_task = asyncio.create_task(_retention_interval_loop(settings, stop_retention_interval))
+
     logger.info("Rotsy v%s started.", __version__)
     try:
         yield
     finally:
-        background = (metric_task, retention_task, scanner_db_task, push_watch_task, backup_schedule_task)
-        for event in (stop_metric, stop_retention, stop_scanner_db, stop_push_watch, stop_backup_schedule):
+        background = (
+            metric_task, retention_task, scanner_db_task, push_watch_task,
+            backup_schedule_task, retention_interval_task,
+        )
+        for event in (
+            stop_metric, stop_retention, stop_scanner_db, stop_push_watch,
+            stop_backup_schedule, stop_retention_interval,
+        ):
             event.set()
         for task in background:
             task.cancel()

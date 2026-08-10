@@ -20,7 +20,7 @@ from ..core.access_control import DELETE, AccessResolver
 from ..core.jobs import JobQueue
 from ..dependencies import RequirePermission, get_access, get_session
 from ..models import RetentionPolicy
-from ..services.retention import run_policy
+from ..services.retention import compute_next_run, run_policy
 from ..state import app_state, require_nexus
 
 router = APIRouter(prefix="/retention", tags=["retention"])
@@ -47,6 +47,10 @@ class PolicyCreate(BaseModel):
     repo: str = Field(..., min_length=1, max_length=255)
     keep_last_n: int | None = Field(default=None, ge=0)
     delete_older_than_days: int | None = Field(default=None, ge=1)
+    # Own cadence in minutes, overriding the shared daily sweep — e.g. 5 for
+    # "near real-time", 60 for hourly, 4320 for every 3 days. None (the
+    # default) keeps the policy on the daily RETENTION_RUN_AT schedule.
+    interval_minutes: int | None = Field(default=None, ge=1)
 
 
 class PolicyUpdate(BaseModel):
@@ -55,6 +59,7 @@ class PolicyUpdate(BaseModel):
     keep_last_n: int | None = Field(default=None, ge=0)
     delete_older_than_days: int | None = Field(default=None, ge=1)
     enabled: bool | None = None
+    interval_minutes: int | None = Field(default=None, ge=1)
 
 
 class PolicyOut(BaseModel):
@@ -68,6 +73,8 @@ class PolicyOut(BaseModel):
     enabled: bool
     created_at: datetime
     last_run_at: datetime | None
+    interval_minutes: int | None
+    next_run_at: datetime | None
 
 
 def _validate(body: PolicyCreate | PolicyUpdate) -> None:
@@ -98,6 +105,8 @@ async def create_policy(
     _require_repo_wide(access, body.repo)
     _validate(body)
     policy = RetentionPolicy(**body.model_dump())
+    if policy.interval_minutes:
+        policy.next_run_at = compute_next_run(policy)
     session.add(policy)
     await session.commit()
     await session.refresh(policy)
@@ -127,6 +136,11 @@ async def update_policy(
         _validate(merged)
     for k, v in data.items():
         setattr(policy, k, v)
+    if "interval_minutes" in data:
+        # Recompute next_run_at whenever the cadence itself changes — either
+        # a fresh due time for a new/changed interval, or cleared entirely to
+        # drop back onto the shared daily sweep.
+        policy.next_run_at = compute_next_run(policy) if policy.interval_minutes else None
     await session.commit()
     await session.refresh(policy)
     return policy

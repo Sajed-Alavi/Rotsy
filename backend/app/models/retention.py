@@ -10,6 +10,14 @@ A policy combines two optional conditions; BOTH are applied when set:
 Policies are evaluated by the daily scheduler and can be run on demand as a
 background job. Deletion goes through Nexus' component DELETE endpoint and then
 triggers the compact task so physical blobs are reclaimed too.
+
+``interval_minutes`` overrides that shared daily schedule on a **per-policy**
+basis: when set, this policy runs on its own cadence (checked by the interval
+poll loop — see ``app.main._retention_interval_loop`` — the same
+precomputed-``next_run_at`` pattern :class:`~app.models.BackupSchedule` uses)
+instead of waiting for the once-a-day sweep. ``None`` keeps the legacy
+every-policy-at-``RETENTION_RUN_AT`` behavior, so existing policies are
+unaffected until an operator opts one in.
 """
 
 from __future__ import annotations
@@ -33,3 +41,9 @@ class RetentionPolicy(Base):
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     last_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    # Per-policy cadence override. Presets the UI offers (5 min "near
+    # real-time", 60 "hourly", 1440*N "every N days", ...) are all just this
+    # one field — no separate frequency enum needed for a plain interval.
+    interval_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    next_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)

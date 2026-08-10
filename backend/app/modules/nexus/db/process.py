@@ -184,6 +184,17 @@ async def oras_pull(
     display_total, estimated = _resolve_display_total(total_bytes, expected_mb)
     display_mb = display_total / 1e6
     deadline = time.monotonic() + timeout
+    # oras has no byte-range resume, so a retried pull always restarts this
+    # artifact from zero regardless of what a previous, killed attempt left
+    # behind in out_dir. Clearing it here — safe because each artifact this is
+    # called for gets its own out_dir, never shared with another (see
+    # _update_trivy) — keeps that honest: without it, the first tick below
+    # would count the previous attempt's leftover bytes as if they downloaded
+    # in the instant since this attempt started, producing a nonsense speed
+    # (seen in practice as "559680.0 MB/s") and a progress number that jumps
+    # backward once oras actually starts overwriting the old file.
+    shutil.rmtree(out_dir, ignore_errors=True)
+    os.makedirs(out_dir, exist_ok=True)
     await emit(low, f"{label}: connecting to the registry",
                {"scanner": scanner, "stage": "connecting", "total_bytes": display_total,
                 "estimated": estimated, "artifact": label})

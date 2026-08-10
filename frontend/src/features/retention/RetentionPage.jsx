@@ -78,6 +78,12 @@ export default function RetentionPage() {
       ),
     },
     { key: 'enabled', header: 'State', render: (e) => <Badge tone={e ? 'ok' : 'neutral'}>{e ? 'on' : 'off'}</Badge> },
+    {
+      key: 'interval_minutes', header: 'Schedule',
+      render: (v) => (
+        <span className="font-mono text-xs text-slate-500 dark:text-slate-400">{scheduleLabel(v)}</span>
+      ),
+    },
     { key: 'last_run_at', header: 'Last run', mono: true, render: (v) => formatDateTime(v) },
     {
       key: 'id', header: '', render: (_, p) => (
@@ -130,14 +136,43 @@ export default function RetentionPage() {
 
 const INPUT = 'w-full border border-slate-300 bg-white px-2 py-1.5 font-mono text-sm text-slate-900 outline-none focus:border-sky-500 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100';
 
+// Presets for RetentionPolicy.interval_minutes. '' keeps the policy on the
+// shared daily sweep (RETENTION_RUN_AT); every other value gives it its own
+// cadence, polled independently — see app.main._retention_interval_loop.
+const SCHEDULE_PRESETS = [
+  { label: 'Daily (shared schedule)', value: '' },
+  { label: 'Near real-time (every 5 min)', value: '5' },
+  { label: 'Every 15 minutes', value: '15' },
+  { label: 'Every hour', value: '60' },
+  { label: 'Every 6 hours', value: '360' },
+  { label: 'Every day (own schedule)', value: '1440' },
+  { label: 'Every 3 days', value: '4320' },
+  { label: 'Every 7 days', value: '10080' },
+  { label: 'Custom…', value: 'custom' },
+];
+
+function scheduleLabel(intervalMinutes) {
+  if (!intervalMinutes) return 'daily (shared)';
+  const preset = SCHEDULE_PRESETS.find((p) => p.value === String(intervalMinutes));
+  if (preset) return preset.label.toLowerCase();
+  if (intervalMinutes % 1440 === 0) return `every ${intervalMinutes / 1440}d`;
+  if (intervalMinutes % 60 === 0) return `every ${intervalMinutes / 60}h`;
+  return `every ${intervalMinutes}min`;
+}
+
 function PolicyModal({ initial, repos, onClose, onSaved }) {
   const isEdit = !!initial;
+  const initialPreset = initial?.interval_minutes == null ? ''
+    : SCHEDULE_PRESETS.some((p) => p.value === String(initial.interval_minutes))
+      ? String(initial.interval_minutes) : 'custom';
   const [form, setForm] = useState({
     name: initial?.name ?? '',
     repo: initial?.repo ?? '',
     keep_last_n: initial?.keep_last_n ?? '',
     delete_older_than_days: initial?.delete_older_than_days ?? '',
     enabled: initial?.enabled ?? true,
+    schedulePreset: initialPreset,
+    customMinutes: initialPreset === 'custom' ? String(initial.interval_minutes) : '',
   });
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
@@ -146,12 +181,16 @@ function PolicyModal({ initial, repos, onClose, onSaved }) {
     e.preventDefault();
     setBusy(true); setError('');
     try {
+      const intervalMinutes = form.schedulePreset === '' ? null
+        : form.schedulePreset === 'custom' ? (form.customMinutes === '' ? null : Number(form.customMinutes))
+          : Number(form.schedulePreset);
       const body = {
         name: form.name,
         repo: form.repo,
         keep_last_n: form.keep_last_n === '' ? null : Number(form.keep_last_n),
         delete_older_than_days: form.delete_older_than_days === '' ? null : Number(form.delete_older_than_days),
         enabled: form.enabled,
+        interval_minutes: intervalMinutes,
       };
       if (isEdit) await api.patch(`/retention/policies/${initial.id}`, body);
       else await api.post('/retention/policies', body);
@@ -185,6 +224,25 @@ function PolicyModal({ initial, repos, onClose, onSaved }) {
         <p className="font-mono text-[10px] text-slate-400 dark:text-slate-600">
           both conditions apply when set together · “keep last N” counts tags <span className="text-slate-500">within each image</span>, not across the whole repository ·
           physical blobs are reclaimed by the Nexus “Compact blob store” task, triggered after a delete
+        </p>
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="Schedule">
+            <select value={form.schedulePreset} onChange={(e) => setForm({ ...form, schedulePreset: e.target.value })} className={INPUT}>
+              {SCHEDULE_PRESETS.map((p) => <option key={p.value} value={p.value}>{p.label}</option>)}
+            </select>
+          </Field>
+          {form.schedulePreset === 'custom' && (
+            <Field label="Every N minutes">
+              <input type="number" min="1" value={form.customMinutes}
+                onChange={(e) => setForm({ ...form, customMinutes: e.target.value })}
+                placeholder="e.g. 30" className={INPUT} />
+            </Field>
+          )}
+        </div>
+        <p className="font-mono text-[10px] text-slate-400 dark:text-slate-600">
+          “Daily” runs with every other daily policy at the server’s RETENTION_RUN_AT time · any other option gives
+          this policy its own independent cadence, checked every {' '}
+          <span className="text-slate-500">RETENTION_SCHEDULER_POLL_SECONDS</span>
         </p>
         <label className="flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300">
           <input type="checkbox" checked={form.enabled} onChange={(e) => setForm({ ...form, enabled: e.target.checked })} className="accent-sky-500" />

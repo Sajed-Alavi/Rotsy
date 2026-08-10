@@ -180,6 +180,11 @@ class Settings(BaseSettings):
     # within a minute without meaningfully increasing DB load.
     BACKUP_SCHEDULER_POLL_SECONDS: int = 60
 
+    # How often the interval-scheduled retention policies (those with their own
+    # ``interval_minutes`` set, overriding the shared RETENTION_RUN_AT sweep)
+    # are checked for being due. Same reasoning as BACKUP_SCHEDULER_POLL_SECONDS.
+    RETENTION_SCHEDULER_POLL_SECONDS: int = 60
+
     # --- Outbound request guard (SSRF) ------------------------------------
     # Hosts the backend is permitted to make user-directed outbound requests
     # to even though they resolve to a private/loopback/link-local address —

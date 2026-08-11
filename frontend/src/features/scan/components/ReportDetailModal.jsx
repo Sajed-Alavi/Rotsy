@@ -4,18 +4,22 @@ import { API_BASE } from '../../../lib/api.js';
 import { scanApi } from '../api.js';
 import VulnerabilityTable from './VulnerabilityTable.jsx';
 
-/** "myapp:27" -> "myapp-27" — a readable download name instead of the report's
- * opaque numeric id. `/`-separated image names (e.g. "team/app") flatten to
- * dashes so the result is a single safe filename component. */
+/** "myapp:27" + scanner "trivy" -> "myapp-27-trivy" — a readable download
+ * name instead of the report's opaque numeric id, with the scanner in it so
+ * the trivy and grype PDFs for the same tag don't land as indistinguishable
+ * files (both were previously just "myapp-27.pdf", "myapp-27 (1).pdf").
+ * `/`-separated image names (e.g. "team/app") flatten to dashes so the
+ * result is a single safe filename component. */
 function pdfFilename(report) {
   const image = report?.image || 'scan-report';
   const idx = image.lastIndexOf(':');
   const name = idx === -1 ? image : image.slice(0, idx);
   const tag = idx === -1 ? '' : image.slice(idx + 1);
-  // `report.image` is Nexus-sourced scan metadata, not raw user input — no
-  // adversarial input path for the flagged super-linear-backtracking concern.
+  // `report.image`/`report.scanner` are Nexus-sourced scan metadata, not raw
+  // user input — no adversarial input path for the flagged
+  // super-linear-backtracking concern.
   const safe = (s) => s.replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/^-+|-+$/g, ''); // NOSONAR
-  return [safe(name), safe(tag)].filter(Boolean).join('-') || 'scan-report';
+  return [safe(name), safe(tag), safe(report?.scanner || '')].filter(Boolean).join('-') || 'scan-report';
 }
 
 /**

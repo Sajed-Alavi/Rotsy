@@ -17,9 +17,6 @@
 # volume stops validating and every scan fails until it is re-downloaded — and
 # a floating tag means the CVE posture of the built image is not reproducible.
 #
-# `oras` previously tracked `main`, a moving development branch; it is now on a
-# tagged release like the others.
-#
 # **A pin that is too old is its own outage.** These were first set to versions
 # that were current knowledge rather than current releases, roughly eighteen
 # months behind. Grype 0.87 reads database schema v5; Anchore stopped publishing
@@ -35,7 +32,6 @@
 # To move these forward deliberately, check the current releases with:
 #   curl -s https://api.github.com/repos/anchore/grype/releases/latest | jq -r .tag_name
 #   curl -s https://api.github.com/repos/aquasecurity/trivy/releases/latest | jq -r .tag_name
-#   curl -s https://api.github.com/repos/oras-project/oras/releases/latest | jq -r .tag_name
 #
 # Then confirm the new binary still reads the database already on the volume,
 # before rebuilding — this is the check that would have caught the above:
@@ -53,12 +49,8 @@
 # against the live cache volume the way the previous pin was — do that before
 # trusting this build (see the check below), because a schema mismatch here
 # is a repeat of the exact incident this comment block already documents.
-# ORAS_VERSION unchanged: v1.3.3 was already the latest release as of this
-# pass, so its own oras-go v2.6.0 finding has no newer upstream release to
-# pick up yet.
 ARG TRIVY_VERSION=0.73.0
 ARG GRYPE_VERSION=v0.117.0
-ARG ORAS_VERSION=v1.3.3
 # sonar-scanner-cli's own image bundles a JRE (~150MB) we don't need — Alpine's
 # own openjdk17-jre-headless (installed below) covers that, so only
 # /opt/sonar-scanner itself (~10MB: the launcher script + sonar-scanner-cli
@@ -67,7 +59,7 @@ ARG ORAS_VERSION=v1.3.3
 # back to `JAVA_HOME/bin/java`, so pairing it with our own JRE instead of its
 # bundled one is the documented, supported way to run it, not a hack.
 #
-# Pinned by digest rather than a version tag: unlike Trivy/Grype/oras (each a
+# Pinned by digest rather than a version tag: unlike Trivy/Grype (each a
 # single static binary with an obvious `--version` flag), this upstream image
 # doesn't publish an easy-to-script tag list, so a digest pin is what was
 # actually verified here — resolve a new one deliberately (`docker pull
@@ -78,7 +70,6 @@ ARG SONAR_SCANNER_DIGEST=sha256:23ca0f137965d9dff2198074043fd48d386280bc5d0ccac8
 # BuildKit workaround: Define helper stages so variable expansion works
 FROM aquasec/trivy:${TRIVY_VERSION} AS trivy-source
 FROM anchore/grype:${GRYPE_VERSION} AS grype-source
-FROM ghcr.io/oras-project/oras:${ORAS_VERSION} AS oras-source
 FROM sonarsource/sonar-scanner-cli@${SONAR_SCANNER_DIGEST} AS sonar-scanner-source
 
 # Pinned to a patch release + suite so the base OS package set — and therefore
@@ -121,15 +112,13 @@ RUN apk update && apk upgrade --no-cache \
 # ---------------------------------------------------------------------------
 COPY --from=trivy-source /usr/local/bin/trivy /usr/local/bin/trivy
 COPY --from=grype-source /grype /usr/local/bin/grype
-# oras: pulls the Trivy database, which ships as a plain OCI artifact.
-COPY --from=oras-source /bin/oras /usr/local/bin/oras
 # sonar-scanner: see the ARG comment above — deliberately not its bundled JRE.
 COPY --from=sonar-scanner-source /opt/sonar-scanner /opt/sonar-scanner
 
 # JAVA_HOME so sonar-scanner's own launcher script (bin/sonar-scanner) finds
 # the JRE installed above via `apk add openjdk17-jre-headless` instead of one
 # it doesn't ship with; PATH so both binaries are runnable by name, matching
-# how trivy/grype/oras already are via /usr/local/bin.
+# how trivy/grype already are via /usr/local/bin.
 ENV JAVA_HOME=/usr/lib/jvm/java-17-openjdk
 ENV PATH="/opt/sonar-scanner/bin:${JAVA_HOME}/bin:${PATH}"
 
@@ -144,7 +133,7 @@ ENV PATH="/opt/sonar-scanner/bin:${JAVA_HOME}/bin:${PATH}"
 # first scan if a binary did not come through) — one RUN instead of two, with
 # `delgroup`'s own `|| true` parenthesized so it cannot swallow a failure from
 # the version-check chain ahead of it.
-RUN trivy --version && grype version && oras version && git --version && sonar-scanner --version \
+RUN trivy --version && grype version && git --version && sonar-scanner --version \
     && (delgroup ping 2>/dev/null || true) \
     && addgroup -g 999 -S app \
     && adduser -u 999 -S -G app -h /app app

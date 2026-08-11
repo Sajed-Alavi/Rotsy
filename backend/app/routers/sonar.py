@@ -14,6 +14,7 @@ implementation, not two.
 from __future__ import annotations
 
 import logging
+import re
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -74,6 +75,11 @@ MIN_SUPPORTED_MAJOR = 9
 
 _UNREACHABLE_MESSAGE = "Unable to connect to SonarQube. Verify the server URL, token, and network connectivity."
 _SONAR_PROJECT_NOT_FOUND = "Sonar project not found"
+
+
+def _pdf_safe(value: str) -> str:
+    """A filename-safe component for the analysis-report PDF's download name."""
+    return re.sub(r"[^a-zA-Z0-9._-]+", "-", value).strip("-") or "report"
 
 
 def _compatibility(version: str | None) -> tuple[bool, str | None]:
@@ -746,7 +752,14 @@ async def download_analysis_report(
     if conn.is_configured():
         client = SonarClient(conn.url, conn.token)
     pdf_bytes = await build_analysis_report_pdf(session, run, sonar_project, client)
-    filename = f"sonar-analysis-{run.commit_sha[:8]}.pdf"
+    # "sonar-analysis-{sha}.pdf" alone was ambiguous the same way the
+    # vulnerability-scan PDFs used to be (see ReportDetailModal.jsx's
+    # pdfFilename): a repository with several branches analyzed produces
+    # reports that are indistinguishable by filename. sonar_project_key is
+    # "rotsy-{project_id}-{repo-slug}" (see sonar_project_key_for) — the
+    # repo slug is the readable part.
+    repo_slug = sonar_project.sonar_project_key.split("-", 2)[-1]
+    filename = f"sonar-{_pdf_safe(repo_slug)}-{_pdf_safe(run.ref)}-{run.commit_sha[:8]}.pdf"
     return StreamingResponse(
         iter([pdf_bytes]),
         media_type="application/pdf",

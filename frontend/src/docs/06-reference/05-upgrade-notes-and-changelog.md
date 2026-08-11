@@ -14,6 +14,79 @@ These are pinned in `backend/Dockerfile`, `frontend/Dockerfile`, and
 `docker-compose.yml` — not floating tags, so a rebuild reproduces the same
 runtime rather than drifting.
 
+## 2026-08-12 — Resumable database downloads, scan concurrency, and selectable quality gates
+
+### Upgrade notes
+
+- **`oras` is no longer part of the backend image.** It was only ever used to
+  fetch Trivy's databases, that path now goes over plain HTTPS first (with
+  `oras` as a fallback until this release), and a vulnerability scan of the
+  image itself found CVEs in `oras`'s own bundled dependencies with no
+  upstream fix pending — so it came out entirely rather than staying as dead
+  weight with its own CVE exposure. No action needed; a fresh build simply
+  doesn't install it.
+- **New `SCANNER_MAX_CONCURRENCY` setting** (default `4`) bounds how many
+  images scan at once and sizes Trivy's per-scan cache-replica pool — see
+  [Configuration reference](/docs/configuration). Raising it trades disk
+  (replica count × the on-disk Trivy database size, ~1.2 GB each) for scan
+  throughput.
+- Existing SonarQube quality-gate assignments are untouched — "Rotsy
+  Standard" keeps its name and 60% threshold; the new presets are additional
+  named gates, not a replacement.
+
+### Added
+
+- **Resumable vulnerability-database downloads.** A dropped connection
+  (common on a slow or throttled link — Trivy's Java-support database is
+  close to a gigabyte) now resumes from the bytes already on disk instead of
+  restarting the whole transfer, for both the primary and fallback mirror.
+  See [How the databases work](/docs/how-databases-work).
+- **Bounded scan concurrency with a private cache replica per scan** — Trivy's
+  database is a single-writer file, so concurrent scans used to either
+  collide on one shared lock or fully serialize behind it; each scan now
+  gets its own replica copy, so up to `SCANNER_MAX_CONCURRENCY` run in true
+  parallel with no collision risk.
+- **Per-scanner enable/disable** (Settings → Scanning → Active scanners): a
+  disabled scanner disappears from the Database page, scan jobs, and
+  database update/import — not just skipped during scans. Takes effect
+  immediately, no restart.
+- **Selectable quality-gate presets** for Code Quality — Strict (80%
+  coverage), Standard (60%, the existing default), Relaxed (30%), and Bugs &
+  Vulnerabilities Only (no coverage requirement). A connected repository can
+  switch presets from its own settings without disconnecting; it applies to
+  the next analysis. See [Connecting SonarQube](/docs/connecting-sonarqube).
+- **Per-policy retention scheduling** — a cleanup policy can run on its own
+  interval (e.g. hourly, every few days) instead of only the shared daily
+  sweep. See [Retention policies](/docs/retention-policies).
+- Downloaded PDF filenames now include the scanner (vulnerability reports)
+  or the repository and branch (SonarQube reports), so two reports for the
+  same image tag or repository no longer land as indistinguishable files.
+
+### Fixed
+
+- Two scans (or a scan and a database update) landing at the same time could
+  make Trivy fail outright with "cache may be in use by another process" —
+  fixed by the per-scan replica pool above, not just retried around.
+- Vulnerability-scanning image tags sorted as strings ("4, 40, 41, 5, ...")
+  instead of numerically.
+- A retried database download occasionally reported an impossible transfer
+  speed ("559680.0 MB/s") — stale bytes left over from a killed attempt were
+  being counted as if they'd just arrived; the leftover file is now cleared
+  before a retry starts.
+- The per-scanner "Update"/"Force redownload" buttons on the Database page
+  refreshed both scanners regardless of which one was clicked.
+- Background Jobs' reported database size for Trivy included the scan
+  replica pool described above, inflating it well past the actual database
+  size.
+
+### Changed
+
+- The Background Jobs list shows "In Progress" instead of a percentage for
+  running jobs — most job types only ever report a handful of coarse
+  checkpoints, not real byte-level progress, and a precise-looking number
+  overstated how well that's tracked. Database downloads keep their real,
+  byte-tracked percentage on the Database page itself.
+
 ## 2026-08-08 — GitLab support, a global Code Quality section, and automatic per-branch analysis
 
 ### Upgrade notes

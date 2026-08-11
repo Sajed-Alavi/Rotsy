@@ -17,7 +17,20 @@ Each connected repository has its own auto-analyze toggle and branch list (Proje
 
 ## One Sonar project per analyzed branch (Community Edition)
 
-SonarQube Community Edition analyzes exactly one branch per Sonar project — the `sonar.branch.name` parameter is rejected outright for anything else. Rather than surface that limitation to you, Rotsy routes around it: analyzing a repository's default branch uses its normal Sonar project, and analyzing any other branch auto-provisions a **separate** Sonar project scoped to that branch (created, given the same quality gate, and reused on every subsequent analysis of that branch — all automatic). This holds regardless of how many branches or repositories you analyze; nothing about it is manual or something you configure per branch.
+SonarQube Community Edition analyzes exactly one branch per Sonar project — the `sonar.branch.name` parameter is rejected outright for anything else. Rather than surface that limitation to you, Rotsy routes around it: analyzing a repository's default branch uses its normal Sonar project, and analyzing any other branch auto-provisions a **separate** Sonar project scoped to that branch (created, given the same quality gate as the repository's default branch, and reused on every subsequent analysis of that branch — all automatic). This holds regardless of how many branches or repositories you analyze; nothing about it is manual or something you configure per branch.
+
+## Choosing a quality gate
+
+Every connected repository is assigned a quality gate — the pass/fail bar its analysis is graded against — when it's first connected. By default that's **Standard** (60% coverage on new code, no new Blocker/Critical issue, ≤10% new duplication), but a fixed 60% bar doesn't fit every repository: a project three weeks old or one still building up its test suite will fail it for reasons that have nothing to do with code quality. Four presets are available from a repository's settings (Project → **Repositories** → the row's settings, alongside auto-analyze):
+
+| Preset | Coverage requirement | Use it when |
+|---|---|---|
+| Strict | 80% | A mature, well-tested repository |
+| Standard | 60% | The default — a reasonable bar for most repositories |
+| Relaxed | 30% | Still building up a test suite |
+| Bugs & Vulnerabilities Only | none | Coverage isn't the point yet; only block on a genuinely serious issue |
+
+Switching presets takes effect on the **next** analysis — it doesn't re-grade or invalidate the one that already ran. All four are Rotsy-managed SonarQube gates (created the first time something actually selects them, not all four upfront), reconciled against drift the same way "Rotsy Standard" always has been — SonarQube quietly repopulating its own default conditions on a gate it didn't expect you to customize is a real thing it does, not a hypothetical.
 
 ## Watching it run
 

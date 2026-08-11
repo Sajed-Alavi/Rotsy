@@ -10,6 +10,7 @@ Only the vulnerability databases:
 |---|---|
 | `registry-1.docker.io` | Trivy database |
 | `ghcr.io` | Trivy Java database |
+| `public.ecr.aws` | Trivy Java database — fallback mirror, tried only if `ghcr.io` fails |
 | `grype.anchore.io` | Grype database listing and archives |
 
 Nothing else in normal operation. Scanning itself reads images from *your* Nexus, not from the internet.

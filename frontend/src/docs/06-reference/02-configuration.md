@@ -24,7 +24,8 @@ Generate secrets with `openssl rand -hex 32`.
 
 | Variable | Default | Notes |
 |---|---|---|
-| `SCANNERS_ENABLED` | `trivy,grype` | Which scanners to run |
+| `SCANNERS_ENABLED` | `trivy,grype` | Which scanners to run — startup default only; Settings → Scanning → Active scanners overrides this at runtime, no restart needed |
+| `SCANNER_MAX_CONCURRENCY` | `4` | How many images scan at once; also sizes Trivy's per-scan cache-replica pool (disk cost: this many × the on-disk Trivy database size, ~1.2 GB each) |
 | `SCAN_PUSH_POLL_SECONDS` | `60` | New-image watcher interval; `0` disables it |
 | `SCANNER_DB_UPDATE_AT` | — | Daily refresh time, `HH:MM` |
 | `SCANNER_DB_UPDATE_INTERVAL_HOURS` | `24` | Used when no time of day is set |

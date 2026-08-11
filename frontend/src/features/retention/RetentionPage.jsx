@@ -160,11 +160,23 @@ function scheduleLabel(intervalMinutes) {
   return `every ${intervalMinutes}min`;
 }
 
+/** Which preset (or "custom") an existing policy's interval matches, for the form's initial state. */
+function presetFor(intervalMinutes) {
+  if (intervalMinutes == null) return '';
+  const asString = String(intervalMinutes);
+  return SCHEDULE_PRESETS.some((p) => p.value === asString) ? asString : 'custom';
+}
+
+/** The interval (minutes), or null for "daily (shared)", the form's preset + custom-minutes fields resolve to. */
+function intervalFromSchedule(schedulePreset, customMinutes) {
+  if (schedulePreset === '') return null;
+  if (schedulePreset === 'custom') return customMinutes === '' ? null : Number(customMinutes);
+  return Number(schedulePreset);
+}
+
 function PolicyModal({ initial, repos, onClose, onSaved }) {
   const isEdit = !!initial;
-  const initialPreset = initial?.interval_minutes == null ? ''
-    : SCHEDULE_PRESETS.some((p) => p.value === String(initial.interval_minutes))
-      ? String(initial.interval_minutes) : 'custom';
+  const initialPreset = presetFor(initial?.interval_minutes);
   const [form, setForm] = useState({
     name: initial?.name ?? '',
     repo: initial?.repo ?? '',
@@ -181,9 +193,7 @@ function PolicyModal({ initial, repos, onClose, onSaved }) {
     e.preventDefault();
     setBusy(true); setError('');
     try {
-      const intervalMinutes = form.schedulePreset === '' ? null
-        : form.schedulePreset === 'custom' ? (form.customMinutes === '' ? null : Number(form.customMinutes))
-          : Number(form.schedulePreset);
+      const intervalMinutes = intervalFromSchedule(form.schedulePreset, form.customMinutes);
       const body = {
         name: form.name,
         repo: form.repo,

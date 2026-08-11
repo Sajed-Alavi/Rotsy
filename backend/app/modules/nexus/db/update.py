@@ -199,7 +199,7 @@ async def _oras_pull_retrying(*, retries: int = 2, backoff: float = 5.0, **kwarg
 async def _run_streaming_retrying(
     args: list[str],
     *,
-    timeout: float,
+    timeout: float,  # NOSONAR
     env: dict[str, str],
     emit: ProgressCallback,
     pct: int,
@@ -222,6 +222,11 @@ async def _run_streaming_retrying(
     tool's downloader can itself reuse from a previous attempt, it gets the
     chance to. A non-zero exit is retried the same as a raised exception; a
     deliberate cancellation is not retried — it propagates immediately.
+
+    ``timeout`` stays a plain parameter rather than a caller-side
+    ``asyncio.timeout()`` (a linter's generic preference) for the same reason
+    as ``run_streaming`` itself: it needs to be re-applied fresh to *each*
+    retry attempt's own call below, not once around the whole retry loop.
     """
     attempt = 0
     while True:
@@ -230,7 +235,8 @@ async def _run_streaming_retrying(
             rc, lines = await run_streaming(args, timeout=timeout, env=env, on_line=on_line)
         except asyncio.CancelledError:
             raise
-        except Exception as exc:  # noqa: BLE001 - retried below, or re-raised past the last attempt
+        except Exception as exc:  # noqa: BLE001
+            # Retried below, or re-raised once we're past the last attempt.
             if attempt > retries:
                 raise
             reason = str(exc)

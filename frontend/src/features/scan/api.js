@@ -48,7 +48,8 @@ export const scanApi = {
     if (force) params.set('force', 'true');
     if (scanner) params.set('scanner', scanner);
     const qs = params.toString();
-    return api.post(`/scan/db-update${qs ? `?${qs}` : ''}`);
+    const suffix = qs ? `?${qs}` : '';
+    return api.post(`/scan/db-update${suffix}`);
   },
   importDb: () => api.post('/scan/db-import'),
   /** The in-flight (or most recent) DB job, so the UI can reattach after a reload. */

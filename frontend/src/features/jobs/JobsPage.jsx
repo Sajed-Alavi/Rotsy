@@ -31,7 +31,15 @@ function JobRows({ loading, jobs, statusTone, cancelJob }) {
     <tr key={j.id} className="border-b border-slate-100 last:border-0 hover:bg-slate-50 dark:border-slate-800/60 dark:hover:bg-slate-800/30">
       <td className="px-3 py-2 font-mono text-slate-800 dark:text-slate-200">{j.type}</td>
       <td className="px-3 py-2"><Badge tone={statusTone(j.status)}>{j.status}</Badge></td>
-      <td className="px-3 py-2 text-right font-mono tabular-nums text-slate-500 dark:text-slate-400">{j.progress}%</td>
+      {/* Most job types only ever report coarse, often-stale progress
+          numbers (a handful of fixed checkpoints, not real work done) — a
+          precise-looking percentage overstates how well-tracked that is.
+          Database downloads are the one job type with real byte-level
+          progress; that stays visible on its own progress bar in the
+          Database page, not duplicated as a number here. */}
+      <td className="px-3 py-2 text-right font-mono text-xs text-slate-500 dark:text-slate-400">
+        {j.status === 'running' ? 'In Progress' : '—'}
+      </td>
       <td className="px-3 py-2 font-mono text-xs text-slate-500 dark:text-slate-400">{j.message}</td>
       <td className="px-3 py-2 font-mono text-xs text-slate-400 dark:text-slate-600">{formatDateTime(new Date(j.created_at * 1000).toISOString())}</td>
       <td className="px-3 py-2 text-right">

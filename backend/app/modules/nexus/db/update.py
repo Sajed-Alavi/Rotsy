@@ -247,6 +247,88 @@ async def _run_streaming_retrying(
         await asyncio.sleep(backoff)
 
 
+async def _pull_trivy_db(oras: str, tmp: str, env: dict[str, str], emit: ProgressCallback) -> tuple[Path, bool]:
+    """Main Trivy database: resumable HTTPS first, oras as a second attempt.
+
+    Resumable HTTPS survives a mid-transfer reset (seen in practice against
+    both ghcr.io and its mirrors — "stream error ... PROTOCOL_ERROR") by
+    continuing from the bytes already on disk, something oras cannot do at
+    all. oras is kept only as a second attempt — a different tool can succeed
+    where this hand-rolled client hits something it doesn't handle (an
+    unusual auth or redirect scheme, say) — not because it is expected to do
+    better. Returns ``(db_tar_path, ok)``.
+    """
+    db_tar = TRIVY_DOWNLOAD_DIR / "db.tar.gz"
+    if await resumable_oci_pull(
+        TRIVY_DB_IMAGE, db_tar, emit=emit, scanner="trivy", label="trivy-db",
+        progress_range=(2, 35), env=env, timeout=1800.0,
+    ):
+        return db_tar, True
+    db_dir = Path(tmp) / "db"
+    db_size = await _oras_manifest_size(oras, TRIVY_DB_IMAGE, env)
+    ok = await _oras_pull_retrying(
+        oras=oras, image=TRIVY_DB_IMAGE, out_dir=str(db_dir), expected_mb=TRIVY_DB_MB,
+        emit=emit, env=env, progress_range=(2, 35),
+        label="trivy-db (oras)", scanner="trivy", total_bytes=db_size,
+    )
+    return db_dir / "db.tar.gz", ok
+
+
+async def _pull_trivy_java_db(oras: str, tmp: str, env: dict[str, str], emit: ProgressCallback) -> tuple[Path, bool]:
+    """The Java DB: resumable HTTPS against the primary registry, then the
+    fallback mirror, then oras against the fallback as a last resort.
+
+    Optional — without it Trivy still scans OS packages and every non-Java
+    ecosystem — so failure here does not raise; the caller decides what to
+    do with ``ok=False``. Close to a gigabyte, so this gets a much longer
+    leash than the ~50 MB main db, since this runs in the background and
+    nothing is blocked waiting on it. Returns ``(java_tar_path, ok)``.
+    """
+    java_tar = TRIVY_DOWNLOAD_DIR / "javadb.tar.gz"
+    if await resumable_oci_pull(
+        TRIVY_JAVA_DB_IMAGE, java_tar, emit=emit, scanner="trivy", label="trivy-java-db",
+        progress_range=(35, 46), env=env, timeout=3600.0,
+    ):
+        return java_tar, True
+    # ghcr.io (and the mirror.gcr.io it falls back to) throttles anonymous
+    # pulls hard enough in practice that the primary image can still come up
+    # empty; a second, independently hosted mirror is a genuine alternate
+    # path, not just another attempt at the same throttled one.
+    if await resumable_oci_pull(
+        TRIVY_JAVA_DB_IMAGE_FALLBACK, java_tar,
+        emit=emit, scanner="trivy", label="trivy-java-db (fallback mirror)",
+        progress_range=(35, 46), env=env, timeout=3600.0,
+    ):
+        return java_tar, True
+    java_dir = Path(tmp) / "java-db"
+    fallback_size = await _oras_manifest_size(oras, TRIVY_JAVA_DB_IMAGE_FALLBACK, env)
+    ok = await _oras_pull_retrying(
+        oras=oras, image=TRIVY_JAVA_DB_IMAGE_FALLBACK, out_dir=str(java_dir), expected_mb=TRIVY_JAVA_DB_MB,
+        emit=emit, env=env, progress_range=(35, 46), timeout=3600.0,
+        label="trivy-java-db (oras fallback)", scanner="trivy", total_bytes=fallback_size,
+    )
+    return java_dir / "javadb.tar.gz", ok
+
+
+async def _install_trivy_db(db_tar: Path, java_tar: Path, java_ok: bool) -> None:
+    """Extract both archives into the canonical dirs and drop whichever
+    resumable-download copies were used — leaving them behind (unlike the
+    oras tempdir, which the caller always removes) would waste disk forever.
+
+    Runs under TRIVY_LOCK: trivy.py's scan replicas are copied from the
+    canonical dirs under the same lock, and must never see them mid-write.
+    """
+    async with TRIVY_LOCK:
+        extract(db_tar, TRIVY_DB_DIR)
+        if db_tar.parent == TRIVY_DOWNLOAD_DIR:
+            db_tar.unlink(missing_ok=True)  # extracted — nothing left to resume
+        if java_ok and java_tar.exists():
+            extract(java_tar, TRIVY_JAVA_DB_DIR)
+            if java_tar.parent == TRIVY_DOWNLOAD_DIR:
+                java_tar.unlink(missing_ok=True)
+        prune_trivy()
+
+
 async def _update_trivy(emit: ProgressCallback, env: dict[str, str]) -> dict[str, Any]:
     trivy = which("trivy")
     if trivy is None:
@@ -256,77 +338,16 @@ async def _update_trivy(emit: ProgressCallback, env: dict[str, str]) -> dict[str
     if oras is not None:
         tmp = tempfile.mkdtemp(prefix="trivy-db-")
         try:
-            # Resumable HTTPS is tried first for both artifacts: it survives
-            # a mid-transfer reset (seen in practice against both ghcr.io and
-            # its mirrors — "stream error ... PROTOCOL_ERROR") by continuing
-            # from the bytes already on disk, something oras cannot do at
-            # all. oras is kept only as a second attempt per source — a
-            # different tool can succeed where this hand-rolled client hits
-            # something it doesn't handle (an unusual auth or redirect
-            # scheme, say) — not because it is expected to do better.
-            db_tar = TRIVY_DOWNLOAD_DIR / "db.tar.gz"
-            db_ok = await resumable_oci_pull(
-                TRIVY_DB_IMAGE, db_tar, emit=emit, scanner="trivy", label="trivy-db",
-                progress_range=(2, 35), env=env, timeout=1800.0,
-            )
-            if not db_ok:
-                db_dir = Path(tmp) / "db"
-                db_size = await _oras_manifest_size(oras, TRIVY_DB_IMAGE, env)
-                db_ok = await _oras_pull_retrying(
-                    oras=oras, image=TRIVY_DB_IMAGE, out_dir=str(db_dir), expected_mb=TRIVY_DB_MB,
-                    emit=emit, env=env, progress_range=(2, 35),
-                    label="trivy-db (oras)", scanner="trivy", total_bytes=db_size,
-                )
-                db_tar = db_dir / "db.tar.gz"
+            db_tar, db_ok = await _pull_trivy_db(oras, tmp, env, emit)
             if not db_ok:
                 raise RuntimeError(f"pull {TRIVY_DB_IMAGE} failed via both resumable HTTPS and oras")
+            java_tar, java_ok = await _pull_trivy_java_db(oras, tmp, env, emit)
 
-            # The Java database is optional: without it Trivy still scans OS
-            # packages and every non-Java language ecosystem. It is also close
-            # to a gigabyte, so this gets a much longer leash than the ~50 MB
-            # main db, since this runs in the background and nothing is
-            # blocked waiting on it.
-            java_tar = TRIVY_DOWNLOAD_DIR / "javadb.tar.gz"
-            java_ok = await resumable_oci_pull(
-                TRIVY_JAVA_DB_IMAGE, java_tar, emit=emit, scanner="trivy", label="trivy-java-db",
-                progress_range=(35, 46), env=env, timeout=3600.0,
-            )
-            if not java_ok:
-                # ghcr.io (and the mirror.gcr.io it falls back to) throttles
-                # anonymous pulls hard enough in practice that the primary
-                # image can still come up empty; a second, independently
-                # hosted mirror is a genuine alternate path, not just another
-                # attempt at the same throttled one.
-                java_ok = await resumable_oci_pull(
-                    TRIVY_JAVA_DB_IMAGE_FALLBACK, java_tar,
-                    emit=emit, scanner="trivy", label="trivy-java-db (fallback mirror)",
-                    progress_range=(35, 46), env=env, timeout=3600.0,
-                )
-            if not java_ok:
-                java_dir = Path(tmp) / "java-db"
-                fallback_size = await _oras_manifest_size(oras, TRIVY_JAVA_DB_IMAGE_FALLBACK, env)
-                java_ok = await _oras_pull_retrying(
-                    oras=oras, image=TRIVY_JAVA_DB_IMAGE_FALLBACK, out_dir=str(java_dir), expected_mb=TRIVY_JAVA_DB_MB,
-                    emit=emit, env=env, progress_range=(35, 46), timeout=3600.0,
-                    label="trivy-java-db (oras fallback)", scanner="trivy", total_bytes=fallback_size,
-                )
-                java_tar = java_dir / "javadb.tar.gz"
             await emit(46, "trivy: extracting database",
                        {"scanner": "trivy", "stage": "extracting"})
             if not db_tar.exists():
                 raise RuntimeError("pull succeeded but db.tar.gz is missing from the artifact")
-            # Held for the actual write to the canonical dir: trivy.py's scan
-            # replicas are copied from here under the same lock, and must
-            # never see it mid-write.
-            async with TRIVY_LOCK:
-                extract(db_tar, TRIVY_DB_DIR)
-                if db_tar.parent == TRIVY_DOWNLOAD_DIR:
-                    db_tar.unlink(missing_ok=True)  # extracted — nothing left to resume
-                if java_ok and java_tar.exists():
-                    extract(java_tar, TRIVY_JAVA_DB_DIR)
-                    if java_tar.parent == TRIVY_DOWNLOAD_DIR:
-                        java_tar.unlink(missing_ok=True)
-                prune_trivy()
+            await _install_trivy_db(db_tar, java_tar, java_ok)
             await emit(50, "trivy: database updated", {"scanner": "trivy", "stage": "done"})
             return {"ok": True, "downloaded": True, "java_db": java_ok, "via": "oras"}
         except Exception as exc:  # noqa: BLE001 - fall through to Trivy's own downloader

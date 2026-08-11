@@ -13,6 +13,7 @@
 # sse-starlette 3) and need a dedicated migration + test pass rather than a
 # drop-in pin bump. See security/reports/2026-08-02-dependency-upgrade.md.
 
+aiofiles==25.1.0
 fastapi==0.141.1
 # Pinned directly, not left transitive: FastAPI 0.111 capped starlette <0.38,
 # which held it at 0.37.2 — CVE-2024-47874 (multipart DoS, fixed 0.40.0) and

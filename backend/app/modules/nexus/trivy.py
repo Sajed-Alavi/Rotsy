@@ -40,6 +40,7 @@ from .registry import DockerRegistry
 # dir) so a copy never reads it mid-write.
 _REPLICA_ROOT = scanner_db.TRIVY_SCAN_REPLICAS_DIR
 _replica_slots: asyncio.Queue[int] | None = None
+_METADATA_FILENAME = "metadata.json"
 
 
 def _prune_orphaned_replicas(n: int) -> None:
@@ -81,9 +82,9 @@ def _replica_stale(slot: int) -> bool:
     # it via the fallback mirror — see db/update.py) without the main db ever
     # changing, and a replica that never notices would keep forcing every scan
     # through the inline first-run fetch this pool exists to avoid.
-    canonical_java = scanner_db.TRIVY_JAVA_DB_DIR / "metadata.json"
+    canonical_java = scanner_db.TRIVY_JAVA_DB_DIR / _METADATA_FILENAME
     if canonical_java.is_file():
-        replica_java = _replica_dir(slot) / "java-db" / "metadata.json"
+        replica_java = _replica_dir(slot) / "java-db" / _METADATA_FILENAME
         if not replica_java.is_file() or canonical_java.stat().st_mtime > replica_java.stat().st_mtime:
             return True
     return False
@@ -188,7 +189,7 @@ async def run(
         # first run is a hard error ("cannot be specified on the first run"),
         # not a graceful skip. Only pass it when there is actually something
         # on disk (in this replica) to skip updating.
-        if (cache_dir / "java-db" / "metadata.json").is_file():
+        if (cache_dir / "java-db" / _METADATA_FILENAME).is_file():
             args.append("--skip-java-db-update")
         else:
             # A first run for this replica: Trivy fetches the Java DB inline

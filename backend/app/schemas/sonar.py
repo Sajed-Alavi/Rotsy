@@ -48,6 +48,10 @@ class SonarProjectUpdate(BaseModel):
     )
 
 
+class QualityGatePresetUpdate(BaseModel):
+    preset: str = Field(..., description="One of the keys from GET /modules/sonar/quality-gate-presets.")
+
+
 class AnalysisRunOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

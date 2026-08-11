@@ -149,6 +149,57 @@ function WatchedBranchesEditor({ branchesErr, branches, watched, toggleBranch, r
   );
 }
 
+/**
+ * The coverage/quality bar this repository's analysis is graded against —
+ * independent from the auto-analyze Save button below (its own endpoint,
+ * takes effect on the *next* analysis) since a gate change is a different
+ * kind of edit than the push-trigger settings, not a step in the same form.
+ */
+function QualityGateEditor({ repo, onDone }) {
+  const [presets, setPresets] = useState(null);
+  const [preset, setPreset] = useState(repo.quality_gate_preset || 'standard');
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState('');
+  const [err, setErr] = useState('');
+
+  useEffect(() => {
+    api.get('/modules/sonar/quality-gate-presets').then(setPresets).catch((e) => setErr(e.message));
+  }, []);
+
+  const apply = async () => {
+    setBusy(true); setErr(''); setMsg('');
+    try {
+      await api.put(`/modules/sonar/projects/${repo.sonar_project_id}/quality-gate`, { preset });
+      setMsg('Applied — takes effect on the next analysis.');
+      onDone();
+    } catch (e) { setErr(e.message); }
+    setBusy(false);
+  };
+
+  if (!presets) {
+    return err
+      ? <p className="font-mono text-xs text-rose-600 dark:text-rose-400">{err}</p>
+      : <p className="font-mono text-[11px] text-slate-500 dark:text-slate-500">loading quality gates…</p>;
+  }
+  const active = presets.find((p) => p.key === preset);
+  return (
+    <div>
+      <p className="mb-1 font-mono text-[10px] uppercase tracking-wider text-slate-500">Quality gate</p>
+      <div className="flex gap-2">
+        <select value={preset} onChange={(e) => setPreset(e.target.value)} className={`${INPUT} font-mono`}>
+          {presets.map((p) => <option key={p.key} value={p.key}>{p.label}</option>)}
+        </select>
+        <button onClick={apply} disabled={busy} className="shrink-0 border border-sky-300 bg-sky-50 px-3 py-1.5 font-mono text-xs uppercase tracking-wider text-sky-700 hover:bg-sky-100 disabled:opacity-50 dark:border-sky-700 dark:bg-sky-950/40 dark:text-sky-300">
+          {busy ? '···' : 'Apply'}
+        </button>
+      </div>
+      {active && <p className="mt-1 font-mono text-[11px] text-slate-500 dark:text-slate-500">{active.description}</p>}
+      {msg && <p className="mt-1 font-mono text-xs text-emerald-600 dark:text-emerald-400">{msg}</p>}
+      {err && <p className="mt-1 font-mono text-xs text-rose-600 dark:text-rose-400">{err}</p>}
+    </div>
+  );
+}
+
 function AutoAnalyzeCell({ repo, enabled, onDone }) {
   const [open, setOpen] = useState(false);
   const [branches, setBranches] = useState(null);
@@ -206,7 +257,7 @@ function AutoAnalyzeCell({ repo, enabled, onDone }) {
       </button>
       <Modal
         open={open}
-        title={`Auto-analyze · ${repo.full_name}`}
+        title={`Analysis settings · ${repo.full_name}`}
         onClose={() => setOpen(false)}
         footer={(
           <>
@@ -236,6 +287,9 @@ function AutoAnalyzeCell({ repo, enabled, onDone }) {
               />
             </div>
           )}
+
+          <hr className="border-slate-200 dark:border-slate-800" />
+          <QualityGateEditor repo={repo} onDone={onDone} />
 
           {err && <p className="font-mono text-xs text-rose-600 dark:text-rose-400">{err}</p>}
         </div>

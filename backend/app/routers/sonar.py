@@ -44,9 +44,15 @@ from ..models.sonar import SUPPORTED_LANGUAGES
 from ..modules.github.provider import GitHubProvider
 from ..modules.gitlab.provider import GitLabProvider
 from ..modules.sonar.connector import SonarClient, SonarError
-from ..modules.sonar.provisioning import create_sonar_project_row, pick_supported_language
+from ..modules.sonar.provisioning import (
+    QUALITY_GATE_PRESETS,
+    create_sonar_project_row,
+    pick_supported_language,
+    set_project_quality_gate,
+)
 from ..schemas.sonar import (
     AnalysisRunOut,
+    QualityGatePresetUpdate,
     QualityGateResultOut,
     SonarHotspotPage,
     SonarIssuePage,
@@ -331,6 +337,54 @@ async def list_quality_gates(
         return await client.list_quality_gates()
     except SonarError as exc:
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, _UNREACHABLE_MESSAGE) from exc
+
+
+@router.get("/quality-gate-presets", dependencies=[Depends(RequirePermission("projects:read"))])
+async def list_quality_gate_presets() -> list[dict]:
+    """Rotsy's own named coverage/quality bars — "Strict" through "Bugs &
+    vulnerabilities only" — for the simple picker most operators want instead
+    of ``GET /quality-gates``' full list of every gate on the Sonar instance
+    (which includes ones nothing here defined). Needs no SonarQube connection
+    to answer: these are just Rotsy's own definitions, not a Sonar API call —
+    the gate itself is only created on SonarQube the first time a project is
+    actually switched to it (see ``PUT .../quality-gate``)."""
+    return [
+        {"key": p.key, "label": p.label, "description": p.description}
+        for p in QUALITY_GATE_PRESETS.values()
+    ]
+
+
+@router.put("/projects/{sonar_project_id}/quality-gate", response_model=SonarProjectOut,
+            dependencies=[Depends(RequirePermission("projects:write"))])
+async def update_sonar_project_quality_gate(
+    sonar_project_id: int,
+    body: QualityGatePresetUpdate,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> SonarProject:
+    """Switch an already-connected repository onto a different coverage/
+    quality bar — the fix for "this project's build keeps failing the gate
+    over a coverage threshold that doesn't fit it", without having to
+    disconnect and reconnect it. Takes effect on the *next* analysis; this
+    does not re-run or invalidate the current one."""
+    sonar_project = await session.get(SonarProject, sonar_project_id)
+    if sonar_project is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, _SONAR_PROJECT_NOT_FOUND)
+    if body.preset not in QUALITY_GATE_PRESETS:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            f"Unknown quality gate preset {body.preset!r}. "
+            f"Valid presets: {', '.join(QUALITY_GATE_PRESETS)}.",
+        )
+    conn = await get_sonar_connection(session, settings)
+    if not conn.is_configured():
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "SonarQube is not configured.")
+    try:
+        client = SonarClient(conn.url, conn.token)
+        await set_project_quality_gate(client, sonar_project.sonar_project_key, body.preset)
+    except SonarError as exc:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, _UNREACHABLE_MESSAGE) from exc
+    return sonar_project
 
 
 # ---------------------------------------------------------------------------

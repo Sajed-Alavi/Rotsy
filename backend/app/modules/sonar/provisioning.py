@@ -18,6 +18,7 @@ so this file never imports ``modules.github`` or ``modules.gitlab`` either
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from sqlalchemy import select, update as sql_update
@@ -124,7 +125,8 @@ def sonar_branch_project_key(base_key: str, branch: str, default_branch: str) ->
 # Conditions, and why each one is here:
 #   new_blocker_violations  > 0   any new Blocker-severity issue (bug, vuln, or smell)
 #   new_critical_violations > 0   any new Critical-severity issue
-#   new_coverage            < 60  new code below 60% covered
+#   new_coverage            < N%  new code below N% covered — the one condition
+#                                 that varies per preset below
 #   new_duplicated_lines_density > 10   more than 10% of new code duplicated
 #
 # These are the legacy severity-based metric keys, kept for broad version
@@ -132,19 +134,74 @@ def sonar_branch_project_key(base_key: str, branch: str, default_branch: str) ->
 # routers/sonar.py) — if a future SonarQube major removes them in favor of
 # the Clean Code taxonomy's impact-based metrics exclusively, this condition
 # set needs revisiting, not just re-running.
-QUALITY_GATE_NAME = "Rotsy Standard"
-_QUALITY_GATE_CONDITIONS: list[tuple[str, str, str]] = [
-    ("new_blocker_violations", "GT", "0"),
-    ("new_critical_violations", "GT", "0"),
-    ("new_coverage", "LT", "60"),
-    ("new_duplicated_lines_density", "GT", "10"),
-]
+#
+# Presets, not one fixed gate: a coverage bar that fits a mature,
+# well-tested repo fails every run on a new or fast-moving one for reasons
+# that have nothing to do with code quality — the fix for that mismatch is
+# picking a different bar, not disabling the gate. "standard" (60%) is
+# Rotsy's long-standing default and keeps the original "Rotsy Standard" gate
+# name so existing projects/history are untouched; the others are additional
+# named gates, created lazily the first time something actually asks for
+# them (see ensure_quality_gate).
+@dataclass(frozen=True)
+class QualityGatePreset:
+    key: str
+    gate_name: str
+    label: str
+    description: str
+    conditions: tuple[tuple[str, str, str], ...]
 
 
-async def ensure_quality_gate(client: SonarClient) -> None:
-    """Create the "Rotsy Standard" gate if it isn't already there, then
-    reconcile its conditions against :data:`_QUALITY_GATE_CONDITIONS` every
-    time — not just at creation.
+QUALITY_GATE_PRESETS: dict[str, QualityGatePreset] = {
+    preset.key: preset for preset in (
+        QualityGatePreset(
+            key="strict", gate_name="Rotsy Strict", label="Strict",
+            description="80% coverage on new code. For mature, well-tested repositories.",
+            conditions=(
+                ("new_blocker_violations", "GT", "0"),
+                ("new_critical_violations", "GT", "0"),
+                ("new_coverage", "LT", "80"),
+                ("new_duplicated_lines_density", "GT", "10"),
+            ),
+        ),
+        QualityGatePreset(
+            key="standard", gate_name="Rotsy Standard", label="Standard",
+            description="60% coverage on new code. Rotsy's default.",
+            conditions=(
+                ("new_blocker_violations", "GT", "0"),
+                ("new_critical_violations", "GT", "0"),
+                ("new_coverage", "LT", "60"),
+                ("new_duplicated_lines_density", "GT", "10"),
+            ),
+        ),
+        QualityGatePreset(
+            key="relaxed", gate_name="Rotsy Relaxed", label="Relaxed",
+            description="30% coverage on new code. For a project still building up its test suite.",
+            conditions=(
+                ("new_blocker_violations", "GT", "0"),
+                ("new_critical_violations", "GT", "0"),
+                ("new_coverage", "LT", "30"),
+                ("new_duplicated_lines_density", "GT", "10"),
+            ),
+        ),
+        QualityGatePreset(
+            key="bugs_only", gate_name="Rotsy Bugs & Vulnerabilities Only", label="Bugs & vulnerabilities only",
+            description="No coverage or duplication requirement — fails only on a new Blocker/Critical issue.",
+            conditions=(
+                ("new_blocker_violations", "GT", "0"),
+                ("new_critical_violations", "GT", "0"),
+            ),
+        ),
+    )
+}
+DEFAULT_QUALITY_GATE_PRESET = "standard"
+QUALITY_GATE_NAME = QUALITY_GATE_PRESETS[DEFAULT_QUALITY_GATE_PRESET].gate_name
+
+
+async def ensure_quality_gate(client: SonarClient, preset: str = DEFAULT_QUALITY_GATE_PRESET) -> str:
+    """Create ``preset``'s gate if it isn't already there, then reconcile its
+    conditions against :data:`QUALITY_GATE_PRESETS` every time — not just at
+    creation. Returns the gate's name on SonarQube.
 
     Reconciliation is the part that matters: SonarQube auto-populates
     ``POST /api/qualitygates/create`` with its own CAYC ("Clean as You Code")
@@ -162,27 +219,43 @@ async def ensure_quality_gate(client: SonarClient) -> None:
     the entire point of having a custom gate. Idempotent: only touches a
     condition that's actually missing or actually has the wrong threshold.
     """
-    existing = await client.get_quality_gate_by_name(QUALITY_GATE_NAME)
+    spec = QUALITY_GATE_PRESETS.get(preset)
+    if spec is None:
+        raise SonarError(f"Unknown quality gate preset {preset!r}")
+
+    existing = await client.get_quality_gate_by_name(spec.gate_name)
     if existing is None:
-        await client.create_quality_gate(QUALITY_GATE_NAME)
-        logger.info("Created SonarQube quality gate %r.", QUALITY_GATE_NAME)
+        await client.create_quality_gate(spec.gate_name)
+        logger.info("Created SonarQube quality gate %r.", spec.gate_name)
 
-    current_by_metric = {c["metric"]: c for c in await client.get_quality_gate_conditions(QUALITY_GATE_NAME)}
-    intended_metrics = {metric for metric, _, _ in _QUALITY_GATE_CONDITIONS}
+    current_by_metric = {c["metric"]: c for c in await client.get_quality_gate_conditions(spec.gate_name)}
+    intended_metrics = {metric for metric, _, _ in spec.conditions}
 
-    for metric, op, threshold in _QUALITY_GATE_CONDITIONS:
+    for metric, op, threshold in spec.conditions:
         current = current_by_metric.get(metric)
         if current is None:
-            await client.add_quality_gate_condition(QUALITY_GATE_NAME, metric, op, threshold)
+            await client.add_quality_gate_condition(spec.gate_name, metric, op, threshold)
         elif current.get("op") != op or current.get("error") != threshold:
             await client.update_quality_gate_condition(current["id"], metric, op, threshold)
 
-    # Conditions Sonar added on its own that aren't part of Rotsy's intended
-    # set — left in place they'd gate-block on things Rotsy Standard is
+    # Conditions Sonar added on its own that aren't part of this preset's
+    # intended set — left in place they'd gate-block on things this preset is
     # explicitly designed not to (see docstring above).
     for metric, condition in current_by_metric.items():
         if metric not in intended_metrics:
             await client.delete_quality_gate_condition(condition["id"])
+    return spec.gate_name
+
+
+async def set_project_quality_gate(client: SonarClient, sonar_project_key: str, preset: str) -> str:
+    """Switch an *already-provisioned* project onto ``preset``'s gate,
+    creating/reconciling that gate first. Unlike :func:`ensure_quality_gate`
+    alone, this also assigns it — the actual "change this project's gate"
+    operation the Code Quality settings UI calls.
+    """
+    gate_name = await ensure_quality_gate(client, preset)
+    await client.assign_quality_gate(gate_name, sonar_project_key)
+    return gate_name
 
 
 async def ensure_branch_project(client: SonarClient, project_key: str, name: str) -> None:

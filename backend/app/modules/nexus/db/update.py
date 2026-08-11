@@ -106,8 +106,9 @@ async def update(
     both projects publish at most one build per day, so re-downloading hundreds
     of megabytes for the same content is pure waste.
 
-    Trivy is fetched with ``oras`` (its databases are plain OCI artifacts) and
-    falls back to Trivy's own downloader; Grype uses ``grype db update``.
+    Trivy's databases are plain OCI artifacts, fetched with a resumable HTTPS
+    pull, then ``oras`` (when installed) as a second attempt, then falling
+    back to Trivy's own downloader; Grype uses ``grype db update``.
     """
     emit = make_detail_emitter(on_progress)
 
@@ -253,8 +254,12 @@ async def _run_streaming_retrying(
         await asyncio.sleep(backoff)
 
 
-async def _pull_trivy_db(oras: str, tmp: str, env: dict[str, str], emit: ProgressCallback) -> tuple[Path, bool]:
-    """Main Trivy database: resumable HTTPS first, oras as a second attempt.
+async def _pull_trivy_db(
+    oras: str | None, tmp: str, env: dict[str, str], emit: ProgressCallback,
+) -> tuple[Path, bool]:
+    """Main Trivy database: resumable HTTPS first, oras as a second attempt
+    when the binary is actually installed — ``oras`` is optional (see the
+    Dockerfile), and resumable HTTPS has no dependency on it at all.
 
     Resumable HTTPS survives a mid-transfer reset (seen in practice against
     both ghcr.io and its mirrors — "stream error ... PROTOCOL_ERROR") by
@@ -270,6 +275,8 @@ async def _pull_trivy_db(oras: str, tmp: str, env: dict[str, str], emit: Progres
         progress_range=(2, 35), env=env, timeout=1800.0,
     ):
         return db_tar, True
+    if oras is None:
+        return db_tar, False
     db_dir = Path(tmp) / "db"
     db_size = await _oras_manifest_size(oras, TRIVY_DB_IMAGE, env)
     ok = await _oras_pull_retrying(
@@ -280,9 +287,12 @@ async def _pull_trivy_db(oras: str, tmp: str, env: dict[str, str], emit: Progres
     return db_dir / "db.tar.gz", ok
 
 
-async def _pull_trivy_java_db(oras: str, tmp: str, env: dict[str, str], emit: ProgressCallback) -> tuple[Path, bool]:
+async def _pull_trivy_java_db(
+    oras: str | None, tmp: str, env: dict[str, str], emit: ProgressCallback,
+) -> tuple[Path, bool]:
     """The Java DB: resumable HTTPS against the primary registry, then the
-    fallback mirror, then oras against the fallback as a last resort.
+    fallback mirror, then — only if oras is actually installed — oras against
+    the fallback as a last resort.
 
     Optional — without it Trivy still scans OS packages and every non-Java
     ecosystem — so failure here does not raise; the caller decides what to
@@ -306,6 +316,8 @@ async def _pull_trivy_java_db(oras: str, tmp: str, env: dict[str, str], emit: Pr
         progress_range=(35, 46), env=env, timeout=3600.0,
     ):
         return java_tar, True
+    if oras is None:
+        return java_tar, False
     java_dir = Path(tmp) / "java-db"
     fallback_size = await _oras_manifest_size(oras, TRIVY_JAVA_DB_IMAGE_FALLBACK, env)
     ok = await _oras_pull_retrying(
@@ -340,28 +352,35 @@ async def _update_trivy(emit: ProgressCallback, env: dict[str, str]) -> dict[str
     if trivy is None:
         return {"ok": False, "error": "trivy binary not installed"}
 
+    # oras is optional here — resumable_oci_pull (inside _pull_trivy_db/
+    # _pull_trivy_java_db) has no dependency on it and is tried first either
+    # way; oras, when actually installed, only ever gets a chance as a second
+    # attempt after that. Gating this whole block on `oras is not None` was a
+    # past bug: it silently skipped resumable HTTPS too whenever oras was
+    # missing, straight to trivy's own slow non-resumable downloader below —
+    # exactly the case (oras absent) this is meant to still handle well.
     oras = which("oras")
-    if oras is not None:
-        tmp = tempfile.mkdtemp(prefix="trivy-db-")
-        try:
-            db_tar, db_ok = await _pull_trivy_db(oras, tmp, env, emit)
-            if not db_ok:
-                raise RuntimeError(f"pull {TRIVY_DB_IMAGE} failed via both resumable HTTPS and oras")
-            java_tar, java_ok = await _pull_trivy_java_db(oras, tmp, env, emit)
+    tmp = tempfile.mkdtemp(prefix="trivy-db-")
+    try:
+        db_tar, db_ok = await _pull_trivy_db(oras, tmp, env, emit)
+        if not db_ok:
+            via = "resumable HTTPS and oras" if oras else "resumable HTTPS (oras not installed)"
+            raise RuntimeError(f"pull {TRIVY_DB_IMAGE} failed via {via}")
+        java_tar, java_ok = await _pull_trivy_java_db(oras, tmp, env, emit)
 
-            await emit(46, "trivy: extracting database",
-                       {"scanner": "trivy", "stage": "extracting"})
-            if not db_tar.exists():
-                raise RuntimeError("pull succeeded but db.tar.gz is missing from the artifact")
-            await _install_trivy_db(db_tar, java_tar, java_ok)
-            await emit(50, "trivy: database updated", {"scanner": "trivy", "stage": "done"})
-            return {"ok": True, "downloaded": True, "java_db": java_ok, "via": "oras"}
-        except Exception as exc:  # noqa: BLE001 - fall through to Trivy's own downloader
-            logger.warning("Trivy database update via oras failed: %s", exc)
-            await emit(20, f"trivy: oras path failed ({exc}); trying trivy's own downloader",
-                       {"scanner": "trivy", "stage": "connecting", "note": str(exc)})
-        finally:
-            shutil.rmtree(tmp, ignore_errors=True)
+        await emit(46, "trivy: extracting database",
+                   {"scanner": "trivy", "stage": "extracting"})
+        if not db_tar.exists():
+            raise RuntimeError("pull succeeded but db.tar.gz is missing from the artifact")
+        await _install_trivy_db(db_tar, java_tar, java_ok)
+        await emit(50, "trivy: database updated", {"scanner": "trivy", "stage": "done"})
+        return {"ok": True, "downloaded": True, "java_db": java_ok, "via": "oras" if oras else "resumable"}
+    except Exception as exc:  # noqa: BLE001 - fall through to Trivy's own downloader
+        logger.warning("Trivy database update failed: %s", exc)
+        await emit(20, f"trivy: primary download path failed ({exc}); trying trivy's own downloader",
+                   {"scanner": "trivy", "stage": "connecting", "note": str(exc)})
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
 
     # Fallback: let Trivy fetch its own database. Trivy's downloader reports no
     # machine-readable progress at all, so this path can only report the stage —

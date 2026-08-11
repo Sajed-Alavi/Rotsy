@@ -123,16 +123,19 @@ COPY --from=sonar-scanner-source /opt/sonar-scanner /opt/sonar-scanner
 ENV JAVA_HOME=/usr/lib/jvm/java-17-openjdk
 ENV PATH="/opt/sonar-scanner/bin:${JAVA_HOME}/bin:${PATH}"
 
-# Fail the build now rather than at first scan if a binary did not come through.
-RUN trivy --version && grype version && oras version && git --version && sonar-scanner --version
-
 # ---------------------------------------------------------------------------
 # Application user (non-root) + working directory
 # ---------------------------------------------------------------------------
 # Explicitly set UID/GID to 999 so it matches Debian's default system user ID
 # and retains read/write access to existing persisted Docker volumes.
 # In Alpine, GID 999 is used by 'ping' by default, so we remove it first.
-RUN delgroup ping 2>/dev/null || true \
+#
+# Merged with the version check above (fail the build now rather than at
+# first scan if a binary did not come through) — one RUN instead of two, with
+# `delgroup`'s own `|| true` parenthesized so it cannot swallow a failure from
+# the version-check chain ahead of it.
+RUN trivy --version && grype version && oras version && git --version && sonar-scanner --version \
+    && (delgroup ping 2>/dev/null || true) \
     && addgroup -g 999 -S app \
     && adduser -u 999 -S -G app -h /app app
 WORKDIR /app
@@ -152,7 +155,6 @@ COPY app/ ./app/
 COPY alembic.ini ./
 COPY alembic/ ./alembic/
 COPY entrypoint.sh ./entrypoint.sh
-RUN chmod +x ./entrypoint.sh
 
 # Create the scanner cache dir and the backup output dir under /app so the
 # non-root user can write to them (Trivy downloads its DB here at runtime;
@@ -160,7 +162,9 @@ RUN chmod +x ./entrypoint.sh
 # volume — creating and chowning the mountpoint here means Docker seeds a
 # freshly-created named volume with the right ownership on first mount,
 # instead of leaving it root-owned and un-writable by the `app` user).
-RUN mkdir -p /app/.cache/trivy /app/.cache/grype /app/backups \
+# Merged with the entrypoint chmod above — one RUN instead of two.
+RUN chmod +x ./entrypoint.sh \
+    && mkdir -p /app/.cache/trivy /app/.cache/grype /app/backups \
     && chown -R app:app /app \
     && chmod -R 777 /app/.cache /app/backups
 

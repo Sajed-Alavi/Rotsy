@@ -69,3 +69,9 @@ psutil==7.2.2
 pytest==9.1.1
 pytest-asyncio==1.4.0
 pytest-cov==7.0.0
+
+# Not an app dependency — nothing here imports it. Pinned explicitly anyway
+# so pip's resolver can't quietly settle on the vulnerable 1.1.2 some other
+# package pulls in transitively (GHSA-6v7p-g79w-8964, fixed 1.2.1): an
+# explicit pin always wins over a transitive one in a flat `pip install`.
+msgpack==1.2.1

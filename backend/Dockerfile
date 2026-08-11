@@ -42,12 +42,22 @@
 #   docker run --rm -v nexus-project_scanner-cache:/app/.cache \
 #     -e GRYPE_DB_CACHE_DIR=/app/.cache/grype/db anchore/grype:<tag> db status
 #
-# Override at build time to test one: docker compose build --build-arg GRYPE_VERSION=v0.116.1 backend
+# Override at build time to test one: docker compose build --build-arg GRYPE_VERSION=v0.117.0 backend
 #
-# Verified against the live cache volume on 2026-08-01: grype v0.116.1 reports
-# schema v6.1.9 "valid"; trivy 0.72.0 reports DB schema v2, unchanged from 0.58.1.
-ARG TRIVY_VERSION=0.72.0
-ARG GRYPE_VERSION=v0.116.1
+# Bumped 2026-08-11 in response to a vulnerability scan of this image's own
+# backend build (github.com/docker/docker, oras.land/oras-go/v2,
+# golang.org/x/text, github.com/go-git/go-git/v5, google.golang.org/grpc,
+# sigstore/cosign family — all Go deps embedded in these binaries at compile
+# time, so a scanner-side pin bump is the only lever available; there is no
+# separate "upgrade this one transitive dependency" step). NOT verified
+# against the live cache volume the way the previous pin was — do that before
+# trusting this build (see the check below), because a schema mismatch here
+# is a repeat of the exact incident this comment block already documents.
+# ORAS_VERSION unchanged: v1.3.3 was already the latest release as of this
+# pass, so its own oras-go v2.6.0 finding has no newer upstream release to
+# pick up yet.
+ARG TRIVY_VERSION=0.73.0
+ARG GRYPE_VERSION=v0.117.0
 ARG ORAS_VERSION=v1.3.3
 # sonar-scanner-cli's own image bundles a JRE (~150MB) we don't need — Alpine's
 # own openjdk17-jre-headless (installed below) covers that, so only

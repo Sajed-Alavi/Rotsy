@@ -1,6 +1,6 @@
 # Building Rotsy: a DevSecOps console for Nexus, GitHub/GitLab, and SonarQube
 
-**Version:** v1.3.0 · **Date:** 2026-08-13
+**Version:** v1.01 · **Date:** 2026-08-13
 
 ---
 

@@ -328,32 +328,16 @@ function GitHubCard() {
  */
 function GitLabCard() {
   const [data, setData] = useState(null);
-  const [repos, setRepos] = useState([]);
   const [accountForm, setAccountForm] = useState({ gitlab_url: 'https://gitlab.com', token: '' });
   const [syncing, setSyncing] = useState(null);
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState('');
   const [err, setErr] = useState('');
-  const [reconnectTokens, setReconnectTokens] = useState({});
-  const [reconnecting, setReconnecting] = useState(null);
 
   const load = async () => {
     try { setData(await api.get('/modules/gitlab/status')); } catch (e) { setErr(e.message); }
-    try { setRepos(await api.get('/modules/gitlab/repositories')); } catch (_) { console.debug('GitLab repositories fetch failed', _); }
   };
   useEffect(() => { load(); }, []);
-
-  const reconnect = async (repoId) => {
-    const token = reconnectTokens[repoId];
-    if (!token) return;
-    setReconnecting(repoId); setErr(''); setMsg('');
-    try {
-      await api.post(`/modules/gitlab/repositories/${repoId}/reconnect`, { token });
-      setMsg('Repository reconnected.');
-      setReconnectTokens((f) => ({ ...f, [repoId]: '' }));
-    } catch (e) { setErr(e.message); }
-    setReconnecting(null);
-  };
 
   const connectAccount = async (e) => {
     e.preventDefault();
@@ -426,30 +410,6 @@ function GitLabCard() {
           </div>
         )}
 
-        {repos.length > 0 && (
-          <div className="border-t border-slate-100 pt-3 dark:border-slate-800/60">
-            <div className="mb-1 font-mono text-[10px] uppercase tracking-wider text-slate-500">Connected repositories</div>
-            {repos.map((r) => (
-              <div key={r.id} className="flex items-center gap-2 py-1">
-                <span className="flex-1 font-mono text-xs text-slate-700 dark:text-slate-300">{r.full_path}</span>
-                <input
-                  type="text"
-                  placeholder="paste token to reconnect"
-                  value={reconnectTokens[r.id] || ''}
-                  onChange={(e) => setReconnectTokens((f) => ({ ...f, [r.id]: e.target.value }))}
-                  className={`${INPUT} w-56`}
-                />
-                <button
-                  onClick={() => reconnect(r.id)}
-                  disabled={reconnecting === r.id || !reconnectTokens[r.id]}
-                  className="border border-slate-300 px-2 py-1 font-mono text-[10px] uppercase tracking-wider text-slate-600 hover:bg-slate-100 disabled:opacity-50 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
-                >
-                  {reconnecting === r.id ? '···' : 'Reconnect'}
-                </button>
-              </div>
-            ))}
-          </div>
-        )}
       </div>
       {msg && <div className="mt-3 border border-emerald-200 bg-emerald-50 px-3 py-2 font-mono text-xs text-emerald-700 dark:border-emerald-800 dark:bg-emerald-950/30 dark:text-emerald-400">{msg}</div>}
       {err && <div className="mt-3 font-mono text-xs text-rose-600 dark:text-rose-400">{err}</div>}

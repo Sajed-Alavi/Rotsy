@@ -14,9 +14,10 @@ const INPUT = 'w-full border border-slate-300 bg-white px-2 py-1.5 font-mono tex
  * Deliberately read-only about analysis: connecting Sonar and running
  * analysis both happen from the global Code Quality section now (pick any
  * synced repo + branch from there), not per-Project — this page only shows
- * what's synced and lets you add more, matching Settings -> Integrations
- * (which manages the GitHub App / GitLab tokens themselves, not what's
- * attached to which Project).
+ * what's synced and lets you add more. Every per-repository GitLab action
+ * (connect, reconnect a stale token, retry a failed webhook) lives here too
+ * now, not split off into Settings -> Integrations, which only manages the
+ * account-level connection (the credential, not what it's attached to).
  */
 export default function RepositoriesPage() {
   const { projectId } = useOutletContext();
@@ -44,6 +45,10 @@ export default function RepositoriesPage() {
     {
       key: 'branches', header: 'Branches', className: 'text-right',
       render: (_v, row) => <BranchesButton repo={row} />,
+    },
+    {
+      key: 'connection', header: 'Connection', className: 'text-right',
+      render: (_v, row) => row.source_module === 'gitlab' ? <ReconnectButton repo={row} onDone={load} /> : null,
     },
     {
       key: 'language', header: 'Sonar language',
@@ -115,6 +120,65 @@ function BranchesButton({ repo }) {
       </button>
       <Modal open={open} title={`Branches · ${repo.full_name}`} onClose={() => setOpen(false)}>
         <BranchesModalBody err={err} branches={branches} repo={repo} />
+      </Modal>
+    </>
+  );
+}
+
+/**
+ * Refreshes a GitLab repository's own credential — needed whenever it drifts
+ * from a valid one (the token was rotated GitLab-side, or the repo has no
+ * account-level connection to inherit a refresh from at all — see
+ * GitLabRepository's docstring on why each repo keeps an independent copy
+ * rather than a live reference). Independent of the auto-analyze modal:
+ * a repo can need reconnecting before it has ever been analyzed once.
+ */
+function ReconnectButton({ repo, onDone }) {
+  const [open, setOpen] = useState(false);
+  const [token, setToken] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState('');
+  const [err, setErr] = useState('');
+
+  const reconnect = async () => {
+    if (!token.trim()) return;
+    setBusy(true); setErr(''); setMsg('');
+    try {
+      await api.post(`/modules/gitlab/repositories/${repo.repository_id}/reconnect`, { token: token.trim() });
+      setMsg('Reconnected.');
+      setToken('');
+      onDone();
+    } catch (e) { setErr(e.message); }
+    setBusy(false);
+  };
+
+  return (
+    <>
+      <button
+        onClick={() => setOpen(true)}
+        className="border border-slate-300 px-2 py-1 font-mono text-[10px] uppercase tracking-wider text-slate-600 hover:bg-slate-100 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
+      >
+        Reconnect
+      </button>
+      <Modal open={open} title={`Reconnect · ${repo.full_name}`} onClose={() => setOpen(false)}>
+        <div className="space-y-2">
+          <p className="font-mono text-[11px] text-slate-500 dark:text-slate-500">
+            Paste a fresh personal access token for this exact repository — for when the one on file
+            was rotated or revoked on GitLab's side and calls for it started failing.
+          </p>
+          <input
+            type="password" value={token} onChange={(e) => setToken(e.target.value)}
+            placeholder="Personal access token (api scope)" className={INPUT}
+          />
+          <button
+            onClick={reconnect} disabled={busy || !token.trim()}
+            className="border border-sky-300 bg-sky-50 px-3 py-1.5 font-mono text-xs uppercase tracking-wider text-sky-700 hover:bg-sky-100 disabled:opacity-50 dark:border-sky-700 dark:bg-sky-950/40 dark:text-sky-300"
+          >
+            {busy ? '···' : 'Reconnect'}
+          </button>
+          {msg && <p className="font-mono text-xs text-emerald-600 dark:text-emerald-400">{msg}</p>}
+          {err && <p className="font-mono text-xs text-rose-600 dark:text-rose-400">{err}</p>}
+        </div>
       </Modal>
     </>
   );

@@ -136,6 +136,8 @@ async def list_repository_branches(
                         default_branch=repo.default_branch, private=installation is not None)
     try:
         branches = await provider.list_branches(credential_ref, repo_ref)
+    except GitHubAuthError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
     except GitHubProviderError as exc:
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(exc)) from exc
     return {"branches": branches, "default_branch": repo.default_branch}
@@ -377,7 +379,12 @@ async def sync_repositories(
 
     cfg = await get_github_app_config(session, settings)
     provider = GitHubProvider(cfg, state.cache)
-    repos = await provider.list_repositories(str(installation_id))
+    try:
+        repos = await provider.list_repositories(str(installation_id))
+    except GitHubAuthError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    except GitHubProviderError as exc:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(exc)) from exc
 
     existing = {
         row.full_name: row

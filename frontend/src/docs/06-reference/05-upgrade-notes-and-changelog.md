@@ -64,6 +64,20 @@ runtime rather than drifting.
 
 ### Fixed
 
+- **The daily retention sweep has not been running since 2026-08-04.** A
+  refactor left its "time until next run" calculation referencing an import
+  that was never actually in scope, raising an uncaught error roughly 60
+  seconds after every backend start — silently: nothing was logged, because
+  the error was only ever retrieved (and discarded) at shutdown. If a
+  cleanup policy relied solely on the shared daily time rather than its own
+  `interval_minutes`, it has not been enforced automatically since that
+  date; a policy with `interval_minutes` set runs through a separate,
+  unaffected scheduling loop. Nothing is permanently lost — a policy
+  re-evaluates its rule against current state every time it runs, so the
+  next run (automatic, once this fix is deployed, or a manual "Run now"
+  right away if you don't want to wait for it) will still catch and delete
+  everything that has since become eligible. Both scheduling loops now log
+  and retry instead of dying silently if this class of bug recurs.
 - Two scans (or a scan and a database update) landing at the same time could
   make Trivy fail outright with "cache may be in use by another process" —
   fixed by the per-scan replica pool above, not just retried around.

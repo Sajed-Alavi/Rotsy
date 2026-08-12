@@ -183,7 +183,19 @@ async def sync_repositories(
     for repo in repos:
         gitlab_project_id = int(repo.external_id)
         if gitlab_project_id in existing:
+            # Each GitLabRepository carries its own encrypted *copy* of the
+            # connection's token (see the model docstring), written once at
+            # discovery. Refreshing only default_branch here left that copy
+            # to silently rot the moment the connection's token was rotated —
+            # every later clone/webhook/status-update call for the repo kept
+            # authenticating with the dead copy and failing, with nothing to
+            # tell the operator why or to fix it short of the per-repository
+            # "reconnect" endpoint. Re-sync is exactly the moment we already
+            # have a known-good, freshly re-verified token in hand (the
+            # list_repositories_for_connection call above would have raised
+            # if it weren't) — there's no reason not to propagate it.
             existing[gitlab_project_id].default_branch = repo.default_branch
+            existing[gitlab_project_id].encrypted_token = encrypt_password(token, settings)
             continue
         # full_path isn't in the /projects list response's RepoRef mapping
         # (external_id there is the numeric id) — resolve it once per new repo.

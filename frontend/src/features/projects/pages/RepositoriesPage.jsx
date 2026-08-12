@@ -375,6 +375,17 @@ function AutoAnalyzeCell({ repo, enabled, onDone }) {
               {webhookMsg && <p className="mt-1 font-mono text-[11px] text-emerald-600 dark:text-emerald-400">{webhookMsg}</p>}
             </div>
           )}
+          {webhookMissing && repo.source_module === 'github' && (
+            <div className="border border-rose-200 bg-rose-50 px-2 py-1.5 dark:border-rose-800 dark:bg-rose-950/30">
+              <p className="font-mono text-[11px] text-rose-700 dark:text-rose-400">
+                Enabled, but the GitHub App has no webhook configured — this isn't per-repository, so
+                there's nothing to retry here. The App was likely created while{' '}
+                <code>WEBHOOK_BASE_URL</code> pointed somewhere GitHub couldn't reach. Fix it in{' '}
+                <code>.env</code>, then Settings → Integrations → GitHub → Connect to GitHub again to
+                recreate the App with a webhook this time.
+              </p>
+            </div>
+          )}
 
           {autoEnabled && (
             <div>

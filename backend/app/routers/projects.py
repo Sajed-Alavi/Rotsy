@@ -14,10 +14,12 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..config import Settings
 from ..core import projects as projects_core
+from ..core.config_store import get_github_app_config
 from ..core.health import compute_health_score
 from ..core.integrations import get_module
-from ..dependencies import RequirePermission, get_session
+from ..dependencies import RequirePermission, get_session, get_settings
 from ..models import GitHubRepository, GitLabRepository, Insight, SonarProject
 from ..schemas.project import (
     HealthScoreOut,
@@ -139,6 +141,7 @@ def _connected_repo_row(
 async def list_project_repositories(
     project_id: int,
     session: Annotated[AsyncSession, Depends(get_session)],
+    settings: Annotated[Settings, Depends(get_settings)],
 ) -> list[dict]:
     """Every repository connected to this Project — a Project is a grouping,
     so this can be one repo or a thousand, each independently analyzed and
@@ -155,6 +158,13 @@ async def list_project_repositories(
         if sp.gitlab_repository_id:
             sonar_by_gitlab[sp.gitlab_repository_id] = sp
 
+    # App-wide, not per-repository: an installed repo with no App-level
+    # webhook (the App Manifest flow was completed without one — an
+    # unreachable-from-GitHub WEBHOOK_BASE_URL at the time makes this the
+    # default, silently) will never actually receive a push event, no
+    # matter how "installed" it looks. Checked once, not per row.
+    github_has_webhook = (await get_github_app_config(session, settings)).has_webhook()
+
     out: list[dict] = []
     github_repos = (
         await session.execute(select(GitHubRepository).where(GitHubRepository.project_id == project_id))
@@ -162,7 +172,8 @@ async def list_project_repositories(
     for r in github_repos:
         sp = sonar_by_github.get(r.id)
         out.append(_connected_repo_row(
-            "github", r.id, r.full_name, r.default_branch, r.installation_id is not None, sp, r.created_at,
+            "github", r.id, r.full_name, r.default_branch,
+            r.installation_id is not None and github_has_webhook, sp, r.created_at,
         ))
 
     gitlab_repos = (

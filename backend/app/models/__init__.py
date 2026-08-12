@@ -11,6 +11,7 @@ from .insight import Insight
 from .integration import Integration
 from .metrics import AlertRule, Metric
 from .project import Project
+from .project_member import ProjectMember
 from .retention import RetentionPolicy
 from .scans import ScannedImage, ScanReport, ScanTarget, Vulnerability
 from .sonar import AnalysisRun, QualityGateResult, SonarHotspot, SonarIssue, SonarProject
@@ -28,6 +29,7 @@ __all__ = [
     "RoleAccessRule",
     "AccessToken",
     "Project",
+    "ProjectMember",
     "Integration",
     "Insight",
     "GitHubInstallation",

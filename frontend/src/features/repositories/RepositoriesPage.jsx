@@ -64,7 +64,7 @@ export default function RepositoriesPage() {
   };
 
   return (
-    <div className="p-6">
+    <div>
       <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
         <div>
           <h1 className="text-base font-medium text-slate-900 dark:text-slate-100">Repositories</h1>

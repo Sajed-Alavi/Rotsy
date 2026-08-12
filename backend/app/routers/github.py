@@ -37,9 +37,10 @@ from ..core.cache import Cache
 from ..core.config_store import GitHubAppConfig, get_github_app_config, save_github_app_config
 from ..core.jobs import JobQueue
 from ..core.outbound import OutboundURLError, validate_outbound_url
+from ..core.project_access import assert_project_access
 from ..core.source_provider import RepoRef
-from ..dependencies import RequirePermission, get_session, get_settings
-from ..models import GitHubInstallation, GitHubRepository, Integration, SonarProject
+from ..dependencies import RequirePermission, get_current_user, get_session, get_settings
+from ..models import GitHubInstallation, GitHubRepository, Integration, SonarProject, User
 from ..modules.github.auth import GitHubAuthError, get_installation_token, install_url
 from ..modules.github.provider import GitHubProvider, GitHubProviderError
 from ..modules.github.webhooks import normalize_event, verify_signature
@@ -414,11 +415,13 @@ async def map_repository(
     session: Annotated[AsyncSession, Depends(get_session)],
     settings: Annotated[Settings, Depends(get_settings)],
     state: Annotated[AppState, Depends(app_state)],
+    user: Annotated[User, Depends(get_current_user)],
 ) -> RepoOut:
     repo = await session.get(GitHubRepository, repo_id)
     if repo is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Repository not found")
     await projects_core.get_project(session, body.project_id)  # 404s if missing
+    await assert_project_access(session, user, body.project_id, "member")
 
     installation = await session.get(GitHubInstallation, repo.installation_id) if repo.installation_id else None
     credential_ref = str(installation.installation_id) if installation else ""
@@ -459,6 +462,7 @@ async def bulk_map_repositories(
     body: BulkMapBody,
     session: Annotated[AsyncSession, Depends(get_session)],
     state: Annotated[AppState, Depends(app_state)],
+    user: Annotated[User, Depends(get_current_user)],
 ) -> dict:
     """Attach many already-discovered repositories (from
     ``installations/{id}/sync``) to a Project in one call — the "17, 1000
@@ -468,6 +472,7 @@ async def bulk_map_repositories(
     doesn't block on hundreds of sequential network calls.
     """
     await projects_core.get_project(session, body.project_id)  # 404s if missing
+    await assert_project_access(session, user, body.project_id, "member")
     if state.cache is None:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, _CACHE_NOT_INITIALISED)
 
@@ -520,6 +525,7 @@ async def bulk_connect_public_repositories(
     session: Annotated[AsyncSession, Depends(get_session)],
     settings: Annotated[Settings, Depends(get_settings)],
     state: Annotated[AppState, Depends(app_state)],
+    user: Annotated[User, Depends(get_current_user)],
 ) -> dict:
     """Connect many public repositories by ``owner/repo`` at once.
 
@@ -531,6 +537,7 @@ async def bulk_connect_public_repositories(
     installation rate limit.
     """
     await projects_core.get_project(session, body.project_id)  # 404s if missing
+    await assert_project_access(session, user, body.project_id, "member")
     if state.cache is None:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, _CACHE_NOT_INITIALISED)
 
@@ -591,6 +598,7 @@ async def connect_public_repository(
     session: Annotated[AsyncSession, Depends(get_session)],
     settings: Annotated[Settings, Depends(get_settings)],
     state: Annotated[AppState, Depends(app_state)],
+    user: Annotated[User, Depends(get_current_user)],
 ) -> RepoOut:
     """Connect any public repository by ``owner/name`` — no GitHub App
     installation needed, works for a repo you don't own or administer.
@@ -603,6 +611,7 @@ async def connect_public_repository(
     same as an App-connected repository.
     """
     await projects_core.get_project(session, body.project_id)  # 404s if missing
+    await assert_project_access(session, user, body.project_id, "member")
 
     existing = await session.scalar(select(GitHubRepository).where(GitHubRepository.full_name == body.full_name))
     if existing is not None:

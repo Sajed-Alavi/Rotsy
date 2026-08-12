@@ -14,6 +14,8 @@ const TABS = [
   { to: '/settings/security', label: 'Security' },
   { to: '/settings/scanning', label: 'Scanning' },
   { to: '/settings/system', label: 'System' },
+  { to: '/settings/users', label: 'Users' },
+  { to: '/settings/roles', label: 'Roles & Permissions' },
 ];
 
 export default function SettingsLayout() {
@@ -28,9 +30,10 @@ export default function SettingsLayout() {
 
       <Tabs items={TABS} className="mb-6" />
 
-      <div className="mx-auto max-w-3xl">
-        <Outlet />
-      </div>
+      {/* Unconstrained here, not mx-auto max-w-3xl: Users/Roles are dense
+          admin tables that want the full width. The narrow form-style tabs
+          (General/Integrations/Security/Scanning/System) constrain themselves. */}
+      <Outlet />
     </div>
   );
 }

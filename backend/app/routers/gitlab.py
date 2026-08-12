@@ -28,10 +28,11 @@ from ..config import Settings
 from ..core import projects as projects_core
 from ..core.config_store import decrypt_password, encrypt_password
 from ..core.jobs import JobQueue
+from ..core.project_access import assert_project_access
 from ..core.source_provider import RepoRef
 from ..db.session import get_session_factory
-from ..dependencies import RequirePermission, get_session, get_settings
-from ..models import GitLabConnection, GitLabRepository, Integration, SonarProject
+from ..dependencies import RequirePermission, get_current_user, get_session, get_settings
+from ..models import GitLabConnection, GitLabRepository, Integration, SonarProject, User
 from ..modules.gitlab.provider import GitLabProvider, GitLabProviderError
 from ..modules.gitlab.webhooks import normalize_push_event, verify_token
 from ..modules.sonar.provisioning import auto_provision_and_analyze
@@ -430,11 +431,13 @@ async def map_repository(
     session: Annotated[AsyncSession, Depends(get_session)],
     settings: Annotated[Settings, Depends(get_settings)],
     state: Annotated[AppState, Depends(app_state)],
+    user: Annotated[User, Depends(get_current_user)],
 ) -> RepoOut:
     repo = await session.get(GitLabRepository, repo_id)
     if repo is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, _REPOSITORY_NOT_FOUND)
     await projects_core.get_project(session, body.project_id)  # 404s if missing
+    await assert_project_access(session, user, body.project_id, "member")
 
     repo.project_id = body.project_id
 
@@ -480,6 +483,7 @@ async def bulk_map_repositories(
     session: Annotated[AsyncSession, Depends(get_session)],
     settings: Annotated[Settings, Depends(get_settings)],
     state: Annotated[AppState, Depends(app_state)],
+    user: Annotated[User, Depends(get_current_user)],
 ) -> dict:
     """Attach many already-discovered repositories (from a connection's
     ``sync``) to a Project in one call. Each mapping (and webhook
@@ -488,6 +492,7 @@ async def bulk_map_repositories(
     so this request doesn't block on hundreds of sequential network calls.
     """
     await projects_core.get_project(session, body.project_id)  # 404s if missing
+    await assert_project_access(session, user, body.project_id, "member")
     if state.cache is None:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Cache not initialised")
 

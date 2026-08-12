@@ -17,14 +17,14 @@ export default function ScanningPage() {
 
   if (!canEdit) {
     return (
-      <section className="border border-slate-200 p-4 dark:border-slate-800">
+      <section className="mx-auto max-w-3xl border border-slate-200 p-4 dark:border-slate-800">
         <p className="font-mono text-xs text-slate-500 dark:text-slate-500">Scanning configuration requires admin (system:execute) permission.</p>
       </section>
     );
   }
 
   return (
-    <div className="grid grid-cols-1 gap-6">
+    <div className="mx-auto grid max-w-3xl grid-cols-1 gap-6">
       <RegistryDiscoverySection />
       <WebhookSection />
       <ScannerToggleSection />

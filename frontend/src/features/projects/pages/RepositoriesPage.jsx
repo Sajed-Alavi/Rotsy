@@ -43,12 +43,8 @@ export default function RepositoriesPage() {
     },
     { key: 'default_branch', header: 'Default branch', mono: true },
     {
-      key: 'branches', header: 'Branches', className: 'text-right',
-      render: (_v, row) => <BranchesButton repo={row} />,
-    },
-    {
-      key: 'connection', header: 'Connection', className: 'text-right',
-      render: (_v, row) => row.source_module === 'gitlab' ? <ReconnectButton repo={row} onDone={load} /> : null,
+      key: 'details', header: '·', className: 'text-right',
+      render: (_v, row) => <RepoDetailsButton repo={row} onDone={load} />,
     },
     {
       key: 'language', header: 'Sonar language',
@@ -96,49 +92,32 @@ function BranchesModalBody({ err, branches, repo }) {
   );
 }
 
-function BranchesButton({ repo }) {
+/**
+ * One "View" button per repository, covering everything you'd otherwise
+ * have to go hunting for in separate places: its branches, and — for GitLab
+ * repos, which each carry their own credential (see GitLabRepository's
+ * docstring on why there's no account-level refresh to inherit) — a way to
+ * paste a fresh token when the one on file was rotated or revoked. A repo
+ * can need reconnecting before it has ever been analyzed once, so this is
+ * independent of the auto-analyze modal.
+ */
+function RepoDetailsButton({ repo, onDone }) {
   const [open, setOpen] = useState(false);
   const [branches, setBranches] = useState(null);
-  const [err, setErr] = useState('');
-
-  const openModal = () => {
-    setOpen(true);
-    if (branches === null && !err) {
-      api.get(`/modules/${repo.source_module}/repositories/${repo.repository_id}/branches`)
-        .then((r) => setBranches(r.branches))
-        .catch((e) => setErr(e.message));
-    }
-  };
-
-  return (
-    <>
-      <button
-        onClick={openModal}
-        className="border border-slate-300 px-2 py-1 font-mono text-[10px] uppercase tracking-wider text-slate-600 hover:bg-slate-100 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
-      >
-        View
-      </button>
-      <Modal open={open} title={`Branches · ${repo.full_name}`} onClose={() => setOpen(false)}>
-        <BranchesModalBody err={err} branches={branches} repo={repo} />
-      </Modal>
-    </>
-  );
-}
-
-/**
- * Refreshes a GitLab repository's own credential — needed whenever it drifts
- * from a valid one (the token was rotated GitLab-side, or the repo has no
- * account-level connection to inherit a refresh from at all — see
- * GitLabRepository's docstring on why each repo keeps an independent copy
- * rather than a live reference). Independent of the auto-analyze modal:
- * a repo can need reconnecting before it has ever been analyzed once.
- */
-function ReconnectButton({ repo, onDone }) {
-  const [open, setOpen] = useState(false);
+  const [branchesErr, setBranchesErr] = useState('');
   const [token, setToken] = useState('');
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState('');
   const [err, setErr] = useState('');
+
+  const openModal = () => {
+    setOpen(true);
+    if (branches === null && !branchesErr) {
+      api.get(`/modules/${repo.source_module}/repositories/${repo.repository_id}/branches`)
+        .then((r) => setBranches(r.branches))
+        .catch((e) => setBranchesErr(e.message));
+    }
+  };
 
   const reconnect = async () => {
     if (!token.trim()) return;
@@ -155,29 +134,42 @@ function ReconnectButton({ repo, onDone }) {
   return (
     <>
       <button
-        onClick={() => setOpen(true)}
+        onClick={openModal}
         className="border border-slate-300 px-2 py-1 font-mono text-[10px] uppercase tracking-wider text-slate-600 hover:bg-slate-100 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
       >
-        Reconnect
+        View
       </button>
-      <Modal open={open} title={`Reconnect · ${repo.full_name}`} onClose={() => setOpen(false)}>
-        <div className="space-y-2">
-          <p className="font-mono text-[11px] text-slate-500 dark:text-slate-500">
-            Paste a fresh personal access token for this exact repository — for when the one on file
-            was rotated or revoked on GitLab's side and calls for it started failing.
-          </p>
-          <input
-            type="password" value={token} onChange={(e) => setToken(e.target.value)}
-            placeholder="Personal access token (api scope)" className={INPUT}
-          />
-          <button
-            onClick={reconnect} disabled={busy || !token.trim()}
-            className="border border-sky-300 bg-sky-50 px-3 py-1.5 font-mono text-xs uppercase tracking-wider text-sky-700 hover:bg-sky-100 disabled:opacity-50 dark:border-sky-700 dark:bg-sky-950/40 dark:text-sky-300"
-          >
-            {busy ? '···' : 'Reconnect'}
-          </button>
-          {msg && <p className="font-mono text-xs text-emerald-600 dark:text-emerald-400">{msg}</p>}
-          {err && <p className="font-mono text-xs text-rose-600 dark:text-rose-400">{err}</p>}
+      <Modal open={open} title={repo.full_name} onClose={() => setOpen(false)}>
+        <div className="space-y-4">
+          <div>
+            <p className="mb-1 font-mono text-[10px] uppercase tracking-wider text-slate-500">Branches</p>
+            <BranchesModalBody err={branchesErr} branches={branches} repo={repo} />
+          </div>
+
+          {repo.source_module === 'gitlab' && (
+            <div>
+              <hr className="mb-3 border-slate-200 dark:border-slate-800" />
+              <p className="mb-1 font-mono text-[10px] uppercase tracking-wider text-slate-500">Reconnect</p>
+              <p className="mb-2 font-mono text-[11px] text-slate-500 dark:text-slate-500">
+                Paste a fresh personal access token for this exact repository — for when the one on file
+                was rotated or revoked on GitLab's side and calls for it started failing.
+              </p>
+              <div className="space-y-2">
+                <input
+                  type="password" value={token} onChange={(e) => setToken(e.target.value)}
+                  placeholder="Personal access token (api scope)" className={INPUT}
+                />
+                <button
+                  onClick={reconnect} disabled={busy || !token.trim()}
+                  className="border border-sky-300 bg-sky-50 px-3 py-1.5 font-mono text-xs uppercase tracking-wider text-sky-700 hover:bg-sky-100 disabled:opacity-50 dark:border-sky-700 dark:bg-sky-950/40 dark:text-sky-300"
+                >
+                  {busy ? '···' : 'Reconnect'}
+                </button>
+                {msg && <p className="font-mono text-xs text-emerald-600 dark:text-emerald-400">{msg}</p>}
+                {err && <p className="font-mono text-xs text-rose-600 dark:text-rose-400">{err}</p>}
+              </div>
+            </div>
+          )}
         </div>
       </Modal>
     </>

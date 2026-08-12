@@ -4,8 +4,10 @@ import AppShell from './components/AppShell.jsx';
 import ProtectedRoute from './components/ProtectedRoute.jsx';
 import LoginPage from './features/auth/LoginPage.jsx';
 import DashboardPage from './features/dashboard/DashboardPage.jsx';
+import BrowseLayout from './features/browse/BrowseLayout.jsx';
 import BrowsePage from './features/browse/BrowsePage.jsx';
 import StorageAnalyzerPage from './features/storage/StorageAnalyzerPage.jsx';
+import MonitoringLayout from './features/monitoring/MonitoringLayout.jsx';
 import MetricsPage from './features/metrics/MetricsPage.jsx';
 import JobsPage from './features/jobs/JobsPage.jsx';
 import AlertsPage from './features/alerts/AlertsPage.jsx';
@@ -14,6 +16,7 @@ import ProjectLayout from './features/projects/ProjectLayout.jsx';
 import ProjectOverviewPage from './features/projects/pages/OverviewPage.jsx';
 import ProjectRepositoriesPage from './features/projects/pages/RepositoriesPage.jsx';
 import ProjectInsightsPage from './features/projects/pages/InsightsPage.jsx';
+import ProjectSettingsPage from './features/projects/pages/SettingsPage.jsx';
 import SettingsLayout from './features/settings/SettingsLayout.jsx';
 import SettingsGeneralPage from './features/settings/pages/GeneralPage.jsx';
 import SettingsIntegrationsPage from './features/settings/pages/IntegrationsPage.jsx';
@@ -26,6 +29,7 @@ import AuditPage from './features/audit/AuditPage.jsx';
 import RetentionPage from './features/retention/RetentionPage.jsx';
 import SystemPage from './features/system/SystemPage.jsx';
 import BlobstoresPage from './features/blobstores/BlobstoresPage.jsx';
+import RepositoriesLayout from './features/repositories/RepositoriesLayout.jsx';
 import RepositoriesPage from './features/repositories/RepositoriesPage.jsx';
 import TasksPage from './features/tasks/TasksPage.jsx';
 
@@ -65,16 +69,25 @@ export default function App() {
       <Route element={<ProtectedRoute />}>
         <Route element={<AppShell />}>
           <Route index element={<DashboardPage />} />
-          <Route path="browse" element={<BrowsePage />} />
-          <Route path="storage" element={<StorageAnalyzerPage />} />
-          <Route path="metrics" element={<MetricsPage />} />
-          <Route path="jobs" element={<JobsPage />} />
-          <Route path="alerts" element={<AlertsPage />} />
+          <Route path="browse" element={<BrowseLayout />}>
+            <Route index element={<BrowsePage />} />
+            <Route path="storage" element={<StorageAnalyzerPage />} />
+          </Route>
+          <Route path="storage" element={<Navigate to="/browse/storage" replace />} />
+          <Route path="monitoring" element={<MonitoringLayout />}>
+            <Route index element={<MetricsPage />} />
+            <Route path="jobs" element={<JobsPage />} />
+            <Route path="alerts" element={<AlertsPage />} />
+          </Route>
+          <Route path="metrics" element={<Navigate to="/monitoring" replace />} />
+          <Route path="jobs" element={<Navigate to="/monitoring/jobs" replace />} />
+          <Route path="alerts" element={<Navigate to="/monitoring/alerts" replace />} />
           <Route path="projects" element={<ProjectsListPage />} />
           <Route path="projects/:id" element={<ProjectLayout />}>
             <Route index element={<ProjectOverviewPage />} />
             <Route path="repositories" element={<ProjectRepositoriesPage />} />
             <Route path="insights" element={<ProjectInsightsPage />} />
+            <Route path="settings" element={<ProjectSettingsPage />} />
           </Route>
           <Route path="settings" element={<SettingsLayout />}>
             <Route index element={<SettingsGeneralPage />} />
@@ -82,14 +95,21 @@ export default function App() {
             <Route path="security" element={<SettingsSecurityPage />} />
             <Route path="scanning" element={<SettingsScanningPage />} />
             <Route path="system" element={<SettingsSystemPage />} />
+            <Route path="users" element={<UsersPage />} />
+            <Route path="roles" element={<RolesPage />} />
           </Route>
-          <Route path="retention" element={<RetentionPage />} />
-          <Route path="blobstores" element={<BlobstoresPage />} />
+          {/* Old top-level locations, kept as redirects for bookmarks/links. */}
+          <Route path="users" element={<Navigate to="/settings/users" replace />} />
+          <Route path="roles" element={<Navigate to="/settings/roles" replace />} />
+          <Route path="repositories" element={<RepositoriesLayout />}>
+            <Route index element={<RepositoriesPage />} />
+            <Route path="blobstores" element={<BlobstoresPage />} />
+            <Route path="retention" element={<RetentionPage />} />
+          </Route>
+          <Route path="blobstores" element={<Navigate to="/repositories/blobstores" replace />} />
+          <Route path="retention" element={<Navigate to="/repositories/retention" replace />} />
           <Route path="system" element={<SystemPage />} />
-          <Route path="repositories" element={<RepositoriesPage />} />
           <Route path="tasks" element={<TasksPage />} />
-          <Route path="users" element={<UsersPage />} />
-          <Route path="roles" element={<RolesPage />} />
           <Route path="audit" element={<AuditPage />} />
 
           {/* Code quality: global, not Project-scoped — mirrors the vulnerability

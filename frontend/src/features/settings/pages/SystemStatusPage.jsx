@@ -13,14 +13,14 @@ export default function SystemStatusPage() {
 
   if (!hasPermission('system:read')) {
     return (
-      <section className="border border-slate-200 p-4 dark:border-slate-800">
+      <section className="mx-auto max-w-3xl border border-slate-200 p-4 dark:border-slate-800">
         <p className="font-mono text-xs text-slate-500 dark:text-slate-500">System status requires the system:read permission.</p>
       </section>
     );
   }
 
   return (
-    <section className="border border-slate-200 dark:border-slate-800">
+    <section className="mx-auto max-w-3xl border border-slate-200 dark:border-slate-800">
       <div className="p-4">
         <h2 className="font-mono text-[10px] uppercase tracking-wider text-slate-500">System status</h2>
         <p className="mt-1 font-mono text-[11px] text-slate-500 dark:text-slate-500">
@@ -35,7 +35,7 @@ export default function SystemStatusPage() {
         <Icon name="chevron" size={13} className="text-slate-400 transition-transform group-hover:translate-x-0.5" />
       </Link>
       <Link
-        to="/jobs"
+        to="/monitoring/jobs"
         className="group flex items-center justify-between border-t border-slate-100 px-4 py-3 text-slate-700 hover:bg-slate-50 dark:border-slate-800/60 dark:text-slate-300 dark:hover:bg-slate-900/60"
       >
         <span className="font-mono text-xs">Background Jobs</span>

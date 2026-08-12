@@ -9,7 +9,7 @@ const INPUT = 'w-full border border-slate-300 bg-white px-2 py-1.5 font-mono tex
 export default function GeneralPage() {
   const { refreshMe } = useAuth();
   return (
-    <div className="grid grid-cols-1 gap-6">
+    <div className="mx-auto grid max-w-3xl grid-cols-1 gap-6">
       <ProfileSection refreshMe={refreshMe} />
       <PasswordSection />
     </div>

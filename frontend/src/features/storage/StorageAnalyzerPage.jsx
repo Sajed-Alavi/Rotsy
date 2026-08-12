@@ -153,7 +153,7 @@ export default function StorageAnalyzerPage() {
   const isDocker = result?.mode === 'docker';
 
   return (
-    <div className="p-6">
+    <div>
       <div className="mb-5">
         <h1 className="text-base font-medium text-slate-900 dark:text-slate-100">Storage Analyzer</h1>
         <p className="mt-0.5 font-mono text-[11px] text-slate-500 dark:text-slate-500">

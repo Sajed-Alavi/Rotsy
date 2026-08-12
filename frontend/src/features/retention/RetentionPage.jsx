@@ -100,7 +100,7 @@ export default function RetentionPage() {
   ];
 
   return (
-    <div className="p-6">
+    <div>
       <div className="mb-4 flex items-center justify-between">
         <div>
           <h1 className="text-base font-medium text-slate-900 dark:text-slate-100">Retention & Cleanup</h1>

@@ -6,12 +6,14 @@ import Icon from '../../components/Icon.jsx';
 
 /**
  * Shell for /projects/:id: one header, one tab strip, one <Outlet/> — same
- * shape as ScanLayout/SettingsLayout. Deliberately three tabs, not five:
- * this project doesn't yet track which Nexus repository/image belongs to
- * which Project, so a "Security" or "Artifacts" tab here could only ever be
- * a link out to the existing global scanning/repository views — Overview's
- * "Related views" section covers that in one line instead of spending a
- * whole tab, and a whole page navigation, on a dead end.
+ * shape as ScanLayout/SettingsLayout. Deliberately four tabs, not five: this
+ * project doesn't yet track which Nexus repository/image belongs to which
+ * Project, so a "Security" or "Artifacts" tab here could only ever be a link
+ * out to the existing global scanning/repository views — Overview's "Related
+ * views" section covers that in one line instead of spending a whole tab, and
+ * a whole page navigation, on a dead end. Settings doesn't have that problem
+ * — project membership (who can see/act on *this* project) lives entirely in
+ * this project's own data, so it earns the tab.
  */
 export default function ProjectLayout() {
   const { id } = useParams();
@@ -26,6 +28,7 @@ export default function ProjectLayout() {
     { to: `/projects/${id}`, label: 'Overview', end: true },
     { to: `/projects/${id}/repositories`, label: 'Repositories' },
     { to: `/projects/${id}/insights`, label: 'Insights' },
+    { to: `/projects/${id}/settings`, label: 'Settings' },
   ];
 
   return (

@@ -19,15 +19,20 @@ from ..core import projects as projects_core
 from ..core.config_store import get_github_app_config
 from ..core.health import compute_health_score
 from ..core.integrations import get_module
-from ..dependencies import RequirePermission, get_session, get_settings
-from ..models import GitHubRepository, GitLabRepository, Insight, SonarProject
+from ..core.project_access import require_project_access
+from ..dependencies import RequirePermission, get_current_user, get_session, get_settings
+from ..models import GitHubRepository, GitLabRepository, Insight, SonarProject, User
 from ..schemas.project import (
     HealthScoreOut,
     InsightOut,
     IntegrationConnect,
     IntegrationOut,
     ProjectCreate,
+    ProjectMemberCreate,
+    ProjectMemberOut,
+    ProjectMemberUpdate,
     ProjectOut,
+    UserCandidateOut,
 )
 
 router = APIRouter(prefix="/projects", tags=["projects"])
@@ -37,8 +42,9 @@ router = APIRouter(prefix="/projects", tags=["projects"])
             dependencies=[Depends(RequirePermission("projects:read"))])
 async def list_projects(
     session: Annotated[AsyncSession, Depends(get_session)],
+    user: Annotated[User, Depends(get_current_user)],
 ) -> list[ProjectOut]:
-    return await projects_core.list_projects(session)
+    return await projects_core.list_projects(session, user)
 
 
 @router.post("", status_code=201,
@@ -46,12 +52,13 @@ async def list_projects(
 async def create_project(
     body: ProjectCreate,
     session: Annotated[AsyncSession, Depends(get_session)],
+    user: Annotated[User, Depends(get_current_user)],
 ) -> ProjectOut:
-    return await projects_core.create_project(session, body.name)
+    return await projects_core.create_project(session, body.name, user)
 
 
 @router.get("/{project_id}",
-            dependencies=[Depends(RequirePermission("projects:read"))])
+            dependencies=[Depends(RequirePermission("projects:read")), Depends(require_project_access("viewer"))])
 async def get_project(
     project_id: int,
     session: Annotated[AsyncSession, Depends(get_session)],
@@ -60,7 +67,7 @@ async def get_project(
 
 
 @router.delete("/{project_id}", status_code=204,
-                dependencies=[Depends(RequirePermission("projects:write"))])
+                dependencies=[Depends(RequirePermission("projects:write")), Depends(require_project_access("admin"))])
 async def delete_project(
     project_id: int,
     session: Annotated[AsyncSession, Depends(get_session)],
@@ -69,7 +76,7 @@ async def delete_project(
 
 
 @router.get("/{project_id}/integrations",
-            dependencies=[Depends(RequirePermission("projects:read"))])
+            dependencies=[Depends(RequirePermission("projects:read")), Depends(require_project_access("viewer"))])
 async def list_integrations(
     project_id: int,
     session: Annotated[AsyncSession, Depends(get_session)],
@@ -78,7 +85,7 @@ async def list_integrations(
 
 
 @router.post("/{project_id}/integrations", status_code=201,
-             dependencies=[Depends(RequirePermission("projects:write"))])
+             dependencies=[Depends(RequirePermission("projects:write")), Depends(require_project_access("member"))])
 async def connect_integration(
     project_id: int,
     body: IntegrationConnect,
@@ -94,7 +101,7 @@ async def connect_integration(
 
 
 @router.get("/{project_id}/insights", response_model=list[InsightOut],
-            dependencies=[Depends(RequirePermission("projects:read"))])
+            dependencies=[Depends(RequirePermission("projects:read")), Depends(require_project_access("viewer"))])
 async def list_insights(
     project_id: int,
     session: Annotated[AsyncSession, Depends(get_session)],
@@ -109,6 +116,56 @@ async def list_insights(
         )
     ).scalars().all()
     return list(rows)
+
+
+@router.get("/{project_id}/members", response_model=list[ProjectMemberOut],
+            dependencies=[Depends(RequirePermission("projects:read")), Depends(require_project_access("viewer"))])
+async def list_members(
+    project_id: int,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> list[dict]:
+    return await projects_core.list_members(session, project_id)
+
+
+@router.get("/{project_id}/members/candidates", response_model=list[UserCandidateOut],
+            dependencies=[Depends(RequirePermission("projects:read")), Depends(require_project_access("admin"))])
+async def member_candidates(
+    project_id: int,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    q: str | None = None,
+) -> list[User]:
+    return await projects_core.search_member_candidates(session, project_id, q)
+
+
+@router.post("/{project_id}/members", status_code=201, response_model=ProjectMemberOut,
+             dependencies=[Depends(RequirePermission("projects:write")), Depends(require_project_access("admin"))])
+async def add_member(
+    project_id: int,
+    body: ProjectMemberCreate,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict:
+    return await projects_core.add_member(session, project_id, body.user_id, body.project_role)
+
+
+@router.patch("/{project_id}/members/{member_id}", response_model=ProjectMemberOut,
+              dependencies=[Depends(RequirePermission("projects:write")), Depends(require_project_access("admin"))])
+async def update_member(
+    project_id: int,
+    member_id: int,
+    body: ProjectMemberUpdate,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict:
+    return await projects_core.update_member_role(session, project_id, member_id, body.project_role)
+
+
+@router.delete("/{project_id}/members/{member_id}", status_code=204,
+               dependencies=[Depends(RequirePermission("projects:write")), Depends(require_project_access("admin"))])
+async def remove_member(
+    project_id: int,
+    member_id: int,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> None:
+    await projects_core.remove_member(session, project_id, member_id)
 
 
 def _connected_repo_row(
@@ -137,7 +194,8 @@ def _connected_repo_row(
     }
 
 
-@router.get("/{project_id}/repositories", dependencies=[Depends(RequirePermission("projects:read"))])
+@router.get("/{project_id}/repositories",
+            dependencies=[Depends(RequirePermission("projects:read")), Depends(require_project_access("viewer"))])
 async def list_project_repositories(
     project_id: int,
     session: Annotated[AsyncSession, Depends(get_session)],
@@ -190,7 +248,7 @@ async def list_project_repositories(
 
 
 @router.get("/{project_id}/health",
-            dependencies=[Depends(RequirePermission("projects:read"))])
+            dependencies=[Depends(RequirePermission("projects:read")), Depends(require_project_access("viewer"))])
 async def get_health_score(
     project_id: int,
     session: Annotated[AsyncSession, Depends(get_session)],

@@ -70,7 +70,7 @@ export default function UsersPage() {
   };
 
   return (
-    <div className="p-6">
+    <div>
       <div className="mb-4 flex items-center justify-between">
         <h1 className="text-base font-medium text-slate-900 dark:text-slate-100">Users</h1>
         <button

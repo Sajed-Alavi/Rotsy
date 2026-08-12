@@ -15,7 +15,7 @@ export default function SecurityPage() {
   const { hasPermission } = useAuth();
 
   return (
-    <div className="grid grid-cols-1 gap-6">
+    <div className="mx-auto grid max-w-3xl grid-cols-1 gap-6">
       <section className="border border-slate-200 dark:border-slate-800">
         <div className="p-4">
           <h2 className="font-mono text-[10px] uppercase tracking-wider text-slate-500">Access control</h2>
@@ -43,8 +43,8 @@ export default function SecurityPage() {
               Accounts, roles, and permission assignment.
             </p>
           </div>
-          <SecurityLink to="/users" label="Users" />
-          <SecurityLink to="/roles" label="Roles & Permissions" />
+          <SecurityLink to="/settings/users" label="Users" />
+          <SecurityLink to="/settings/roles" label="Roles & Permissions" />
           <SecurityLink to="/audit" label="Audit Log" />
         </section>
       )}

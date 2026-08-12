@@ -150,10 +150,10 @@ export default function MetricsPage() {
   };
 
   return (
-    <div className="p-6">
+    <div>
       <div className="mb-5 flex items-baseline justify-between">
         <div>
-          <h1 className="text-base font-medium text-slate-900 dark:text-slate-100">Monitoring</h1>
+          <h1 className="text-base font-medium text-slate-900 dark:text-slate-100">Metrics</h1>
           <p className="mt-0.5 font-mono text-[11px] text-slate-500 dark:text-slate-500">
             Nexus health · blobstore disk · system security · storage growth
           </p>

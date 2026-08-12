@@ -63,7 +63,7 @@ export default function AlertsPage() {
   };
 
   return (
-    <div className="p-6">
+    <div>
       <div className="mb-4 flex items-center justify-between">
         <h1 className="text-base font-medium text-slate-900 dark:text-slate-100">Alerts</h1>
         <button onClick={() => setEditing({ rule: null })} className="flex items-center gap-1.5 border border-slate-300 px-3 py-1.5 font-mono text-xs uppercase tracking-wider text-slate-600 hover:bg-slate-100 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800">

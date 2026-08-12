@@ -95,6 +95,16 @@ export default function Sidebar() {
           );
         })}
       </nav>
+
+      <a
+        href="https://github.com/sajed-alavi/rotsy"
+        target="_blank"
+        rel="noopener noreferrer"
+        className={`${LINK_BASE} border-t border-slate-200 px-4 py-2.5 dark:border-slate-800`}
+      >
+        <Icon name="github" size={15} />
+        <span>GitHub</span>
+      </a>
     </aside>
   );
 }

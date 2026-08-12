@@ -36,10 +36,11 @@ from ..core.config_store import (
 from ..core.jobs import JobQueue
 from ..core.source_provider import RepoRef
 from ..db.session import get_session_factory
-from ..dependencies import RequirePermission, get_session, get_settings
+from ..core.project_access import assert_project_access, require_project_access
+from ..dependencies import RequirePermission, get_current_user, get_session, get_settings
 from ..models import (
     AnalysisRun, GitHubInstallation, GitHubRepository, GitLabRepository, Project, QualityGateResult,
-    SonarHotspot, SonarIssue, SonarProject,
+    SonarHotspot, SonarIssue, SonarProject, User,
 )
 from ..models.sonar import SUPPORTED_LANGUAGES
 from ..modules.github.provider import GitHubProvider
@@ -276,9 +277,11 @@ async def create_sonar_project(
     body: SonarProjectCreate,
     session: Annotated[AsyncSession, Depends(get_session)],
     settings: Annotated[Settings, Depends(get_settings)],
+    user: Annotated[User, Depends(get_current_user)],
 ) -> SonarProjectOut:
     _validate_create_body(body)
     project = await projects_core.get_project(session, body.project_id)
+    await assert_project_access(session, user, body.project_id, "member")
     repo_label = await _resolve_target_repo(session, body)
     await _ensure_no_existing_sonar_project(session, body, repo_label)
 
@@ -833,7 +836,7 @@ async def run_repository_analysis(
 
 
 @router.post("/projects/{project_id}/run-analysis", status_code=status.HTTP_202_ACCEPTED,
-             dependencies=[Depends(RequirePermission("projects:write"))])
+             dependencies=[Depends(RequirePermission("projects:write")), Depends(require_project_access("member"))])
 async def run_analysis(
     project_id: int,
     session: Annotated[AsyncSession, Depends(get_session)],

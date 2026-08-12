@@ -9,9 +9,9 @@ import { formatDateTime } from '../../lib/format.js';
 const JOB_TYPE_PAGE = {
   clone_and_analyze: '/code-quality/runs',
   scan_image: '/scan/images',
-  analyze_repo: '/storage',
-  collect_metrics: '/metrics',
-  run_retention: '/retention',
+  analyze_repo: '/browse/storage',
+  collect_metrics: '/monitoring',
+  run_retention: '/repositories/retention',
   backup: '/system',
   backup_archive: '/system',
   run_scheduled_backup: '/system',
@@ -95,7 +95,7 @@ export default function JobsPage() {
   const statusTone = (s) => ({ pending: 'neutral', running: 'info', done: 'ok', failed: 'bad', cancelled: 'warn' }[s] || 'neutral');
 
   return (
-    <div className="p-6">
+    <div>
       <div className="mb-4 flex flex-wrap items-center gap-2">
         <h1 className="mr-auto text-base font-medium text-slate-900 dark:text-slate-100">Background Jobs</h1>
         <button onClick={() => trigger('/jobs/collect-metrics', 'metric collection')} className="border border-slate-300 px-3 py-1.5 font-mono text-xs uppercase tracking-wider text-slate-600 hover:bg-slate-100 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800">

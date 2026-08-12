@@ -176,7 +176,11 @@ async def sync_repositories(
     provider = GitLabProvider(get_session_factory())
     try:
         repos = await provider.list_repositories_for_connection(str(connection_id))
-    except GitLabProviderError as exc:
+    except (httpx.HTTPError, GitLabProviderError) as exc:
+        # httpx.HTTPError covers network-level failures (unreachable host,
+        # DNS, timeout) that GitLabProviderError alone doesn't — those
+        # propagated as a raw 500 instead of this clean 502 before.
+        logger.warning("GitLab sync failed for connection %s: %s", connection_id, exc)
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, _UNREACHABLE_MESSAGE) from exc
 
     token = decrypt_password(connection.encrypted_token, settings)
@@ -246,11 +250,19 @@ async def connect_repository(
 
     try:
         detail = await _fetch_project(gitlab_url, body.token, body.full_path)
-    except GitLabProviderError as exc:
+    except (httpx.HTTPError, GitLabProviderError) as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, _UNREACHABLE_MESSAGE) from exc
 
+    # Scoped to this GitLab instance, not full_path alone — the same
+    # namespace/repo path is a routine coincidence across two different
+    # self-managed GitLab hosts, and treating it as the same repository
+    # falsely blocked reconnecting a repo whose actual duplicate lived on
+    # an entirely different gitlab_url.
     existing = await session.scalar(
-        select(GitLabRepository).where(GitLabRepository.full_path == detail["path_with_namespace"])
+        select(GitLabRepository).where(
+            GitLabRepository.gitlab_url == gitlab_url,
+            GitLabRepository.full_path == detail["path_with_namespace"],
+        )
     )
     if existing is not None:
         raise HTTPException(status.HTTP_409_CONFLICT, "This repository is already connected")
@@ -303,7 +315,7 @@ async def list_repository_branches(
                         default_branch=repo.default_branch, private=True)
     try:
         branches = await provider.list_branches(str(repo.id), repo_ref)
-    except GitLabProviderError as exc:
+    except (httpx.HTTPError, GitLabProviderError) as exc:
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(exc)) from exc
     return {"branches": branches, "default_branch": repo.default_branch}
 
@@ -332,7 +344,7 @@ async def reconnect_repository(
         raise HTTPException(status.HTTP_404_NOT_FOUND, _REPOSITORY_NOT_FOUND)
     try:
         detail = await _fetch_project(repo.gitlab_url, body.token, repo.full_path)
-    except GitLabProviderError as exc:
+    except (httpx.HTTPError, GitLabProviderError) as exc:
         # Never log the token itself — a length + prefix is enough to tell
         # "empty/truncated paste" apart from "correctly-formed but wrong/
         # revoked token" without the log line itself becoming a credential.

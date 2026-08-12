@@ -299,11 +299,15 @@ function AutoAnalyzeCell({ repo, enabled, onDone }) {
 }
 
 /**
- * Three ways to add repositories, matching the three backend paths:
+ * Four ways to add repositories, matching the backend paths:
  *   1. Pick from GitHub repos already discovered (App-installed) — bulk-map.
  *   2. Paste public GitHub repo names, one per line — bulk-connect-by-URL.
  *   3. Pick from GitLab repos already discovered (account-connected) — bulk-map.
- * All three are scalable to hundreds/thousands: mapping is immediate,
+ *   4. One GitLab repo + its own token — for repos that don't share a token
+ *      (each carries its own encrypted copy, independent of any account-level
+ *      connection — see GitLabRepository's docstring). No account connection
+ *      or sync step needed first.
+ * All four are scalable to hundreds/thousands: mapping is immediate,
  * Sonar provisioning + first analysis runs as background jobs per repo.
  */
 function AddRepositories({ projectId, connectedFullNames, onDone }) {
@@ -312,6 +316,9 @@ function AddRepositories({ projectId, connectedFullNames, onDone }) {
   const [gitlabUnmapped, setGitlabUnmapped] = useState([]);
   const [selected, setSelected] = useState(new Set());
   const [publicNames, setPublicNames] = useState('');
+  const [glUrl, setGlUrl] = useState('');
+  const [glFullPath, setGlFullPath] = useState('');
+  const [glToken, setGlToken] = useState('');
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState(null);
   const [err, setErr] = useState('');
@@ -354,6 +361,26 @@ function AddRepositories({ projectId, connectedFullNames, onDone }) {
     setBusy(false);
   };
 
+  const addGitlabByToken = async () => {
+    if (!glUrl.trim() || !glFullPath.trim() || !glToken.trim()) return;
+    setBusy(true); setErr(''); setResult(null);
+    try {
+      // Two calls: connect (validates the token against GitLab, stores its
+      // own encrypted copy — no account-level connection needed) then map
+      // to this Project (registers the webhook, queues Sonar provisioning).
+      const repo = await api.post('/modules/gitlab/repositories', {
+        gitlab_url: glUrl.trim(), full_path: glFullPath.trim(), token: glToken.trim(),
+      });
+      const r = await api.post('/modules/gitlab/repositories/bulk-map', {
+        project_id: projectId, repo_ids: [repo.id],
+      });
+      setResult(r);
+      setGlFullPath(''); setGlToken('');
+      onDone();
+    } catch (e) { setErr(e.message); }
+    setBusy(false);
+  };
+
   const modeButton = (key, label) => (
     <button
       type="button"
@@ -371,6 +398,7 @@ function AddRepositories({ projectId, connectedFullNames, onDone }) {
         {modeButton('github-discovered', `GitHub (${githubUnmapped.length} discovered)`)}
         {modeButton('github-public', 'GitHub — public by URL')}
         {modeButton('gitlab-discovered', `GitLab (${gitlabUnmapped.length} discovered)`)}
+        {modeButton('gitlab-token', 'GitLab — by URL + token')}
       </div>
 
       {mode === 'github-discovered' && (
@@ -402,6 +430,35 @@ function AddRepositories({ projectId, connectedFullNames, onDone }) {
             className={`${INPUT} font-mono`}
           />
           <button onClick={addPublic} disabled={busy || !publicNames.trim()} className="border border-sky-300 bg-sky-50 px-3 py-1.5 font-mono text-xs uppercase tracking-wider text-sky-700 hover:bg-sky-100 disabled:opacity-50 dark:border-sky-700 dark:bg-sky-950/40 dark:text-sky-300 dark:hover:bg-sky-900/40">
+            {busy ? '···' : 'Connect'}
+          </button>
+        </div>
+      )}
+      {mode === 'gitlab-token' && (
+        <div className="space-y-2">
+          <p className="font-mono text-[11px] text-slate-500 dark:text-slate-500">
+            One repository, its own personal access token — for repositories that don't share a token
+            with an account-level GitLab connection. The token is validated against GitLab and stored
+            encrypted, same as every other credential Rotsy holds.
+          </p>
+          <input
+            value={glUrl} onChange={(e) => setGlUrl(e.target.value)}
+            placeholder="https://gitlab.example.com" className={INPUT}
+          />
+          <input
+            value={glFullPath} onChange={(e) => setGlFullPath(e.target.value)}
+            placeholder="group/project" className={`${INPUT} font-mono`}
+          />
+          <input
+            value={glToken} onChange={(e) => setGlToken(e.target.value)}
+            type="password" placeholder="Personal access token (api, read_repository scopes)"
+            className={`${INPUT} font-mono`}
+          />
+          <button
+            onClick={addGitlabByToken}
+            disabled={busy || !glUrl.trim() || !glFullPath.trim() || !glToken.trim()}
+            className="border border-sky-300 bg-sky-50 px-3 py-1.5 font-mono text-xs uppercase tracking-wider text-sky-700 hover:bg-sky-100 disabled:opacity-50 dark:border-sky-700 dark:bg-sky-950/40 dark:text-sky-300 dark:hover:bg-sky-900/40"
+          >
             {busy ? '···' : 'Connect'}
           </button>
         </div>

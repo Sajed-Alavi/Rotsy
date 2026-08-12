@@ -208,6 +208,18 @@ function AutoAnalyzeCell({ repo, enabled, onDone }) {
   const [watched, setWatched] = useState(new Set(repo.auto_analyze_branches || []));
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
+  const [webhookBusy, setWebhookBusy] = useState(false);
+  const [webhookMsg, setWebhookMsg] = useState('');
+
+  const retryWebhook = async () => {
+    setWebhookBusy(true); setWebhookMsg(''); setErr('');
+    try {
+      await api.post(`/modules/gitlab/repositories/${repo.repository_id}/register-webhook`, {});
+      setWebhookMsg('Webhook registered.');
+      onDone();
+    } catch (e) { setErr(e.message); }
+    setWebhookBusy(false);
+  };
 
   const openModal = () => {
     setOpen(true);
@@ -246,14 +258,21 @@ function AutoAnalyzeCell({ repo, enabled, onDone }) {
     return <Badge tone="warn">manual only</Badge>;
   }
 
+  // Turned on but nothing will actually deliver the push: distinct from
+  // "disabled" (never turned on) because only one of those two is fixed by
+  // flipping the toggle again — this one needs the webhook itself retried.
+  const webhookMissing = repo.auto_analyze_enabled && !repo.webhook_registered;
+  const badgeTone = enabled ? 'ok' : webhookMissing ? 'bad' : 'warn';
+  const badgeLabel = enabled ? 'on push' : webhookMissing ? 'webhook missing' : 'disabled';
+
   return (
     <>
       <button
         onClick={openModal}
         className="border-0 bg-transparent p-0"
-        title="Edit auto-analyze settings"
+        title={webhookMissing ? 'Enabled, but no webhook is registered — push will not trigger analysis' : 'Edit auto-analyze settings'}
       >
-        <Badge tone={enabled ? 'ok' : 'warn'}>{enabled ? 'on push' : 'disabled'}</Badge>
+        <Badge tone={badgeTone}>{badgeLabel}</Badge>
       </button>
       <Modal
         open={open}
@@ -275,6 +294,23 @@ function AutoAnalyzeCell({ repo, enabled, onDone }) {
             <input type="checkbox" checked={autoEnabled} onChange={(e) => setAutoEnabled(e.target.checked)} className="accent-sky-500" />
             {' '}Analyze automatically on push
           </label>
+
+          {webhookMissing && repo.source_module === 'gitlab' && (
+            <div className="border border-rose-200 bg-rose-50 px-2 py-1.5 dark:border-rose-800 dark:bg-rose-950/30">
+              <p className="font-mono text-[11px] text-rose-700 dark:text-rose-400">
+                Enabled, but no webhook is registered — GitLab won't tell Rotsy about a push until this
+                is fixed. Common cause: GitLab can't reach this server's callback URL.
+              </p>
+              <button
+                onClick={retryWebhook}
+                disabled={webhookBusy}
+                className="mt-1.5 border border-rose-300 bg-rose-100 px-2 py-1 font-mono text-[10px] uppercase tracking-wider text-rose-700 hover:bg-rose-200 disabled:opacity-50 dark:border-rose-700 dark:bg-rose-900/40 dark:text-rose-300"
+              >
+                {webhookBusy ? '···' : 'Retry webhook registration'}
+              </button>
+              {webhookMsg && <p className="mt-1 font-mono text-[11px] text-emerald-600 dark:text-emerald-400">{webhookMsg}</p>}
+            </div>
+          )}
 
           {autoEnabled && (
             <div>
@@ -471,6 +507,14 @@ function AddRepositories({ projectId, connectedFullNames, onDone }) {
             <ul className="mt-1 list-disc pl-4 text-rose-600 dark:text-rose-400">
               {result.errors.map((e) => <li key={e}>{e}</li>)}
             </ul>
+          )}
+          {result.webhook_failures?.length > 0 && (
+            <div className="mt-2 border border-amber-200 bg-amber-50 px-2 py-1.5 text-amber-700 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-400">
+              Connected, but the push webhook could not be registered for: {result.webhook_failures.join(', ')}.
+              These will not auto-analyze on push until this is retried (verify GitLab can reach this
+              server, then use that repository's auto-analyze settings to retry, or Run Analysis manually
+              in the meantime).
+            </div>
           )}
         </div>
       )}

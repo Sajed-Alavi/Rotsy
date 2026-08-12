@@ -121,6 +121,12 @@ def _connected_repo_row(
         # A repo needs both the delivery mechanism (App installation /
         # webhook) and the per-repository toggle on to actually auto-analyze.
         "auto_analyze_on_push": has_delivery_mechanism and (sp is None or sp.auto_analyze_enabled),
+        # Exposed separately from the combined flag above so the UI can tell
+        # "never turned on" apart from "turned on, but the webhook that would
+        # actually deliver the push isn't there" — those look identical
+        # folded into one boolean, and only one of them is fixed by flipping
+        # the toggle again.
+        "webhook_registered": has_delivery_mechanism,
         "sonar_project_id": sp.id if sp else None,
         "language": sp.language if sp else None,
         "auto_analyze_enabled": sp.auto_analyze_enabled if sp else None,

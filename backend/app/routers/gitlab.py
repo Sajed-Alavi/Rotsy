@@ -74,6 +74,11 @@ class RepoOut(BaseModel):
     default_branch: str
     project_id: int | None
     connection_id: int | None
+    # False here (unmapped, or mapped but registration failed) means push
+    # will not trigger analysis for this repository — _try_register_webhook
+    # logs that and moves on rather than raising, so this is the only place
+    # that failure is visible unless the UI surfaces it.
+    webhook_registered: bool = False
 
 
 class MapRepoBody(BaseModel):
@@ -217,7 +222,8 @@ async def sync_repositories(
         await session.execute(select(GitLabRepository).where(GitLabRepository.connection_id == connection_id))
     ).scalars().all()
     return [RepoOut(id=r.id, full_path=r.full_path, default_branch=r.default_branch,
-                     project_id=r.project_id, connection_id=r.connection_id) for r in rows]
+                     project_id=r.project_id, connection_id=r.connection_id,
+                     webhook_registered=r.webhook_id is not None) for r in rows]
 
 
 # ---------------------------------------------------------------------------
@@ -260,7 +266,8 @@ async def connect_repository(
     await session.commit()
     await session.refresh(row)
     return RepoOut(id=row.id, full_path=row.full_path, default_branch=row.default_branch,
-                    project_id=row.project_id, connection_id=row.connection_id)
+                    project_id=row.project_id, connection_id=row.connection_id,
+                    webhook_registered=False)  # not registered until this repo is mapped to a Project
 
 
 @router.get("/repositories",
@@ -274,7 +281,8 @@ async def list_repositories(
         stmt = stmt.where(GitLabRepository.project_id.is_(None))
     rows = (await session.execute(stmt)).scalars().all()
     return [RepoOut(id=r.id, full_path=r.full_path, default_branch=r.default_branch,
-                     project_id=r.project_id, connection_id=r.connection_id) for r in rows]
+                     project_id=r.project_id, connection_id=r.connection_id,
+                     webhook_registered=r.webhook_id is not None) for r in rows]
 
 
 @router.get("/repositories/{repo_id}/branches", dependencies=[Depends(RequirePermission("projects:read"))])
@@ -354,7 +362,8 @@ async def reconnect_repository(
     await session.commit()
     await session.refresh(repo)
     return RepoOut(id=repo.id, full_path=repo.full_path, default_branch=repo.default_branch,
-                    project_id=repo.project_id, connection_id=repo.connection_id)
+                    project_id=repo.project_id, connection_id=repo.connection_id,
+                    webhook_registered=repo.webhook_id is not None)
 
 
 async def _try_register_webhook(settings: Settings, repo: GitLabRepository) -> bool:
@@ -455,7 +464,8 @@ async def map_repository(
         )
 
     return RepoOut(id=repo.id, full_path=repo.full_path, default_branch=repo.default_branch,
-                    project_id=repo.project_id, connection_id=repo.connection_id)
+                    project_id=repo.project_id, connection_id=repo.connection_id,
+                    webhook_registered=repo.webhook_id is not None)
 
 
 class BulkMapBody(BaseModel):
@@ -484,6 +494,7 @@ async def bulk_map_repositories(
     queue = JobQueue(state.cache)
     mapped: list[str] = []
     errors: list[str] = []
+    webhook_failures: list[str] = []
     integration_connected = await session.scalar(
         select(Integration).where(Integration.project_id == body.project_id, Integration.module_key == "gitlab")
     ) is not None
@@ -506,7 +517,8 @@ async def bulk_map_repositories(
             )
             integration_connected = True
 
-        await _try_register_webhook(settings, repo)
+        if not await _try_register_webhook(settings, repo):
+            webhook_failures.append(repo.full_path)
 
         await queue.enqueue("provision_repository", {
             "project_id": body.project_id,
@@ -520,7 +532,15 @@ async def bulk_map_repositories(
         })
 
     await session.commit()
-    return {"mapped": len(mapped), "queued": len(mapped), "errors": errors}
+    return {
+        "mapped": len(mapped), "queued": len(mapped), "errors": errors,
+        # Mapping and provisioning still succeeded for these — only the
+        # webhook did not, silently, per _try_register_webhook's own
+        # contract. Surfaced here so "connected" doesn't read as "will
+        # analyze on push" when it won't until this is retried (Settings →
+        # or the repository's own "register webhook" action).
+        "webhook_failures": webhook_failures,
+    }
 
 
 async def _already_seen(cache, key: str, ttl: int) -> bool:

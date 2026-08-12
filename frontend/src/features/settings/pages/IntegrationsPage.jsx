@@ -320,16 +320,16 @@ function GitHubCard() {
 /**
  * GitLab has no equivalent of GitHub's App Manifest flow — there is no way
  * to create a scoped credential without the operator generating a Personal
- * Access Token on GitLab's own side first. Two connection modes, matching
- * the backend: one PAT for many repos (user-level), or one PAT per single
- * repo (repository-level, fully independent credentials).
+ * Access Token on GitLab's own side first. Settings only handles the
+ * account-level connection (one PAT, many repos) — connecting a single
+ * repository with its own independent token happens from a Project's
+ * Repositories tab instead, where it belongs alongside every other way of
+ * adding a repository to a Project, not split across two pages.
  */
 function GitLabCard() {
   const [data, setData] = useState(null);
   const [repos, setRepos] = useState([]);
-  const [mode, setMode] = useState('account'); // 'account' | 'repository'
   const [accountForm, setAccountForm] = useState({ gitlab_url: 'https://gitlab.com', token: '' });
-  const [repoForm, setRepoForm] = useState({ gitlab_url: 'https://gitlab.com', full_path: '', token: '' });
   const [syncing, setSyncing] = useState(null);
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState('');
@@ -367,17 +367,6 @@ function GitLabCard() {
     setSaving(false);
   };
 
-  const connectRepository = async (e) => {
-    e.preventDefault();
-    setErr(''); setMsg(''); setSaving(true);
-    try {
-      await api.post('/modules/gitlab/repositories', repoForm);
-      setMsg(`Connected ${repoForm.full_path}. Attach it to a Project from that Project's Overview tab.`);
-      setRepoForm({ gitlab_url: repoForm.gitlab_url, full_path: '', token: '' });
-    } catch (ex) { setErr(ex.message); }
-    setSaving(false);
-  };
-
   const sync = async (connectionId) => {
     setSyncing(connectionId); setMsg(''); setErr('');
     try {
@@ -400,64 +389,24 @@ function GitLabCard() {
       facts={data?.connections?.length ? [{ label: 'Accounts', value: data.connections.length }] : []}
     >
       <div className="space-y-4">
-        <div className="flex gap-1.5">
-          <button
-            type="button"
-            onClick={() => setMode('account')}
-            className={`border px-2.5 py-1 font-mono text-[10px] uppercase tracking-wider ${mode === 'account' ? 'border-sky-300 bg-sky-50 text-sky-700 dark:border-sky-700 dark:bg-sky-950/40 dark:text-sky-300' : 'border-slate-300 text-slate-500 hover:bg-slate-100 dark:border-slate-700 dark:text-slate-400 dark:hover:bg-slate-800'}`}
-          >
-            Connect an account
+        <form onSubmit={connectAccount} className="space-y-3">
+          <p className="font-mono text-[11px] text-slate-500 dark:text-slate-500">
+            One token gives Rotsy access to every repository it can see — good for a personal
+            account or a single owner managing several projects. To connect one repository with
+            its own independent token instead, do that from a Project's Repositories tab.
+          </p>
+          <div>
+            <div className="mb-1 font-mono text-[10px] uppercase tracking-wider text-slate-500">GitLab URL</div>
+            <input value={accountForm.gitlab_url} onChange={(e) => setAccountForm({ ...accountForm, gitlab_url: e.target.value })} className={INPUT} />
+          </div>
+          <div>
+            <div className="mb-1 font-mono text-[10px] uppercase tracking-wider text-slate-500">Personal Access Token (api scope)</div>
+            <input type="password" value={accountForm.token} onChange={(e) => setAccountForm({ ...accountForm, token: e.target.value })} className={INPUT} />
+          </div>
+          <button type="submit" disabled={saving} className="border border-sky-300 bg-sky-50 px-3 py-1.5 font-mono text-xs uppercase tracking-wider text-sky-700 hover:bg-sky-100 disabled:opacity-50 dark:border-sky-700 dark:bg-sky-950/40 dark:text-sky-300 dark:hover:bg-sky-900/40">
+            {saving ? '···' : 'Connect Account'}
           </button>
-          <button
-            type="button"
-            onClick={() => setMode('repository')}
-            className={`border px-2.5 py-1 font-mono text-[10px] uppercase tracking-wider ${mode === 'repository' ? 'border-sky-300 bg-sky-50 text-sky-700 dark:border-sky-700 dark:bg-sky-950/40 dark:text-sky-300' : 'border-slate-300 text-slate-500 hover:bg-slate-100 dark:border-slate-700 dark:text-slate-400 dark:hover:bg-slate-800'}`}
-          >
-            Connect one repository
-          </button>
-        </div>
-
-        {mode === 'account' ? (
-          <form onSubmit={connectAccount} className="space-y-3">
-            <p className="font-mono text-[11px] text-slate-500 dark:text-slate-500">
-              One token gives Rotsy access to every repository it can see — good for a personal
-              account or a single owner managing several projects.
-            </p>
-            <div>
-              <div className="mb-1 font-mono text-[10px] uppercase tracking-wider text-slate-500">GitLab URL</div>
-              <input value={accountForm.gitlab_url} onChange={(e) => setAccountForm({ ...accountForm, gitlab_url: e.target.value })} className={INPUT} />
-            </div>
-            <div>
-              <div className="mb-1 font-mono text-[10px] uppercase tracking-wider text-slate-500">Personal Access Token (api scope)</div>
-              <input type="password" value={accountForm.token} onChange={(e) => setAccountForm({ ...accountForm, token: e.target.value })} className={INPUT} />
-            </div>
-            <button type="submit" disabled={saving} className="border border-sky-300 bg-sky-50 px-3 py-1.5 font-mono text-xs uppercase tracking-wider text-sky-700 hover:bg-sky-100 disabled:opacity-50 dark:border-sky-700 dark:bg-sky-950/40 dark:text-sky-300 dark:hover:bg-sky-900/40">
-              {saving ? '···' : 'Connect Account'}
-            </button>
-          </form>
-        ) : (
-          <form onSubmit={connectRepository} className="space-y-3">
-            <p className="font-mono text-[11px] text-slate-500 dark:text-slate-500">
-              This token only needs access to one repository — its own independent credential,
-              unrelated to any account-level connection above.
-            </p>
-            <div>
-              <div className="mb-1 font-mono text-[10px] uppercase tracking-wider text-slate-500">GitLab URL</div>
-              <input value={repoForm.gitlab_url} onChange={(e) => setRepoForm({ ...repoForm, gitlab_url: e.target.value })} className={INPUT} />
-            </div>
-            <div>
-              <div className="mb-1 font-mono text-[10px] uppercase tracking-wider text-slate-500">Repository path</div>
-              <input value={repoForm.full_path} onChange={(e) => setRepoForm({ ...repoForm, full_path: e.target.value })} placeholder="group/project" className={INPUT} />
-            </div>
-            <div>
-              <div className="mb-1 font-mono text-[10px] uppercase tracking-wider text-slate-500">Personal Access Token (api scope)</div>
-              <input type="password" value={repoForm.token} onChange={(e) => setRepoForm({ ...repoForm, token: e.target.value })} className={INPUT} />
-            </div>
-            <button type="submit" disabled={saving} className="border border-sky-300 bg-sky-50 px-3 py-1.5 font-mono text-xs uppercase tracking-wider text-sky-700 hover:bg-sky-100 disabled:opacity-50 dark:border-sky-700 dark:bg-sky-950/40 dark:text-sky-300 dark:hover:bg-sky-900/40">
-              {saving ? '···' : 'Connect Repository'}
-            </button>
-          </form>
-        )}
+        </form>
 
         {data?.connections?.length > 0 && (
           <div className="border-t border-slate-100 pt-3 dark:border-slate-800/60">

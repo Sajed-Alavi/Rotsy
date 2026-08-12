@@ -76,6 +76,8 @@ MIN_SUPPORTED_MAJOR = 9
 
 _UNREACHABLE_MESSAGE = "Unable to connect to SonarQube. Verify the server URL, token, and network connectivity."
 _SONAR_PROJECT_NOT_FOUND = "Sonar project not found"
+_SONAR_NOT_CONFIGURED = "SonarQube is not configured."
+_SONAR_NOT_CONFIGURED_HINT = f"{_SONAR_NOT_CONFIGURED} Set it up in Settings -> Integrations -> SonarQube first."
 
 
 def _pdf_safe(value: str) -> str:
@@ -212,7 +214,7 @@ async def check_sonar_updates(
     """
     conn = await get_sonar_connection(session, settings)
     if not conn.is_configured():
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "SonarQube is not configured.")
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, _SONAR_NOT_CONFIGURED)
     try:
         client = SonarClient(conn.url, conn.token)
         info = await client.server_status()
@@ -294,7 +296,7 @@ async def create_sonar_project(
         if "not configured" in str(exc):
             raise HTTPException(
                 status.HTTP_400_BAD_REQUEST,
-                "SonarQube is not configured. Set it up in Settings -> Integrations -> SonarQube first.",
+                _SONAR_NOT_CONFIGURED_HINT,
             ) from exc
         if "does not exist" in str(exc):
             raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
@@ -340,7 +342,7 @@ async def list_quality_gates(
     Standard" gate is just one entry in this list, not a special case."""
     conn = await get_sonar_connection(session, settings)
     if not conn.is_configured():
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "SonarQube is not configured.")
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, _SONAR_NOT_CONFIGURED)
     try:
         client = SonarClient(conn.url, conn.token)
         return await client.list_quality_gates()
@@ -387,7 +389,7 @@ async def update_sonar_project_quality_gate(
         )
     conn = await get_sonar_connection(session, settings)
     if not conn.is_configured():
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "SonarQube is not configured.")
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, _SONAR_NOT_CONFIGURED)
     try:
         client = SonarClient(conn.url, conn.token)
         await set_project_quality_gate(client, sonar_project.sonar_project_key, body.preset)
@@ -919,7 +921,7 @@ async def _ensure_sonar_project(
         if "not configured" in str(exc):
             raise HTTPException(
                 status.HTTP_400_BAD_REQUEST,
-                "SonarQube is not configured. Set it up in Settings -> Integrations -> SonarQube first.",
+                _SONAR_NOT_CONFIGURED_HINT,
             ) from exc
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, _UNREACHABLE_MESSAGE) from exc
 

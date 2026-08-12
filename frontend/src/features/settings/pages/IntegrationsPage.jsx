@@ -278,6 +278,8 @@ function GitHubCard() {
             </div>
           )}
           {syncMsg && <div className="font-mono text-[11px] text-emerald-600 dark:text-emerald-400">{syncMsg}</div>}
+
+          {!data.has_webhook && <WebhookSecretForm appSlug={data.app_slug} onSaved={load} />}
         </div>
       )}
 
@@ -314,6 +316,67 @@ function GitHubCard() {
 
       {err && <div className="mt-3 font-mono text-xs text-rose-600 dark:text-rose-400">{err}</div>}
     </IntegrationCard>
+  );
+}
+
+/**
+ * Manual fallback for exactly the case the automatic App Manifest flow
+ * cannot handle: when FRONTEND_ORIGIN/WEBHOOK_BASE_URL isn't publicly
+ * reachable (typical local dev), manifest_form never asks GitHub for a
+ * webhook at all — reconnecting again is a no-op, since the same
+ * unreachable address fails the same reachability check every time. This
+ * doesn't call GitHub itself; it only tells Rotsy what secret to verify
+ * incoming deliveries against, once the operator has added a matching
+ * webhook on the App's own GitHub settings page (pointing at whatever
+ * *is* reachable — a tunnel, a public deployment).
+ */
+function WebhookSecretForm({ appSlug, onSaved }) {
+  const [secret, setSecret] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState('');
+  const [err, setErr] = useState('');
+
+  const save = async (e) => {
+    e.preventDefault();
+    if (!secret.trim()) return;
+    setBusy(true); setErr(''); setMsg('');
+    try {
+      await api.put('/modules/github/webhook-secret', { secret: secret.trim() });
+      setMsg('Saved — push-triggered analysis is active as soon as GitHub can reach the webhook URL you set.');
+      setSecret('');
+      onSaved();
+    } catch (ex) { setErr(ex.message); }
+    setBusy(false);
+  };
+
+  return (
+    <form onSubmit={save} className="border-t border-slate-100 pt-3 dark:border-slate-800/60">
+      <div className="mb-1 font-mono text-[10px] uppercase tracking-wider text-slate-500">Add a webhook manually</div>
+      <p className="mb-2 font-mono text-[11px] text-slate-500 dark:text-slate-500">
+        No publicly reachable address for Rotsy to register one automatically. Instead,{' '}
+        {appSlug ? (
+          <a href={`https://github.com/settings/apps/${appSlug}`} target="_blank" rel="noreferrer" className="underline">
+            open this App's settings on GitHub
+          </a>
+        ) : 'open this App\'s settings on GitHub'}, set the Webhook URL to a publicly-reachable address for{' '}
+        <code>/api/modules/github/webhooks</code> (a tunnel works for local dev), generate a secret there, and
+        paste that same secret below.
+      </p>
+      <div className="flex flex-wrap gap-2">
+        <input
+          type="password" value={secret} onChange={(e) => setSecret(e.target.value)}
+          placeholder="Webhook secret" className={`${INPUT} max-w-xs`}
+        />
+        <button
+          type="submit" disabled={busy || !secret.trim()}
+          className="shrink-0 border border-sky-300 bg-sky-50 px-3 py-1.5 font-mono text-xs uppercase tracking-wider text-sky-700 hover:bg-sky-100 disabled:opacity-50 dark:border-sky-700 dark:bg-sky-950/40 dark:text-sky-300 dark:hover:bg-sky-900/40"
+        >
+          {busy ? '···' : 'Save'}
+        </button>
+      </div>
+      {msg && <p className="mt-2 font-mono text-[11px] text-emerald-600 dark:text-emerald-400">{msg}</p>}
+      {err && <p className="mt-2 font-mono text-[11px] text-rose-600 dark:text-rose-400">{err}</p>}
+    </form>
   );
 }
 

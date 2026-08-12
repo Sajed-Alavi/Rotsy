@@ -291,6 +291,40 @@ async def manifest_callback(
     return RedirectResponse(f"{base}/settings/integrations?github_connected=1")
 
 
+class WebhookSecretUpdate(BaseModel):
+    secret: str = Field(..., min_length=8, max_length=255)
+
+
+@router.put("/webhook-secret", dependencies=[Depends(RequirePermission("projects:write"))])
+async def set_webhook_secret(
+    body: WebhookSecretUpdate,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> dict[str, Any]:
+    """Manual alternative to the App Manifest flow's automatic webhook
+    inclusion, for exactly the case that flow can't handle: when Rotsy's own
+    ``FRONTEND_ORIGIN``/``WEBHOOK_BASE_URL`` isn't publicly reachable (typical
+    local dev), ``manifest_form`` never asks GitHub for a webhook at all —
+    reconnecting again changes nothing, since the same unreachable address
+    fails the same check every time.
+
+    This never talks to GitHub. It only records the secret Rotsy should
+    verify incoming deliveries against; the operator adds the matching
+    webhook URL + secret on the App's own GitHub settings page first
+    (pointing at whatever *is* reachable — a tunnel, a public deployment),
+    the same way any other GitHub App owner would.
+    """
+    cfg = await get_github_app_config(session, settings)
+    if not cfg.is_configured():
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Connect the GitHub App first.")
+    await save_github_app_config(
+        session, settings,
+        app_id=cfg.app_id, app_slug=cfg.app_slug, private_key=cfg.private_key,
+        webhook_secret=body.secret,
+    )
+    return {"ok": True, "has_webhook": True}
+
+
 @router.get("/install-url", dependencies=[Depends(RequirePermission("projects:read"))])
 async def get_install_url(
     session: Annotated[AsyncSession, Depends(get_session)],

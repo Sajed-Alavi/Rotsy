@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { useOutletContext } from 'react-router';
+import { Link, useOutletContext } from 'react-router';
 import { api } from '../../../lib/api.js';
 import Badge from '../../../components/Badge.jsx';
 import DataTable from '../../../components/DataTable.jsx';
@@ -373,9 +373,15 @@ function AutoAnalyzeCell({ repo, enabled, onDone }) {
                 Enabled, but the GitHub App has no webhook configured — this isn't per-repository, so
                 there's nothing to retry here. The App was likely created while{' '}
                 <code>WEBHOOK_BASE_URL</code> pointed somewhere GitHub couldn't reach. Fix it in{' '}
-                <code>.env</code>, then Settings → Integrations → GitHub → Connect to GitHub again to
-                recreate the App with a webhook this time.
+                <code>.env</code>, restart the backend, then reconnect below to recreate the App
+                with a webhook this time.
               </p>
+              <Link
+                to="/settings/integrations"
+                className="mt-1.5 inline-block border border-rose-300 bg-rose-100 px-2 py-1 font-mono text-[10px] uppercase tracking-wider text-rose-700 hover:bg-rose-200 dark:border-rose-700 dark:bg-rose-900/40 dark:text-rose-300"
+              >
+                Reconnect in Settings → Integrations
+              </Link>
             </div>
           )}
 

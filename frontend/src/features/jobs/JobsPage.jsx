@@ -11,6 +11,8 @@ import { formatDateTime } from '../../lib/format.js';
 const JOB_TYPES = {
   clone_and_analyze: { category: 'Code Quality', label: 'Clone & analyze', to: '/code-quality/runs' },
   scan_image: { category: 'Vulnerability Scanning', label: 'Scan image', to: '/scan/images' },
+  scanner_db_update: { category: 'Vulnerability Scanning', label: 'Database update', to: '/scan/database' },
+  scanner_db_import: { category: 'Vulnerability Scanning', label: 'Database import', to: '/scan/database' },
   analyze_repo: { category: 'Storage', label: 'Storage analysis', to: '/browse/storage' },
   collect_metrics: { category: 'Monitoring', label: 'Collect metrics', to: '/monitoring' },
   run_retention: { category: 'Repositories', label: 'Retention run', to: '/repositories/retention' },
@@ -20,10 +22,15 @@ const JOB_TYPES = {
   run_scheduled_backup: { category: 'System', label: 'Scheduled backup', to: '/system' },
   sync: { category: 'System', label: 'Sync', to: '/system' },
 };
-const CATEGORY_ORDER = ['Code Quality', 'Vulnerability Scanning', 'Storage', 'Repositories', 'Monitoring', 'System'];
+// 'Other' is last on purpose — it's the jobMeta() fallback for a job type
+// missing from JOB_TYPES above (a real, if rare, way to hit it: a job type
+// added to a job handler and not to this map). Without it here, such a job
+// could never be selected in the section filter even though it's right
+// there in the table with an "Other" badge.
+const CATEGORY_ORDER = ['Code Quality', 'Vulnerability Scanning', 'Storage', 'Repositories', 'Monitoring', 'System', 'Other'];
 const CATEGORY_TONE = {
   'Code Quality': 'info', 'Vulnerability Scanning': 'bad', Storage: 'warn',
-  Repositories: 'neutral', Monitoring: 'ok', System: 'neutral',
+  Repositories: 'neutral', Monitoring: 'ok', System: 'neutral', Other: 'neutral',
 };
 const jobMeta = (type) => JOB_TYPES[type] || { category: 'Other', label: type, to: null };
 

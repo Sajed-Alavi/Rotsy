@@ -306,16 +306,23 @@ async def _pull_trivy_java_db(
         progress_range=(35, 46), env=env, timeout=3600.0,
     ):
         return java_tar, True
+    # A distinct destination from the primary's, not the same java_tar — the
+    # two resolve different blob digests, and resumable_oci_pull resumes
+    # purely off a partial file's byte offset with no digest check, so a
+    # primary attempt that dropped partway through and this fallback would
+    # otherwise splice bytes from two different artifacts together the next
+    # time this whole update runs.
+    java_tar_fallback = TRIVY_DOWNLOAD_DIR / "javadb-fallback.tar.gz"
     # ghcr.io (and the mirror.gcr.io it falls back to) throttles anonymous
     # pulls hard enough in practice that the primary image can still come up
     # empty; a second, independently hosted mirror is a genuine alternate
     # path, not just another attempt at the same throttled one.
     if await resumable_oci_pull(
-        TRIVY_JAVA_DB_IMAGE_FALLBACK, java_tar,
+        TRIVY_JAVA_DB_IMAGE_FALLBACK, java_tar_fallback,
         emit=emit, scanner="trivy", label="trivy-java-db (fallback mirror)",
         progress_range=(35, 46), env=env, timeout=3600.0,
     ):
-        return java_tar, True
+        return java_tar_fallback, True
     if oras is None:
         return java_tar, False
     java_dir = Path(tmp) / "java-db"

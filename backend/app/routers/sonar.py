@@ -395,6 +395,9 @@ async def update_sonar_project_quality_gate(
         await set_project_quality_gate(client, sonar_project.sonar_project_key, body.preset)
     except SonarError as exc:
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, _UNREACHABLE_MESSAGE) from exc
+    sonar_project.quality_gate_preset = body.preset
+    await session.commit()
+    await session.refresh(sonar_project)
     return sonar_project
 
 

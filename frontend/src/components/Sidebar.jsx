@@ -45,6 +45,7 @@ export default function Sidebar() {
             );
           }
           if (item.perm && !hasPermission(item.perm)) return null;
+          if (item.anyPerm && !item.anyPerm.some(hasPermission)) return null;
 
           const expanded = item.children && inSubtree(item.to);
 

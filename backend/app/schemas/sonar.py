@@ -35,6 +35,7 @@ class SonarProjectOut(BaseModel):
     language: str
     auto_analyze_enabled: bool
     auto_analyze_branches: list[str]
+    quality_gate_preset: str
 
 
 class SonarProjectUpdate(BaseModel):

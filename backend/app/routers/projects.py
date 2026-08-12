@@ -190,6 +190,7 @@ def _connected_repo_row(
         "language": sp.language if sp else None,
         "auto_analyze_enabled": sp.auto_analyze_enabled if sp else None,
         "auto_analyze_branches": sp.auto_analyze_branches if sp else None,
+        "quality_gate_preset": sp.quality_gate_preset if sp else None,
         "created_at": created_at,
     }
 

@@ -341,13 +341,18 @@ async def _pull_blob_chunk(
     async with client.stream("GET", blob_url, headers=req_headers) as stream:
         if stream.status_code == 401:
             # A transfer of this size at these speeds can easily outlive a
-            # short-lived registry token — refresh it and retry right away
-            # rather than treating this as a transient fault worth backing
-            # off for.
+            # short-lived registry token — refresh it and retry, on a short
+            # pause rather than the outer loop's full 10s (this is usually
+            # legitimate and self-resolving). Still a real pause, not zero:
+            # a token that keeps coming back 401'd (a scope the registry
+            # silently narrows, say) would otherwise loop this GET-then-
+            # token-exchange pair back to back for the whole surrounding
+            # timeout with no throttling at all.
             token = await _oci_bearer_token(client, stream.headers.get("www-authenticate", ""), repo)
             if not token:
                 raise RuntimeError("token refresh failed after a 401")
             headers["Authorization"] = f"Bearer {token}"
+            await asyncio.sleep(2)
             return done, prev_bytes, prev_time
         if stream.status_code not in (200, 206):
             raise httpx.HTTPStatusError(f"HTTP {stream.status_code}", request=stream.request, response=stream)

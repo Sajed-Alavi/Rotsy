@@ -133,7 +133,12 @@ async def update_role(
 ):
     role = await _get_role_or_404(session, role_id)
 
-    if body.name is not None:
+    if body.name is not None and body.name != role.name:
+        # Renaming the pinned admin role would break every `role.name ==
+        # "admin"` check elsewhere (project-access bypass, _reject_if_admin
+        # itself) — the same one-way-door reasoning _reject_if_admin already
+        # applies to access_mode.
+        _reject_if_admin(role)
         clash = await session.scalar(select(Role).where(Role.name == body.name, Role.id != role.id))
         if clash is not None:
             raise HTTPException(status.HTTP_409_CONFLICT, "Role name already exists.")

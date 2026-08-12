@@ -69,6 +69,12 @@ class SonarProject(Base):
     # analysis runs for anyone on Community Edition the first time a
     # feature branch was pushed.
     auto_analyze_branches: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    # Which of app.modules.sonar.provisioning.QUALITY_GATE_PRESETS this
+    # repository is currently assigned to on SonarQube — persisted here so
+    # the picker in the Project Repositories UI reflects the actual current
+    # gate instead of always defaulting to "standard" on reopen. Set at
+    # connect time and every time it's changed via PUT .../quality-gate.
+    quality_gate_preset: Mapped[str] = mapped_column(String(16), nullable=False, default="standard", server_default="standard")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 

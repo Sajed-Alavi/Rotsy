@@ -35,12 +35,14 @@ export default function SettingsPage() {
 
   // A membership row for the current user with role "admin" can manage
   // membership; so can a global admin, who bypasses membership entirely on
-  // the backend and so may have no row here at all — the only way this page
-  // loaded without one is that bypass, since a non-admin without a row would
-  // have been 403'd before reaching this project at all.
+  // the backend (see is_global_admin in app/core/project_access.py) —
+  // checked the same way here, off the actual role list, rather than
+  // inferred from "no membership row after loading" (indistinguishable from
+  // a failed /members fetch, and wrong anyway for a global admin who *does*
+  // hold a viewer/member row: the backend bypass still applies to them).
+  const isGlobalAdmin = user?.roles?.some((r) => r.name === 'admin') ?? false;
   const ownMembership = members.find((m) => m.user_id === user?.id);
-  const isBypassAdmin = !loading && !ownMembership;
-  const canManage = hasPermission('projects:write') && (ownMembership?.project_role === 'admin' || isBypassAdmin);
+  const canManage = hasPermission('projects:write') && (ownMembership?.project_role === 'admin' || isGlobalAdmin);
 
   const updateRole = async (member, project_role) => {
     setError('');

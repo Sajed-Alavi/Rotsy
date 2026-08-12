@@ -228,8 +228,22 @@ async def run_policy(
 
 
 async def run_all_enabled(nexus: NexusClient, session: AsyncSession, *, dry_run: bool = False, on_progress=None) -> list[dict]:
-    """Run every enabled retention policy. Returns per-policy results."""
-    rows = (await session.execute(select(RetentionPolicy).where(RetentionPolicy.enabled.is_(True)))).scalars().all()
+    """Run every enabled policy still on the shared schedule.
+
+    Excludes policies with their own ``interval_minutes`` set — those already
+    run on their own cadence via ``_retention_interval_loop``/
+    ``poll_due_policies``, so including them here (the daily
+    ``RETENTION_RUN_AT`` sweep, and the manual "run all" action) would run
+    them a second time, more often than their configured interval.
+    """
+    rows = (
+        await session.execute(
+            select(RetentionPolicy).where(
+                RetentionPolicy.enabled.is_(True),
+                RetentionPolicy.interval_minutes.is_(None),
+            )
+        )
+    ).scalars().all()
     results = []
     for p in rows:
         try:

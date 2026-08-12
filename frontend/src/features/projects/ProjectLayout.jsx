@@ -6,11 +6,12 @@ import Icon from '../../components/Icon.jsx';
 
 /**
  * Shell for /projects/:id: one header, one tab strip, one <Outlet/> — same
- * shape as ScanLayout/SettingsLayout. Security and Artifacts reuse the
- * existing Trivy/Grype and Nexus pages rather than duplicating them (see
- * their page components) — this project doesn't yet track which Nexus
- * repository/image belongs to which Project, so those tabs link out to the
- * existing global views instead of pretending to filter by project.
+ * shape as ScanLayout/SettingsLayout. Deliberately three tabs, not five:
+ * this project doesn't yet track which Nexus repository/image belongs to
+ * which Project, so a "Security" or "Artifacts" tab here could only ever be
+ * a link out to the existing global scanning/repository views — Overview's
+ * "Related views" section covers that in one line instead of spending a
+ * whole tab, and a whole page navigation, on a dead end.
  */
 export default function ProjectLayout() {
   const { id } = useParams();
@@ -24,8 +25,6 @@ export default function ProjectLayout() {
   const TABS = [
     { to: `/projects/${id}`, label: 'Overview', end: true },
     { to: `/projects/${id}/repositories`, label: 'Repositories' },
-    { to: `/projects/${id}/security`, label: 'Security' },
-    { to: `/projects/${id}/artifacts`, label: 'Artifacts' },
     { to: `/projects/${id}/insights`, label: 'Insights' },
   ];
 

@@ -150,6 +150,22 @@ export default function OverviewPage() {
           ))
         )}
       </section>
+
+      {/* Not yet correlated to this specific Project (see docs) — a link
+          out, not a filtered view that doesn't actually exist. */}
+      <section className="border border-slate-200 dark:border-slate-800">
+        <div className="p-4">
+          <h2 className="font-mono text-[10px] uppercase tracking-wider text-slate-500">Related views</h2>
+        </div>
+        <Link to="/scan" className="group flex items-center justify-between border-t border-slate-100 px-4 py-2.5 text-slate-700 hover:bg-slate-50 dark:border-slate-800/60 dark:text-slate-300 dark:hover:bg-slate-900/60">
+          <span className="font-mono text-xs">Vulnerability Scanning</span>
+          <span className="font-mono text-[10px] text-slate-400 dark:text-slate-600">Trivy + Grype, global</span>
+        </Link>
+        <Link to="/repositories" className="group flex items-center justify-between border-t border-slate-100 px-4 py-2.5 text-slate-700 hover:bg-slate-50 dark:border-slate-800/60 dark:text-slate-300 dark:hover:bg-slate-900/60">
+          <span className="font-mono text-xs">Repositories</span>
+          <span className="font-mono text-[10px] text-slate-400 dark:text-slate-600">Nexus, global</span>
+        </Link>
+      </section>
     </div>
   );
 }

@@ -33,10 +33,12 @@ is enforced in code and pointed at below.
 ## Contents
 
 - [Architecture](#architecture)
+- [Projects](#projects)
 - [Code Quality: GitHub/GitLab + SonarQube](#code-quality-githubgitlab--sonarqube)
 - [Browsing images](#browsing-images)
 - [Deleting images](#deleting-images)
 - [Access control](#access-control)
+- [Monitoring](#monitoring)
 - [How scanning is triggered](#how-scanning-is-triggered)
 - [Zero-configuration registry discovery](#zero-configuration-registry-discovery)
 - [Static-only guarantee](#static-only-guarantee)
@@ -112,6 +114,55 @@ loops plus an endpoint.
 
 ---
 
+## Projects
+
+A **Project** is the unit that groups a source repository with its SonarQube
+analysis and, eventually, its Nexus artifacts, so the three read as one page
+instead of three separate tools. Create one from **Projects → New Project**,
+then connect a GitHub or GitLab repository to it from that Project's own
+**Repositories** tab. Analysis itself is still configured and run from the
+global Code Quality section below — a Project is where the *result* rolls up
+per repository, not where analysis settings live.
+
+Each Project carries a deterministic, documented **Health Score** (0–100,
+published scoring factors, no black box) derived from its repositories'
+SonarQube results, and a feed of **Insights** — new issues, coverage
+regressions, quality gate changes — computed automatically as each analysis
+completes, never inferred.
+
+### Project-scoped access control
+
+A Project has its own access axis, independent of the repository/image access
+rules described under [Access control](#access-control) below — same "what
+vs. where" split, one level up:
+
+- **`projects:read` / `projects:write`** — a role permission, same mechanism
+  as every other permission key — decides whether a user may use the Projects
+  feature *at all*.
+- **Project membership** decides *which* Projects they can see or act on. A
+  user with no membership row for a Project has zero access to it — sees it
+  neither in the Projects list nor by its direct URL — whatever global
+  permissions they hold. Access granted on one Project never carries over to
+  another.
+
+Membership has three roles, each a superset of the last:
+
+| Role     | Grants                                                                        |
+| -------- | ------------------------------------------------------------------------------ |
+| `viewer` | See the Project, its integrations, insights, health score, connected repositories |
+| `member` | The above, plus connect and disconnect repositories/integrations              |
+| `admin`  | The above, plus manage membership and delete the Project                      |
+
+Creating a Project makes you its first `admin` member automatically. Manage
+membership from that Project's own **Settings** tab — search for a user, pick
+their role, remove them — without needing the global `users:manage`
+permission; a Project admin can grant access to their own Project on their
+own. The seeded global `admin` role bypasses membership entirely, the same
+reasoning as the `unrestricted` access mode below: an administrator locked out
+of a Project would have no way back in through the app.
+
+---
+
 ## Code Quality: GitHub/GitLab + SonarQube
 
 The other half of the app, alongside image scanning: connect a GitHub or GitLab
@@ -153,6 +204,13 @@ or the same pages at `/docs` inside the running app.
 ---
 
 ## Browsing images
+
+**Browse Files** in the sidebar opens a two-tab page: **Browse** (below) and
+**Storage Analyzer** — a deep, multi-format breakdown of physical disk usage
+per repository (manifest-level for Docker, asset aggregation for everything
+else), streamed live over SSE while it runs. Two different questions —
+"what's in this repository" vs. "what's actually using disk" — on one page
+instead of two separate sidebar entries.
 
 **Browse** has two views, selectable per repository.
 
@@ -201,7 +259,10 @@ create one by default; add it under **Administration → System → Tasks**.
 
 ### Retention policies
 
-For bulk cleanup, **Retention** applies rules on a schedule. `keep last N`
+For bulk cleanup, **Retention** — a tab of **Repositories** in the sidebar,
+alongside **Blobstores**, since all three (repository configuration, disk
+allocation, cleanup rules) are facets of the same underlying storage layer —
+applies rules on a schedule. `keep last N`
 counts versions **within each image**, not across the repository — counted
 repository-wide, `keep_last_n=3` deletes whole images merely because other images
 were pushed more recently, which is how a "keep 3" rule ends up removing an
@@ -211,6 +272,10 @@ an age rule; the run reports them as skipped rather than guessing.
 ---
 
 ## Access control
+
+This section covers repository/image access. Projects have their own,
+independent access axis — see [Project-scoped access
+control](#project-scoped-access-control) above.
 
 Two independent axes, modelled on JFrog Artifactory's permission targets.
 
@@ -242,6 +307,35 @@ deletion) require access to the whole repository rather than part of it.
 
 Full reference, wildcard tables and worked examples are in the in-app docs at
 **/docs/permission-model** and **/docs/access-rules-cookbook**.
+
+---
+
+## Monitoring
+
+One page, three tabs, instead of three separate sidebar entries that used to
+be scattered under a "Monitoring" section header with nothing tying them
+together.
+
+**Metrics** (the default tab) — real Nexus health: version, edition, active
+security warnings, health-check probes as colour-coded tiles, blobstore disk
+usage with progress bars, the top repositories by size, and a per-repository
+storage-growth chart over a selectable window (6h/24h/7d/30d). Refreshes every
+30 seconds.
+
+**Background Jobs** — every asynchronous task Rotsy runs (scans, analyses,
+storage analysis, metric collection, retention runs, repository provisioning,
+backups, syncs), grouped by the section it belongs to (Code Quality,
+Vulnerability Scanning, Storage, Repositories, Monitoring, System), with a
+status summary (running/pending/failed/done counts) and filters by section and
+status. Each row links to where its result actually shows up, and a running or
+pending job can be cancelled — genuinely: the job runner tracks the underlying
+task and kills the subprocess behind it, not just a status flag.
+
+**Alerts** — threshold rules (`storage.total`, `storage.asset_count`,
+`blobstore.used_pct`) evaluated against the same metric history, each
+optionally posting to a webhook (e.g. Slack) when it fires. Scoped to a single
+repository or blobstore via a SQL `LIKE` filter, or left open (`%`) to watch
+everything.
 
 ## How scanning is triggered
 

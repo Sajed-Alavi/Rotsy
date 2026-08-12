@@ -211,7 +211,7 @@ async def sync_repositories(
         # (external_id there is the numeric id) — resolve it once per new repo.
         try:
             detail = await _fetch_project(connection.gitlab_url, token, str(gitlab_project_id))
-        except GitLabProviderError:
+        except (httpx.HTTPError, GitLabProviderError):
             continue
         session.add(GitLabRepository(
             connection_id=connection_id,
@@ -401,7 +401,12 @@ async def _try_register_webhook(settings: Settings, repo: GitLabRepository) -> b
         repo.webhook_id = int(handle.external_id)
         repo.webhook_secret = secret
         return True
-    except GitLabProviderError:
+    except (httpx.HTTPError, GitLabProviderError):
+        # httpx.HTTPError too, not just GitLabProviderError — a raw network
+        # failure here (unreachable GitLab, timeout) used to propagate
+        # uncaught out of every caller (reconnect, map, bulk-map) as a 500
+        # instead of the "webhook missing" state those callers already
+        # handle gracefully.
         logger.warning("Failed to register a GitLab webhook for %s; automatic push analysis "
                         "will not trigger until this succeeds.", repo.full_path, exc_info=True)
         return False

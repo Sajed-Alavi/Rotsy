@@ -23,6 +23,7 @@ watcher that baselines a repository on first sight. See
 from __future__ import annotations
 
 import asyncio
+import datetime as _dt
 import logging
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -168,8 +169,6 @@ async def _scanner_db_loop(settings: Settings, stop: asyncio.Event) -> None:
     (which the old shell script did as well, so it happened twice) meant a
     redeploy cost hundreds of megabytes for content already on disk.
     """
-    import datetime as _dt
-
     from .modules.nexus import db as scanner_db
 
     logger = logging.getLogger("scanner_db_loop")
@@ -201,7 +200,11 @@ async def _scanner_db_loop(settings: Settings, stop: asyncio.Event) -> None:
     await _fetch_missing_databases_at_startup(scanner_db, settings, enqueue, logger)
 
     while not stop.is_set():
-        delay = _next_scanner_db_delay(time_of_day, interval)
+        try:
+            delay = _next_scanner_db_delay(time_of_day, interval)
+        except Exception:  # noqa: BLE001 - see _retention_scheduler's identical guard
+            logger.exception("Could not compute the next scanner-db refresh time; retrying in 5 minutes")
+            delay = 300.0
         try:
             await asyncio.wait_for(stop.wait(), timeout=delay)
             return
@@ -281,8 +284,6 @@ async def _retention_scheduler(settings: Settings, stop: asyncio.Event) -> None:
     server-local). The job itself executes every enabled policy and reclaims
     blob space. This loop only computes time-to-next-run and sleeps.
     """
-    import datetime as _dt
-
     logger = logging.getLogger("retention_scheduler")
     cache = _lifespan_state.get("cache")
     if cache is None:
@@ -298,7 +299,17 @@ async def _retention_scheduler(settings: Settings, stop: asyncio.Event) -> None:
         pass
 
     while not stop.is_set():
-        delay = max(30.0, _seconds_until(target_hh, target_mm))
+        try:
+            delay = max(30.0, _seconds_until(target_hh, target_mm))
+        except Exception:  # noqa: BLE001 - a broken delay calculation must not silently kill this loop forever
+            # It did, once (a refactor left _seconds_until referencing a name
+            # that was never actually in its scope — NameError, uncaught,
+            # here, ~60s after every restart, with nothing logged until an
+            # already-discarded exception at shutdown). This loop enqueuing
+            # nothing, ever, with no visible error, is the failure mode this
+            # whole except clause exists to rule out.
+            logger.exception("Could not compute the next retention run time; retrying in 5 minutes")
+            delay = 300.0
         try:
             await asyncio.wait_for(stop.wait(), timeout=delay)
             return  # stop signaled

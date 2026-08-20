@@ -675,7 +675,7 @@ function TelegramCard() {
         <form onSubmit={save} className="space-y-3">
           <div>
             <div className="mb-1 font-mono text-[10px] uppercase tracking-wider text-slate-500">
-              Bot Token {data?.configured && '(leave blank to keep the current one)'}
+              Bot Token
             </div>
             <input
               type="password" value={form.token} onChange={(e) => setForm({ token: e.target.value })}

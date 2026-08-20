@@ -8,14 +8,18 @@ functions (``routers.projects.list_project_repositories``,
 ``routers.sonar.run_repository_analysis``) are called directly as plain
 Python functions rather than duplicating their orchestration logic; both
 take only plain parameters (no ``Request``), so this is safe, but it means
-this module — unusually for ``modules/`` — reaches into ``routers/``. The
-project's own access check for the run-analysis case is verified here
-explicitly, since that endpoint's own dependency only checks the global
-``projects:write`` permission, not project membership.
+this module — unusually for ``modules/`` — reaches into ``routers/``. Both
+are imported lazily inside the functions that use them rather than at
+module scope, so importing this dispatcher never risks a circular import
+with whatever router eventually imports it. The project's own access check
+for the run-analysis case is verified here explicitly, since that
+endpoint's own dependency only checks the global ``projects:write``
+permission, not project membership.
 """
 
 from __future__ import annotations
 
+import html
 import logging
 from typing import Any
 
@@ -29,8 +33,6 @@ from ...core import projects as projects_core
 from ...core.health import compute_health_score
 from ...dependencies import user_permissions
 from ...models import SonarProject, User
-from ...routers.projects import list_project_repositories
-from ...routers.sonar import run_repository_analysis
 from ...state import AppState
 from . import keyboards as kb
 from .auth import linked_user
@@ -38,6 +40,16 @@ from .callback_data import Callback, CallbackDataError, build, parse
 from .client import TelegramClient
 
 logger = logging.getLogger(__name__)
+
+
+def _esc(text: str) -> str:
+    """Escape a value we don't control (project names, usernames) before it
+    goes into a ``parse_mode: "HTML"`` message — every send/edit call uses
+    HTML mode, and Telegram both rejects malformed tags (silently killing
+    that message from the recipient's point of view) and renders live
+    ``<a href>`` links, so unescaped user-set text is both a breakage and an
+    injection vector."""
+    return html.escape(str(text))
 
 
 def _require_read(user: User) -> None:
@@ -62,6 +74,7 @@ async def _require_project_admin_write(session: AsyncSession, user: User, projec
 
 async def _projects_list(session: AsyncSession, user: User, page: int) -> tuple[str, dict]:
     _require_read(user)
+    page = max(0, page)
     all_projects = await projects_core.list_projects(session, user)
     start, end = page * kb.PAGE_SIZE, page * kb.PAGE_SIZE + kb.PAGE_SIZE
     page_items = all_projects[start:end]
@@ -90,7 +103,7 @@ async def _project_detail(session: AsyncSession, user: User, project_id: int) ->
     )
     can_manage_members = is_admin and "projects:write" in user_permissions(user)
 
-    lines = [f"<b>{project.name}</b>", f"Your role: {role}"]
+    lines = [f"<b>{_esc(project.name)}</b>", f"Your role: {role}"]
     if health.has_data:
         lines.append(f"Health: {health.score}/100")
     else:
@@ -115,6 +128,7 @@ async def _members_list(session: AsyncSession, user: User, project_id: int) -> t
 
 async def _candidates_list(session: AsyncSession, user: User, project_id: int, page: int) -> tuple[str, dict]:
     await _require_project_admin_write(session, user, project_id)
+    page = max(0, page)
     offset = page * kb.PAGE_SIZE
     results = await projects_core.search_member_candidates(session, project_id, None, offset=offset, limit=kb.PAGE_SIZE + 1)
     has_more = len(results) > kb.PAGE_SIZE
@@ -129,13 +143,13 @@ async def _pick_candidate(session: AsyncSession, user: User, project_id: int, ta
     if target is None:
         raise HTTPException(404, "User not found.")
     back = build("mc", project_id, 0)
-    return f"Add <b>{target.username}</b> as:", kb.role_picker("mr", project_id, target_user_id, back)
+    return f"Add <b>{_esc(target.username)}</b> as:", kb.role_picker("mr", project_id, target_user_id, back)
 
 
 async def _confirm_add(session: AsyncSession, user: User, project_id: int, target_user_id: int, role: str) -> tuple[str, dict]:
     await _require_project_admin_write(session, user, project_id)
     result = await projects_core.add_member(session, project_id, target_user_id, role)
-    return f"✅ Added {result['username']} as {result['project_role']}.", kb.back_only(build("mm", project_id))
+    return f"✅ Added {_esc(result['username'])} as {result['project_role']}.", kb.back_only(build("mm", project_id))
 
 
 async def _member_actions(session: AsyncSession, user: User, project_id: int, member_id: int) -> tuple[str, dict]:
@@ -152,7 +166,7 @@ async def _role_picker_for_existing(session: AsyncSession, user: User, project_i
 async def _change_role(session: AsyncSession, user: User, project_id: int, member_id: int, role: str) -> tuple[str, dict]:
     await _require_project_admin_write(session, user, project_id)
     result = await projects_core.update_member_role(session, project_id, member_id, role)
-    return f"✅ {result['username']} is now {result['project_role']}.", kb.back_only(build("mm", project_id))
+    return f"✅ {_esc(result['username'])} is now {result['project_role']}.", kb.back_only(build("mm", project_id))
 
 
 async def _confirm_remove_prompt(session: AsyncSession, user: User, project_id: int, member_id: int) -> tuple[str, dict]:
@@ -170,11 +184,18 @@ async def _repos_list(
     session: AsyncSession, settings: Settings, user: User, project_id: int, page: int,
 ) -> tuple[str, dict]:
     _require_read(user)
+    page = max(0, page)
     membership = await project_access.assert_project_access(session, user, project_id, "viewer")
     can_run = (
         project_access.is_global_admin(user)
         or (membership is not None and project_access.meets(membership.project_role, "member"))
     ) and "projects:write" in user_permissions(user)
+
+    # Imported lazily (rather than at module scope) because it lives in
+    # routers/ — see this module's docstring — and a module-scope import
+    # here would make the first routers/ module that imports this dispatcher
+    # a circular import.
+    from ...routers.projects import list_project_repositories
 
     all_repos = await list_project_repositories(project_id, session, settings)
     start, end = page * kb.PAGE_SIZE, page * kb.PAGE_SIZE + kb.PAGE_SIZE
@@ -198,6 +219,10 @@ async def _run_analysis(
     # explicitly so the bot never triggers analysis on a project the user
     # isn't actually a member of.
     await project_access.assert_project_access(session, user, sonar_project.project_id, "member")
+
+    # Imported lazily for the same circular-import reason as
+    # list_project_repositories above.
+    from ...routers.sonar import run_repository_analysis
 
     result = await run_repository_analysis(sonar_project_id, session, settings, app_state_obj)
     job_id = str(result.get("job_id", "?"))[:8]
@@ -242,7 +267,16 @@ async def _dispatch(
     raise CallbackDataError(f"unknown action {action!r}")
 
 
-async def _handle_start(session: AsyncSession, client: TelegramClient, chat_id: int) -> None:
+async def _handle_start(session: AsyncSession, client: TelegramClient, chat_id: int, chat_type: str) -> None:
+    if chat_type != "private":
+        # Never respond in a group/channel, and in particular never hand out
+        # its chat id there: TelegramLink.chat_id is the only identifier
+        # account access rests on (see models/telegram.py), so it must
+        # always name exactly one person. A group's id is shared by every
+        # member of that group — handing it out would let anyone who is
+        # ever in the group act as whichever Rotsy account an admin later
+        # links it to.
+        return
     user = await linked_user(session, chat_id)
     if user is None:
         await client.send_message(
@@ -253,7 +287,7 @@ async def _handle_start(session: AsyncSession, client: TelegramClient, chat_id: 
             "(Settings → Integrations → Telegram).",
         )
         return
-    await client.send_message(chat_id, f"Welcome back, <b>{user.username}</b>.", reply_markup=kb.main_menu())
+    await client.send_message(chat_id, f"Welcome back, <b>{_esc(user.username)}</b>.", reply_markup=kb.main_menu())
 
 
 async def _handle_callback(
@@ -280,6 +314,9 @@ async def _handle_callback(
         text, markup = f"⚠ {exc.detail}", kb.back_only(build("pl", 0))
     except CallbackDataError:
         text, markup = "⚠ That button is no longer valid.", kb.back_only(build("pl", 0))
+    except Exception:  # noqa: BLE001 - e.g. a tampered/out-of-range arg reaching the DB; must still answer the callback so Telegram doesn't leave the button spinning
+        logger.exception("Unhandled error dispatching callback %r for chat %s", data, chat_id)
+        text, markup = "⚠ Something went wrong. Please try again.", kb.back_only(build("pl", 0))
 
     await client.answer_callback_query(cq_id)
     try:
@@ -301,4 +338,4 @@ async def handle_update(
         # response (the menu, or the not-linked notice), rather than being
         # silently dropped, which would look broken to someone who just
         # typed something reasonable like "hi" or "/projects".
-        await _handle_start(session, client, message["chat"]["id"])
+        await _handle_start(session, client, message["chat"]["id"], message["chat"].get("type", ""))

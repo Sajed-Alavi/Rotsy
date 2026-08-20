@@ -32,7 +32,8 @@ def upgrade() -> None:
         sa.Column("linked_by", sa.String(length=64), nullable=False),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
     )
-    op.create_index("ix_telegram_links_user_id", "telegram_links", ["user_id"])
+    # No separate index on user_id: the unique constraint below already
+    # backs one in Postgres, and the model declares no index=True either.
     op.create_unique_constraint("uq_telegram_links_user_id", "telegram_links", ["user_id"])
     op.create_unique_constraint("uq_telegram_links_chat_id", "telegram_links", ["chat_id"])
 
@@ -40,5 +41,4 @@ def upgrade() -> None:
 def downgrade() -> None:
     op.drop_constraint("uq_telegram_links_chat_id", "telegram_links", type_="unique")
     op.drop_constraint("uq_telegram_links_user_id", "telegram_links", type_="unique")
-    op.drop_index("ix_telegram_links_user_id", table_name="telegram_links")
     op.drop_table("telegram_links")

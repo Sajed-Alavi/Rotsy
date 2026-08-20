@@ -421,26 +421,42 @@ async def _telegram_poll_loop(settings: Settings, stop: asyncio.Event) -> None:
     consecutive_failures = 0
 
     while not stop.is_set():
-        async with factory() as session:
-            conn = await get_telegram_connection(session, settings)
-        if not conn.is_configured():
-            try:
-                await asyncio.wait_for(stop.wait(), timeout=60)
-                return  # stop signaled
-            except asyncio.TimeoutError:
-                continue
-
-        client = TelegramClient(conn.token)
         try:
+            async with factory() as session:
+                conn = await get_telegram_connection(session, settings)
+            if not conn.is_configured():
+                try:
+                    await asyncio.wait_for(stop.wait(), timeout=60)
+                    return  # stop signaled
+                except asyncio.TimeoutError:
+                    continue
+
+            client = TelegramClient(conn.token)
             offset = None if last_update_id is None else last_update_id + 1
             updates = await client.get_updates(offset, timeout=25)
             consecutive_failures = 0
         except TelegramError:
             consecutive_failures += 1
-            backoff = min(60.0, 5.0 * (2 ** (consecutive_failures - 1)))
+            # Exponent capped at 10 (backoff already caps at 60s via min()
+            # below, but 5.0 * 2**(consecutive_failures - 1) is computed as a
+            # Python int first and overflows converting to float long before
+            # that min() ever gets a chance to clamp it).
+            backoff = min(60.0, 5.0 * (2 ** min(consecutive_failures - 1, 10)))
             logger.warning(
                 "Telegram getUpdates failed (%d in a row); retrying in %.0fs",
                 consecutive_failures, backoff, exc_info=True,
+            )
+            try:
+                await asyncio.wait_for(stop.wait(), timeout=backoff)
+                return  # stop signaled
+            except asyncio.TimeoutError:
+                continue
+        except Exception:  # noqa: BLE001 - e.g. a DB hiccup fetching the connection; must not silently kill this loop forever (see _retention_scheduler's own comment on this exact failure mode)
+            consecutive_failures += 1
+            backoff = min(60.0, 5.0 * (2 ** min(consecutive_failures - 1, 10)))
+            logger.exception(
+                "Telegram poll loop iteration failed (%d in a row); retrying in %.0fs",
+                consecutive_failures, backoff,
             )
             try:
                 await asyncio.wait_for(stop.wait(), timeout=backoff)

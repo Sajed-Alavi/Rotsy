@@ -13,8 +13,9 @@ from __future__ import annotations
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import Settings
@@ -103,6 +104,22 @@ class LinkCreate(BaseModel):
     chat_id: int
     telegram_username: str | None = Field(default=None, max_length=64)
 
+    @field_validator("chat_id")
+    @classmethod
+    def _chat_id_must_be_private(cls, value: int) -> int:
+        """Telegram private-chat ids are always positive (they equal the
+        user's own Telegram user id); group/supergroup/channel ids are
+        always negative. Rejecting non-positive ids here guarantees every
+        stored chat_id names exactly one person, which is what
+        TelegramLink's whole security model rests on — see
+        models/telegram.py. Without this, an admin who pastes a group's
+        chat id (easy to end up with: it's what /start replies with in a
+        group too) would let every member of that group act as whichever
+        Rotsy account gets linked to it."""
+        if value <= 0:
+            raise ValueError("Telegram chat ID must be a private chat ID (a positive number), not a group or channel.")
+        return value
+
 
 @router.post("/links", status_code=status.HTTP_201_CREATED,
              dependencies=[Depends(RequirePermission("system:execute"))])
@@ -127,7 +144,15 @@ async def create_link(
         telegram_username=body.telegram_username, linked_by=admin.username,
     )
     session.add(link)
-    await session.commit()
+    try:
+        await session.commit()
+    except IntegrityError:
+        # The two pre-checks above are separate statements from this INSERT,
+        # so two concurrent submissions for the same user/chat can both pass
+        # them; the unique constraints are the real guard, this just turns
+        # the resulting 500 back into the same 409 the pre-checks intend.
+        await session.rollback()
+        raise HTTPException(status.HTTP_409_CONFLICT, "This user or chat ID is already linked.") from None
     await session.refresh(link)
     return {
         "id": link.id, "user_id": link.user_id, "username": target.username,

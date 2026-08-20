@@ -133,8 +133,9 @@ async def member_candidates(
     project_id: int,
     session: Annotated[AsyncSession, Depends(get_session)],
     q: str | None = None,
+    offset: int = 0,
 ) -> list[User]:
-    return await projects_core.search_member_candidates(session, project_id, q)
+    return await projects_core.search_member_candidates(session, project_id, q, offset=offset)
 
 
 @router.post("/{project_id}/members", status_code=201, response_model=ProjectMemberOut,

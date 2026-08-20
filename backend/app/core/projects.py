@@ -128,15 +128,23 @@ async def list_members(session: AsyncSession, project_id: int) -> list[dict]:
     return [_member_row(member, user) for member, user in rows]
 
 
-async def search_member_candidates(session: AsyncSession, project_id: int, q: str | None) -> list[User]:
+async def search_member_candidates(
+    session: AsyncSession, project_id: int, q: str | None, *, offset: int = 0, limit: int = 20,
+) -> list[User]:
     """Users addable to a project — a lighter query than the global user list,
-    so a project-admin can grant access without holding ``users:manage``."""
+    so a project-admin can grant access without holding ``users:manage``.
+
+    ``offset``/``limit`` default to the original unpaginated behavior (first
+    20). A caller paging through results (the Telegram bot's candidate
+    picker) can request ``limit + 1`` and treat a full-length result as
+    "there's a next page" without a separate count query.
+    """
     await get_project(session, project_id)  # 404s if missing
     stmt = select(User).where(User.is_active.is_(True))
     if q:
         like = f"%{q}%"
         stmt = stmt.where(or_(User.username.ilike(like), User.email.ilike(like)))
-    stmt = stmt.order_by(User.username).limit(20)
+    stmt = stmt.order_by(User.username).offset(offset).limit(limit)
     rows = (await session.execute(stmt)).scalars().all()
     return list(rows)
 

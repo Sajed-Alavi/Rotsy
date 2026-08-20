@@ -71,6 +71,12 @@ class Settings(BaseSettings):
     SONAR_URL: str = ""
     SONAR_ADMIN_TOKEN: str = ""
 
+    # --- Telegram bot (OPTIONAL — link Rotsy users to a Telegram chat) -----
+    # Token from @BotFather. Bootstrap default only; the dashboard value
+    # (Settings -> Integrations -> Telegram) wins once saved, same pattern as
+    # SONAR_ADMIN_TOKEN above.
+    TELEGRAM_BOT_TOKEN: str = ""
+
     # --- Database (v2 persistence: users/roles/permissions) --------------
     DATABASE_URL: str
 

@@ -33,8 +33,11 @@ def _nav_row(base_action: str, project_id: int, page: int, has_more: bool) -> li
     return row
 
 
-def main_menu() -> dict:
-    return _rows([_button("📁 My Projects", build("pl", 0))])
+def main_menu(is_admin: bool = False) -> dict:
+    rows = [[_button("📁 My Projects", build("pl", 0))]]
+    if is_admin:
+        rows.append([_button("⚙️ Admin", build("ad"))])
+    return _rows(*rows)
 
 
 def projects_list(projects: list[dict], page: int, has_more: bool) -> dict:
@@ -132,3 +135,33 @@ def repos_list(project_id: int, repos: list[dict], page: int, has_more: bool, ca
 
 def back_only(back_action: str) -> dict:
     return _rows([_button("⬅ Back", build("back", back_action))])
+
+
+def admin_home() -> dict:
+    return _rows(
+        [_button("👥 Linked Accounts", build("adl", 0))],
+        [_button("🔄 Refresh", build("ad"))],
+        [_button("⬅ Back", build("back", build("pl", 0)))],
+    )
+
+
+def admin_links_list(links: list[dict], page: int, has_more: bool) -> dict:
+    """``links``: dicts with ``id`` (TelegramLink.id) and ``username``."""
+    item_rows = [
+        [_button(f"❌ Unlink {link['username']}", build("adu", link["id"]))]
+        for link in links
+    ]
+    nav = []
+    if page > 0:
+        nav.append(_button("◀ Prev", build("adl", page - 1)))
+    if has_more:
+        nav.append(_button("Next ▶", build("adl", page + 1)))
+    back = [_button("⬅ Back", build("back", build("ad")))]
+    return _rows(*item_rows, nav, back)
+
+
+def admin_confirm_unlink(link_id: int) -> dict:
+    return _rows(
+        [_button("✅ Yes, unlink", build("aduc", link_id))],
+        [_button("Cancel", build("back", build("adl", 0)))],
+    )

@@ -197,6 +197,12 @@ async def _run_backup_archive(
                 run.error = str(exc)
                 run.finished_at = datetime.now(timezone.utc)
                 await session.commit()
+        try:
+            from ..modules.telegram.client import escape_html
+            from ..modules.telegram.notify import notify_admins
+            await notify_admins(f"❌ <b>Backup failed</b> ({escape_html(mode)})\n{escape_html(str(exc)[:500])}")
+        except Exception:  # noqa: BLE001 - Telegram is a bonus delivery channel, never a reason to fail the backup job's own error handling
+            logger.exception("Telegram notify failed for backup run %s", run_id)
         raise
 
     async with factory() as session:
@@ -458,10 +464,22 @@ async def handle_scanner_db_update(job: Job, progress: ProgressCallback) -> dict
     proxy = await _scanner_proxy()
     await progress(2, f"updating databases: {', '.join(scanners)}{' via proxy' if proxy else ''}",
                    {"stage": "connecting", "scanners": scanners})
-    result = await scanner_db.update(
-        scanners, on_progress=progress, proxy=proxy,
-        force=bool(job.payload.get("force", False)),
-    )
+    try:
+        result = await scanner_db.update(
+            scanners, on_progress=progress, proxy=proxy,
+            force=bool(job.payload.get("force", False)),
+        )
+    except Exception as exc:  # noqa: BLE001
+        try:
+            from ..modules.telegram.client import escape_html
+            from ..modules.telegram.notify import notify_admins
+            await notify_admins(
+                f"❌ <b>Scanner database update failed</b> ({escape_html(', '.join(scanners))})\n"
+                f"{escape_html(str(exc)[:500])}"
+            )
+        except Exception:  # noqa: BLE001 - Telegram is a bonus delivery channel, never a reason to mask the real failure
+            logger.exception("Telegram notify failed for scanner_db_update")
+        raise
     await progress(100, "done", {"stage": "done", "results": result})
     return result
 

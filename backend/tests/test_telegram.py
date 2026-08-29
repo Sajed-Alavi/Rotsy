@@ -11,16 +11,19 @@ says the HTTP endpoint is missing.
 from __future__ import annotations
 
 import pytest
+import pytest_asyncio
 from fastapi import HTTPException
 from pydantic import ValidationError
 from sqlalchemy import select
 
+from conftest import make_settings
 from app.core.projects import create_project
 from app.models import Permission, Project, ProjectMember, Role, SonarProject, TelegramLink, User
-from app.modules.telegram import dispatcher
+from app.modules.telegram import dispatcher, notify
 from app.modules.telegram.auth import linked_user
 from app.modules.telegram.callback_data import Callback, CallbackDataError, build, parse
 from app.routers.telegram import LinkCreate
+from app.state import AppState
 
 # --- callback_data ------------------------------------------------------
 
@@ -123,6 +126,17 @@ async def _make_user(db_session, *, active: bool = True, permissions: list[str] 
     db_session.add(user)
     await db_session.commit()
     await db_session.refresh(user)
+    # dispatcher code reads permissions via dependencies.user_permissions(),
+    # which only ever looks at this cached attribute (set from the DB by
+    # auth.linked_user in production, via the real user.roles relationship —
+    # see test_linked_user_returns_active_user_with_permissions_loaded for
+    # that path). Set directly here from what the caller asked for instead
+    # of round-tripping through user.roles/role.permissions: those
+    # collections are only "loaded" in-memory for roles this helper actually
+    # appended a permission to, so reading an untouched one after refresh()
+    # attempts a lazy load outside any greenlet context and raises
+    # MissingGreenlet.
+    user._effective_permissions = sorted(set(permissions))  # type: ignore[attr-defined]
     return user
 
 
@@ -219,3 +233,134 @@ async def test_run_analysis_requires_membership_on_the_projects_own_project(db_s
     with pytest.raises(HTTPException) as exc_info:
         await dispatcher._run_analysis(db_session, None, None, outsider, sonar_project.id)
     assert exc_info.value.status_code == 403
+
+
+# --- admin panel gating ---------------------------------------------------
+
+_NO_CACHE_APP_STATE = AppState(nexus=None, cache=None)
+
+
+async def test_admin_home_rejects_user_without_system_execute(db_session):
+    user = await _make_user(db_session, permissions=["projects:read"])
+    with pytest.raises(HTTPException) as exc_info:
+        await dispatcher._admin_home(db_session, make_settings(), _NO_CACHE_APP_STATE, user)
+    assert exc_info.value.status_code == 403
+
+
+async def test_admin_home_allows_user_with_system_execute(db_session):
+    admin = await _make_user(db_session, permissions=["system:execute"])
+    text, markup = await dispatcher._admin_home(db_session, make_settings(), _NO_CACHE_APP_STATE, admin)
+    assert "Admin Panel" in text
+    assert markup["inline_keyboard"]
+
+
+async def test_admin_links_list_rejects_user_without_system_execute(db_session):
+    user = await _make_user(db_session, permissions=["projects:read"])
+    with pytest.raises(HTTPException) as exc_info:
+        await dispatcher._admin_links_list(db_session, user, 0)
+    assert exc_info.value.status_code == 403
+
+
+async def test_admin_unlink_confirmed_rejects_user_without_system_execute(db_session):
+    target = await _make_user(db_session)
+    link = TelegramLink(user_id=target.id, chat_id=555, linked_by="admin")
+    db_session.add(link)
+    await db_session.commit()
+    await db_session.refresh(link)
+
+    non_admin = await _make_user(db_session, permissions=["projects:read"])
+    with pytest.raises(HTTPException) as exc_info:
+        await dispatcher._admin_unlink_confirmed(db_session, non_admin, link.id)
+    assert exc_info.value.status_code == 403
+    # Rejected before any row was touched.
+    assert await db_session.get(TelegramLink, link.id) is not None
+
+
+async def test_admin_unlink_confirmed_deletes_the_link(db_session):
+    target = await _make_user(db_session)
+    link = TelegramLink(user_id=target.id, chat_id=556, linked_by="admin")
+    db_session.add(link)
+    await db_session.commit()
+    await db_session.refresh(link)
+
+    admin = await _make_user(db_session, permissions=["system:execute"])
+    text, _ = await dispatcher._admin_unlink_confirmed(db_session, admin, link.id)
+
+    assert "Unlinked" in text
+    assert await db_session.get(TelegramLink, link.id) is None
+
+
+# --- notify.py recipient selection -----------------------------------------
+#
+# notify_project/notify_admins open their own session via get_session_factory()
+# rather than reusing whatever session the caller has — a real job handler has
+# no session in scope by the time an analysis run finishes. A fresh in-memory
+# SQLite engine with StaticPool (the standard pattern for sharing one SQLite
+# :memory: database across independently-opened sessions/connections) stands
+# in for that, and TelegramClient.send_message/send_document are monkeypatched
+# to record recipients instead of making a real network call.
+
+
+@pytest_asyncio.fixture
+async def notify_env(monkeypatch):
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+    from sqlalchemy.pool import StaticPool
+
+    from app.db.base import Base
+
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:", poolclass=StaticPool)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+
+    settings = make_settings()
+    monkeypatch.setattr(notify, "get_session_factory", lambda: factory)
+    monkeypatch.setattr(notify, "get_settings", lambda: settings)
+
+    sent: list[int] = []
+
+    async def fake_send_message(self, chat_id, text, reply_markup=None):
+        sent.append(chat_id)
+        return {}
+
+    async def fake_send_document(self, chat_id, document, filename, caption=None):
+        sent.append(chat_id)
+        return {}
+
+    monkeypatch.setattr(notify.TelegramClient, "send_message", fake_send_message)
+    monkeypatch.setattr(notify.TelegramClient, "send_document", fake_send_document)
+
+    async with factory() as session:
+        from app.core.config_store import save_telegram_connection
+        await save_telegram_connection(session, settings, "test-token:ABC")
+
+    yield factory, sent
+    await engine.dispose()
+
+
+async def test_notify_project_reaches_only_members_of_that_project(notify_env):
+    factory, sent = notify_env
+    async with factory() as session:
+        member = await _make_user(session)
+        outsider = await _make_user(session)
+        project = await create_project(session, "Acme", member)
+        project_id = project.id
+        session.add(TelegramLink(user_id=member.id, chat_id=1001, linked_by="admin"))
+        session.add(TelegramLink(user_id=outsider.id, chat_id=1002, linked_by="admin"))
+        await session.commit()
+
+    await notify.notify_project(project_id, "hello")
+    assert sent == [1001]
+
+
+async def test_notify_admins_reaches_only_users_with_system_execute(notify_env):
+    factory, sent = notify_env
+    async with factory() as session:
+        admin = await _make_user(session, permissions=["system:execute"])
+        regular = await _make_user(session, permissions=["projects:read"])
+        session.add(TelegramLink(user_id=admin.id, chat_id=2001, linked_by="admin"))
+        session.add(TelegramLink(user_id=regular.id, chat_id=2002, linked_by="admin"))
+        await session.commit()
+
+    await notify.notify_admins("system down")
+    assert sent == [2001]

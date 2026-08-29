@@ -431,7 +431,7 @@ async def _telegram_poll_loop(settings: Settings, stop: asyncio.Event) -> None:
                 except asyncio.TimeoutError:
                     continue
 
-            client = TelegramClient(conn.token)
+            client = TelegramClient(conn.token, proxy=settings.TELEGRAM_PROXY_URL)
             offset = None if last_update_id is None else last_update_id + 1
             updates = await client.get_updates(offset, timeout=25)
             consecutive_failures = 0

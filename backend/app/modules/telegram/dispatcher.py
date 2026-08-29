@@ -19,12 +19,12 @@ permission, not project membership.
 
 from __future__ import annotations
 
-import html
 import logging
 from typing import Any
 
 from fastapi import HTTPException
 
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...config import Settings
@@ -32,24 +32,14 @@ from ...core import project_access
 from ...core import projects as projects_core
 from ...core.health import compute_health_score
 from ...dependencies import user_permissions
-from ...models import SonarProject, User
+from ...models import Project, SonarProject, TelegramLink, User
 from ...state import AppState
 from . import keyboards as kb
 from .auth import linked_user
 from .callback_data import Callback, CallbackDataError, build, parse
-from .client import TelegramClient
+from .client import TelegramClient, escape_html as _esc
 
 logger = logging.getLogger(__name__)
-
-
-def _esc(text: str) -> str:
-    """Escape a value we don't control (project names, usernames) before it
-    goes into a ``parse_mode: "HTML"`` message — every send/edit call uses
-    HTML mode, and Telegram both rejects malformed tags (silently killing
-    that message from the recipient's point of view) and renders live
-    ``<a href>`` links, so unescaped user-set text is both a breakage and an
-    injection vector."""
-    return html.escape(str(text))
 
 
 def _require_read(user: User) -> None:
@@ -229,6 +219,91 @@ async def _run_analysis(
     return f"▶ Analysis queued (job {job_id}).", kb.back_only(build("pr", sonar_project.project_id, 0))
 
 
+def _require_admin(user: User) -> None:
+    if "system:execute" not in user_permissions(user):
+        raise HTTPException(403, "Your account needs the global 'system:execute' permission for the admin panel.")
+
+
+async def _admin_home(session: AsyncSession, settings: Settings, app_state_obj: AppState, user: User) -> tuple[str, dict]:
+    """A condensed, read-mostly mirror of a few Settings/Dashboard cards —
+    deliberately small (link count, job queue depth, scanner DB freshness,
+    project/user counts) rather than reproducing the web admin surface."""
+    _require_admin(user)
+
+    link_count = len((await session.execute(select(TelegramLink))).scalars().all())
+
+    running = pending = 0
+    if app_state_obj.cache is not None:
+        from ...core.jobs import JobQueue
+        for job in await JobQueue(app_state_obj.cache).list_recent(limit=200):
+            if job.status == "running":
+                running += 1
+            elif job.status == "pending":
+                pending += 1
+
+    from ...modules.nexus import db as scanner_db
+    from ...services.scanner_config import get_enabled_scanners
+    enabled = await get_enabled_scanners(settings, session)
+    snapshot = scanner_db.status()
+    ready = scanner_db.readiness([name for name in snapshot if name in enabled])
+    scanner_lines = []
+    for name in enabled:
+        info = ready.get(name)
+        state = "✅ ready" if info and info.ready else ("⚠ stale" if info and info.stale else "❌ missing")
+        scanner_lines.append(f"  {_esc(name)}: {state}")
+
+    project_count = (await session.execute(select(func.count()).select_from(Project))).scalar_one()
+    user_count = (await session.execute(select(func.count()).select_from(User))).scalar_one()
+
+    lines = [
+        "⚙️ <b>Admin Panel</b>",
+        "",
+        f"🤖 Bot: {link_count} linked account(s)",
+        f"📊 Jobs: {running} running, {pending} pending",
+        "🛡 Scanner DBs:",
+        *scanner_lines,
+        f"📁 Projects: {project_count}   👤 Users: {user_count}",
+    ]
+    return "\n".join(lines), kb.admin_home()
+
+
+async def _admin_links_list(session: AsyncSession, user: User, page: int) -> tuple[str, dict]:
+    _require_admin(user)
+    page = max(0, page)
+    rows = (
+        await session.execute(
+            select(TelegramLink, User)
+            .join(User, User.id == TelegramLink.user_id)
+            .order_by(User.username)
+        )
+    ).all()
+    start, end = page * kb.PAGE_SIZE, page * kb.PAGE_SIZE + kb.PAGE_SIZE
+    page_rows = rows[start:end]
+    has_more = len(rows) > end
+    links = [{"id": link.id, "username": u.username} for link, u in page_rows]
+    text = "<b>Linked Accounts</b>" if links else "No accounts linked yet."
+    return text, kb.admin_links_list(links, page, has_more)
+
+
+async def _admin_unlink_prompt(session: AsyncSession, user: User, link_id: int) -> tuple[str, dict]:
+    _require_admin(user)
+    link = await session.get(TelegramLink, link_id)
+    if link is None:
+        raise HTTPException(404, "That link no longer exists.")
+    target = await session.get(User, link.user_id)
+    name = _esc(target.username) if target is not None else f"user #{link.user_id}"
+    return f"Unlink {name} (chat {link.chat_id}) from Telegram?", kb.admin_confirm_unlink(link_id)
+
+
+async def _admin_unlink_confirmed(session: AsyncSession, user: User, link_id: int) -> tuple[str, dict]:
+    _require_admin(user)
+    link = await session.get(TelegramLink, link_id)
+    if link is not None:
+        await session.delete(link)
+        await session.commit()
+    return "✅ Unlinked.", kb.back_only(build("adl", 0))
+
+
 async def _dispatch(
     session: AsyncSession, settings: Settings, app_state_obj: AppState, user: User, cb: Callback,
 ) -> tuple[str, dict]:
@@ -259,6 +334,14 @@ async def _dispatch(
         return await _repos_list(session, settings, user, cb.int_arg(0), cb.int_arg(1))
     if action == "ra":
         return await _run_analysis(session, settings, app_state_obj, user, cb.int_arg(0))
+    if action == "ad":
+        return await _admin_home(session, settings, app_state_obj, user)
+    if action == "adl":
+        return await _admin_links_list(session, user, cb.int_arg(0))
+    if action == "adu":
+        return await _admin_unlink_prompt(session, user, cb.int_arg(0))
+    if action == "aduc":
+        return await _admin_unlink_confirmed(session, user, cb.int_arg(0))
     if action == "back":
         # "back"'s own argument is itself an encoded callback_data string
         # (it may contain further colons, e.g. "back:mu:42:5:a"), so it's
@@ -287,7 +370,10 @@ async def _handle_start(session: AsyncSession, client: TelegramClient, chat_id: 
             "(Settings → Integrations → Telegram).",
         )
         return
-    await client.send_message(chat_id, f"Welcome back, <b>{_esc(user.username)}</b>.", reply_markup=kb.main_menu())
+    is_admin = "system:execute" in user_permissions(user)
+    await client.send_message(
+        chat_id, f"Welcome back, <b>{_esc(user.username)}</b>.", reply_markup=kb.main_menu(is_admin),
+    )
 
 
 async def _handle_callback(

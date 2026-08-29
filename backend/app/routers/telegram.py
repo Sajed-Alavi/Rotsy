@@ -44,11 +44,14 @@ async def update_config(
 
 
 @router.post("/config/test", dependencies=[Depends(RequirePermission("system:execute"))])
-async def test_config(body: TelegramConfigUpdate) -> dict[str, Any]:
+async def test_config(
+    body: TelegramConfigUpdate,
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> dict[str, Any]:
     """Try the given token without saving — same shape as the Sonar/Nexus
     test-connection endpoints."""
     try:
-        client = TelegramClient(body.token)
+        client = TelegramClient(body.token, proxy=settings.TELEGRAM_PROXY_URL)
         me = await client.get_me()
     except TelegramError as exc:
         return {"ok": False, "error": str(exc)}
@@ -68,7 +71,7 @@ async def get_status(
     if not cfg.is_configured():
         return {"configured": False, "bot_username": None, "link_count": link_count}
     try:
-        client = TelegramClient(cfg.token)
+        client = TelegramClient(cfg.token, proxy=settings.TELEGRAM_PROXY_URL)
         me = await client.get_me()
         bot_username = me.get("username")
     except TelegramError:

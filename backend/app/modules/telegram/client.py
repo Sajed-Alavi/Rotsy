@@ -9,6 +9,8 @@ to back off correctly, so this raises rather than swallowing.
 
 from __future__ import annotations
 
+import html
+
 import httpx
 
 _API_ROOT = "https://api.telegram.org"
@@ -18,11 +20,26 @@ class TelegramError(Exception):
     pass
 
 
+def escape_html(text: object) -> str:
+    """Escape a value we don't control (project names, usernames, error
+    messages) before it goes into a ``parse_mode: "HTML"`` message — every
+    send/edit call uses HTML mode, and Telegram both rejects malformed tags
+    (silently killing that message from the recipient's point of view) and
+    renders live ``<a href>`` links, so unescaped free text is both a
+    breakage and an injection vector."""
+    return html.escape(str(text))
+
+
 class TelegramClient:
-    def __init__(self, token: str) -> None:
+    def __init__(self, token: str, *, proxy: str | None = None) -> None:
         if not token:
             raise TelegramError("Telegram bot token is required")
         self._base_url = f"{_API_ROOT}/bot{token}"
+        # Scoped to this client alone (see Settings.TELEGRAM_PROXY_URL) —
+        # api.telegram.org is blocked on some networks while every other
+        # outbound integration resolves fine, so this must not become a
+        # process-wide HTTPS_PROXY that reroutes unrelated traffic too.
+        self._proxy = proxy or None
 
     async def _request(self, method: str, path: str, *, timeout: float = 20.0, **kwargs) -> dict:
         """Every Telegram call goes through here. ``timeout`` is a plain
@@ -37,7 +54,7 @@ class TelegramClient:
         (a bad chat_id, a blocked bot) as easily as a 4xx, so both are checked.
         """
         try:
-            async with httpx.AsyncClient(base_url=self._base_url, timeout=timeout) as client:
+            async with httpx.AsyncClient(base_url=self._base_url, timeout=timeout, proxy=self._proxy) as client:
                 resp = await client.request(method, path, **kwargs)
         except httpx.HTTPError as exc:
             raise TelegramError(f"Unable to reach Telegram: {exc}") from exc
@@ -79,6 +96,20 @@ class TelegramClient:
         if reply_markup is not None:
             body["reply_markup"] = reply_markup
         return await self._request("POST", "/editMessageText", json=body)
+
+    async def send_document(
+        self, chat_id: int, document: bytes, filename: str, caption: str | None = None,
+    ) -> dict:
+        """Send a file (e.g. an analysis-report PDF) as a Telegram document.
+        Multipart, not JSON, hence the longer fixed timeout — a proxied
+        upload of a multi-page PDF report is meaningfully slower than the
+        small text calls above."""
+        data: dict = {"chat_id": chat_id}
+        if caption:
+            data["caption"] = caption
+            data["parse_mode"] = "HTML"
+        files = {"document": (filename, document, "application/pdf")}
+        return await self._request("POST", "/sendDocument", data=data, files=files, timeout=60.0)
 
     async def answer_callback_query(self, callback_query_id: str, text: str | None = None) -> dict:
         body: dict = {"callback_query_id": callback_query_id}

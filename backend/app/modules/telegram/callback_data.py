@@ -19,6 +19,10 @@ Actions:
     mdc:{project_id}:{member_id}     confirmed remove
     pr:{project_id}:{page}          repo/"Run Analysis" list page
     ra:{sonar_project_id}          run analysis
+    ad                            admin panel home (system:execute only)
+    adl:{page}                    admin: linked-accounts list page
+    adu:{link_id}                 admin: confirm-unlink prompt
+    aduc:{link_id}                admin: confirmed unlink
     back:{where}                  generic back-nav (where is itself a
                                    callback_data string, e.g. "back:p:42")
 """

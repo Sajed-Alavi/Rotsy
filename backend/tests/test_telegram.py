@@ -364,3 +364,48 @@ async def test_notify_admins_reaches_only_users_with_system_execute(notify_env):
 
     await notify.notify_admins("system down")
     assert sent == [2001]
+
+
+async def test_notify_project_does_not_build_the_pdf_without_recipients(notify_env):
+    """Rendering an analysis report is expensive (an unbounded query over
+    every issue and hotspot, then a multi-page render), so it must not happen
+    on a project nobody linked is a member of."""
+    factory, sent = notify_env
+    calls = []
+
+    async def _factory() -> bytes:
+        calls.append(1)
+        return b"%PDF-"
+
+    async with factory() as session:
+        owner = await _make_user(session)
+        outsider = await _make_user(session)
+        project = await create_project(session, "Acme", owner)
+        project_id = project.id
+        # Only a non-member is linked, so there is nobody to send to.
+        session.add(TelegramLink(user_id=outsider.id, chat_id=3001, linked_by="admin"))
+        await session.commit()
+
+    await notify.notify_project(project_id, "done", pdf_factory=_factory, filename="r.pdf")
+    assert calls == []
+    assert sent == []
+
+
+async def test_notify_project_builds_the_pdf_once_for_real_recipients(notify_env):
+    factory, sent = notify_env
+    calls = []
+
+    async def _factory() -> bytes:
+        calls.append(1)
+        return b"%PDF-"
+
+    async with factory() as session:
+        member = await _make_user(session)
+        project = await create_project(session, "Acme", member)
+        project_id = project.id
+        session.add(TelegramLink(user_id=member.id, chat_id=3002, linked_by="admin"))
+        await session.commit()
+
+    await notify.notify_project(project_id, "done", pdf_factory=_factory, filename="r.pdf")
+    assert calls == [1]
+    assert sent == [3002]

@@ -346,9 +346,15 @@ async def _notify_analysis_success(
     from ..modules.telegram.notify import notify_project
     from ..services.sonar_report_pdf import build_analysis_report_pdf
 
-    factory = get_session_factory()
-    async with factory() as session:
-        pdf_bytes = await build_analysis_report_pdf(session, run, sonar_project)
+    async def _render_pdf() -> bytes:
+        # Passed as a callable rather than pre-rendered bytes: building this
+        # report queries every issue and hotspot of the run with no limit and
+        # renders a multi-page document, and the overwhelmingly common case
+        # is a deployment with no bot token configured at all. notify_project
+        # only invokes this once it has at least one real recipient.
+        factory = get_session_factory()
+        async with factory() as session:
+            return await build_analysis_report_pdf(session, run, sonar_project)
 
     icon = "✅" if gate_status == "OK" else "⚠️"
     text = (
@@ -357,7 +363,9 @@ async def _notify_analysis_success(
         f"Issues: {issues_count} (bugs {bugs}, vulnerabilities {vulnerabilities}, code smells {code_smells})\n"
         f"Coverage: {f'{coverage:.0f}%' if coverage is not None else 'n/a'}"
     )
-    await notify_project(project_id, text, pdf=pdf_bytes, filename=f"sonar-{run.commit_sha[:8]}.pdf")
+    await notify_project(
+        project_id, text, pdf_factory=_render_pdf, filename=f"sonar-{run.commit_sha[:8]}.pdf",
+    )
 
 
 async def _notify_analysis_failure(*, project_id: int, repo_name: str, ref: str, error: str) -> None:

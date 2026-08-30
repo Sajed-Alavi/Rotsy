@@ -19,6 +19,7 @@ Actions:
     mdc:{project_id}:{member_id}     confirmed remove
     pr:{project_id}:{page}          repo/"Run Analysis" list page
     ra:{sonar_project_id}          run analysis
+    mn                            main menu (any linked user)
     ad                            admin panel home (system:execute only)
     adl:{page}                    admin: linked-accounts list page
     adu:{link_id}                 admin: confirm-unlink prompt

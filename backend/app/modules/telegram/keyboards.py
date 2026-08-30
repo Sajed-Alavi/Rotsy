@@ -138,10 +138,14 @@ def back_only(back_action: str) -> dict:
 
 
 def admin_home() -> dict:
+    # Back goes to the main menu, not the projects list: the admin panel is
+    # gated on system:execute, and "pl" needs projects:read — independent
+    # permissions, so a custom role holding only the former could open this
+    # panel and then get a 403 on every attempt to leave it.
     return _rows(
         [_button("👥 Linked Accounts", build("adl", 0))],
         [_button("🔄 Refresh", build("ad"))],
-        [_button("⬅ Back", build("back", build("pl", 0)))],
+        [_button("⬅ Back", build("back", build("mn")))],
     )
 
 

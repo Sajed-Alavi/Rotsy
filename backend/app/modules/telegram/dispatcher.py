@@ -19,6 +19,7 @@ permission, not project membership.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -76,7 +77,12 @@ async def _projects_list(session: AsyncSession, user: User, page: int) -> tuple[
         rows.append({"id": p.id, "name": p.name, "role": membership.project_role if membership else None})
 
     if not rows:
-        return "You have no project access yet. Ask your Rotsy administrator.", kb.main_menu()
+        # Rebuilds the whole menu, so it has to carry the admin flag the same
+        # way _handle_start does — otherwise an admin on an install with no
+        # projects yet taps "My Projects" and the Admin button vanishes.
+        return "You have no project access yet. Ask your Rotsy administrator.", kb.main_menu(
+            "system:execute" in user_permissions(user)
+        )
     text = "<b>Your Projects</b>\nTap one to see more."
     return text, kb.projects_list(rows, page, has_more)
 
@@ -244,8 +250,14 @@ async def _admin_home(session: AsyncSession, settings: Settings, app_state_obj: 
     from ...modules.nexus import db as scanner_db
     from ...services.scanner_config import get_enabled_scanners
     enabled = await get_enabled_scanners(settings, session)
-    snapshot = scanner_db.status()
-    ready = scanner_db.readiness([name for name in snapshot if name in enabled])
+    # readiness() is synchronous and genuinely slow: it walks the multi-GB
+    # scanner cache trees and shells out to the grype binary via a blocking
+    # subprocess.run with a 30s timeout. Called directly it would stall the
+    # single event loop this poll loop shares with the whole HTTP server, so
+    # it goes to a worker thread. It also computes status() internally —
+    # hence no separate status() call here to filter names with, since
+    # readiness() already reports an unknown scanner as not-ready itself.
+    ready = await asyncio.to_thread(scanner_db.readiness, list(enabled))
     scanner_lines = []
     for name in enabled:
         info = ready.get(name)
@@ -304,6 +316,15 @@ async def _admin_unlink_confirmed(session: AsyncSession, user: User, link_id: in
     return "✅ Unlinked.", kb.back_only(build("adl", 0))
 
 
+async def _main_menu(user: User) -> tuple[str, dict]:
+    """Re-render the top-level menu. Deliberately requires nothing beyond
+    being linked: it is what every section's outermost "Back" returns to, and
+    gating it on any one permission would strand whoever lacks that
+    permission inside a section they were allowed to open."""
+    is_admin = "system:execute" in user_permissions(user)
+    return f"Welcome back, <b>{_esc(user.username)}</b>.", kb.main_menu(is_admin)
+
+
 async def _dispatch(
     session: AsyncSession, settings: Settings, app_state_obj: AppState, user: User, cb: Callback,
 ) -> tuple[str, dict]:
@@ -334,6 +355,8 @@ async def _dispatch(
         return await _repos_list(session, settings, user, cb.int_arg(0), cb.int_arg(1))
     if action == "ra":
         return await _run_analysis(session, settings, app_state_obj, user, cb.int_arg(0))
+    if action == "mn":
+        return await _main_menu(user)
     if action == "ad":
         return await _admin_home(session, settings, app_state_obj, user)
     if action == "adl":

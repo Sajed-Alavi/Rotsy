@@ -13,6 +13,13 @@ const INPUT = 'w-full border border-slate-300 bg-white px-2 py-1.5 font-mono tex
  * appears behind "Configure" so this page stays scannable as more
  * integrations are added (GitLab, Harbor, ...) instead of growing into
  * another giant form.
+ *
+ * The cards are grouped by the role the external system plays in a scan,
+ * rather than listed as one flat column: with five of them a single stack
+ * reads as an undifferentiated pile, and "which of these do I need for
+ * source analysis?" stops being answerable at a glance. Groups are ordered
+ * the way data flows through Rotsy — where images come from, where source
+ * comes from, what analyzes it, where results go.
  */
 export default function IntegrationsPage() {
   const { user } = useAuth();
@@ -27,13 +34,35 @@ export default function IntegrationsPage() {
   }
 
   return (
-    <div className="mx-auto grid max-w-3xl grid-cols-1 gap-6">
-      <NexusCard />
-      <GitHubCard />
-      <GitLabCard />
-      <SonarCard />
-      <TelegramCard />
+    <div className="mx-auto grid max-w-3xl grid-cols-1 gap-10">
+      <IntegrationGroup title="Artifact storage" hint="Where Rotsy reads container images from.">
+        <NexusCard />
+      </IntegrationGroup>
+      <IntegrationGroup title="Source control" hint="Repositories Rotsy clones, and where it reports commit status back to.">
+        <GitHubCard />
+        <GitLabCard />
+      </IntegrationGroup>
+      <IntegrationGroup title="Code analysis" hint="The engine behind Project analysis runs and quality gates.">
+        <SonarCard />
+      </IntegrationGroup>
+      <IntegrationGroup title="Notifications" hint="Where Rotsy delivers analysis reports and failure alerts.">
+        <TelegramCard />
+      </IntegrationGroup>
     </div>
+  );
+}
+
+/** One labelled group of integration cards. Matches the section-heading
+ *  idiom the other Settings pages already use (see SecurityPage). */
+function IntegrationGroup({ title, hint, children }) {
+  return (
+    <section className="grid grid-cols-1 gap-4">
+      <div className="border-b border-slate-200 pb-1.5 dark:border-slate-800">
+        <h2 className="font-mono text-[10px] uppercase tracking-wider text-slate-500">{title}</h2>
+        <p className="mt-1 font-mono text-[11px] text-slate-400 dark:text-slate-600">{hint}</p>
+      </div>
+      {children}
+    </section>
   );
 }
 

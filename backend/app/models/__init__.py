@@ -16,6 +16,7 @@ from .retention import RetentionPolicy
 from .scans import ScannedImage, ScanReport, ScanTarget, Vulnerability
 from .sonar import AnalysisRun, QualityGateResult, SonarHotspot, SonarIssue, SonarProject
 from .system_config import SystemConfig
+from .telegram import TelegramLink
 from .user import Permission, Role, User
 
 __all__ = [
@@ -41,4 +42,5 @@ __all__ = [
     "QualityGateResult",
     "SonarIssue",
     "SonarHotspot",
+    "TelegramLink",
 ]

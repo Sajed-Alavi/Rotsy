@@ -13,6 +13,13 @@ const INPUT = 'w-full border border-slate-300 bg-white px-2 py-1.5 font-mono tex
  * appears behind "Configure" so this page stays scannable as more
  * integrations are added (GitLab, Harbor, ...) instead of growing into
  * another giant form.
+ *
+ * The cards are grouped by the role the external system plays in a scan,
+ * rather than listed as one flat column: with five of them a single stack
+ * reads as an undifferentiated pile, and "which of these do I need for
+ * source analysis?" stops being answerable at a glance. Groups are ordered
+ * the way data flows through Rotsy — where images come from, where source
+ * comes from, what analyzes it, where results go.
  */
 export default function IntegrationsPage() {
   const { user } = useAuth();
@@ -27,12 +34,35 @@ export default function IntegrationsPage() {
   }
 
   return (
-    <div className="mx-auto grid max-w-3xl grid-cols-1 gap-6">
-      <NexusCard />
-      <GitHubCard />
-      <GitLabCard />
-      <SonarCard />
+    <div className="mx-auto grid max-w-3xl grid-cols-1 gap-10">
+      <IntegrationGroup title="Artifact storage" hint="Where Rotsy reads container images from.">
+        <NexusCard />
+      </IntegrationGroup>
+      <IntegrationGroup title="Source control" hint="Repositories Rotsy clones, and where it reports commit status back to.">
+        <GitHubCard />
+        <GitLabCard />
+      </IntegrationGroup>
+      <IntegrationGroup title="Code analysis" hint="The engine behind Project analysis runs and quality gates.">
+        <SonarCard />
+      </IntegrationGroup>
+      <IntegrationGroup title="Notifications" hint="Where Rotsy delivers analysis reports and failure alerts.">
+        <TelegramCard />
+      </IntegrationGroup>
     </div>
+  );
+}
+
+/** One labelled group of integration cards. Matches the section-heading
+ *  idiom the other Settings pages already use (see SecurityPage). */
+function IntegrationGroup({ title, hint, children }) {
+  return (
+    <section className="grid grid-cols-1 gap-4">
+      <div className="border-b border-slate-200 pb-1.5 dark:border-slate-800">
+        <h2 className="font-mono text-[10px] uppercase tracking-wider text-slate-500">{title}</h2>
+        <p className="mt-1 font-mono text-[11px] text-slate-400 dark:text-slate-600">{hint}</p>
+      </div>
+      {children}
+    </section>
   );
 }
 
@@ -589,5 +619,194 @@ function SonarCard() {
       {data?.error && data.compatible !== false && <div className="mt-3 border border-rose-200 bg-rose-50 px-3 py-2 font-mono text-xs text-rose-600 dark:border-rose-800 dark:bg-rose-950/30 dark:text-rose-400">{data.error}</div>}
       {err && <div className="mt-3 font-mono text-xs text-rose-600 dark:text-rose-400">{err}</div>}
     </IntegrationCard>
+  );
+}
+
+/**
+ * Telegram bot: account linking is admin-only and manual (no self-service
+ * `/link <code>` flow) — a person messages the bot, it tells them their own
+ * chat ID, and the admin pastes that here against their Rotsy account. Once
+ * linked, the bot re-derives that person's live RBAC on every tap; this
+ * card only manages *who's linked*, never what a linked person can do.
+ */
+function TelegramCard() {
+  const [data, setData] = useState(null);
+  const [links, setLinks] = useState([]);
+  const [form, setForm] = useState({ token: '' });
+  const [testing, setTesting] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [msg, setMsg] = useState('');
+  const [err, setErr] = useState('');
+
+  const load = async () => {
+    setErr('');
+    try { setData(await api.get('/telegram/status')); } catch (e) { setErr(e.message); }
+    try { setLinks(await api.get('/telegram/links')); } catch (_) { console.debug('telegram links fetch failed', _); }
+  };
+  useEffect(() => { load(); }, []);
+
+  const test = async () => {
+    setErr(''); setMsg(''); setTesting(true);
+    try { await load(); } catch (e) { setErr(e.message); }
+    setTesting(false);
+  };
+
+  const testCandidate = async () => {
+    setErr(''); setMsg(''); setTesting(true);
+    try {
+      const r = await api.post('/telegram/config/test', { token: form.token });
+      if (r.ok) setMsg(`Connection OK — bot @${r.bot_username}`);
+      else setErr(r.error || 'Test failed.');
+    } catch (e) { setErr(e.message); }
+    setTesting(false);
+  };
+
+  const save = async (e) => {
+    e.preventDefault();
+    setErr(''); setMsg(''); setSaving(true);
+    try {
+      await api.put('/telegram/config', { token: form.token });
+      setMsg('Telegram bot token saved.');
+      setForm({ token: '' });
+      await load();
+    } catch (ex) { setErr(ex.message); }
+    setSaving(false);
+  };
+
+  const unlink = async (linkId) => {
+    if (!confirm('Unlink this Telegram chat from their Rotsy account?')) return;
+    setErr('');
+    try {
+      await api.delete(`/telegram/links/${linkId}`);
+      await load();
+    } catch (e) { setErr(e.message); }
+  };
+
+  let status;
+  if (!data) status = { tone: 'neutral', label: '…' };
+  else if (!data.configured) status = { tone: 'warn', label: 'Not Configured' };
+  else if (data.bot_username) status = { tone: 'ok', label: 'Connected' };
+  else status = { tone: 'bad', label: 'Error' };
+
+  return (
+    <IntegrationCard
+      name="Telegram"
+      description="Linked users can check their Project access and trigger analysis from a Telegram bot."
+      status={status}
+      facts={data?.configured ? [
+        { label: 'Bot', value: data.bot_username ? `@${data.bot_username}` : '—' },
+        { label: 'Linked Users', value: data.link_count },
+      ] : []}
+      onTest={data?.configured ? test : undefined}
+      testing={testing}
+    >
+      <div className="space-y-4">
+        <form onSubmit={save} className="space-y-3">
+          <div>
+            <div className="mb-1 font-mono text-[10px] uppercase tracking-wider text-slate-500">
+              Bot Token
+            </div>
+            <input
+              type="password" value={form.token} onChange={(e) => setForm({ token: e.target.value })}
+              placeholder={data?.configured ? '••••••••' : 'from @BotFather'} className={INPUT}
+            />
+          </div>
+          <div className="flex gap-2 pt-1">
+            <button type="button" onClick={testCandidate} disabled={testing || !form.token} className="border border-slate-300 px-3 py-1.5 font-mono text-xs uppercase tracking-wider text-slate-600 hover:bg-slate-100 disabled:opacity-50 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800">
+              {testing ? '···' : 'Test'}
+            </button>
+            <button type="submit" disabled={saving || !form.token} className="border border-sky-300 bg-sky-50 px-3 py-1.5 font-mono text-xs uppercase tracking-wider text-sky-700 hover:bg-sky-100 disabled:opacity-50 dark:border-sky-700 dark:bg-sky-950/40 dark:text-sky-300 dark:hover:bg-sky-900/40">
+              {saving ? '···' : 'Save'}
+            </button>
+          </div>
+        </form>
+        <p className="font-mono text-[11px] text-slate-500 dark:text-slate-500">
+          Create a bot with <a href="https://t.me/BotFather" target="_blank" rel="noreferrer" className="underline">@BotFather</a> on
+          Telegram (<code>/newbot</code>) and paste its token above. No self-service linking — a person messages the bot, it
+          replies with their own chat ID, and you paste that below against their Rotsy account. Once linked, the bot only
+          ever shows that person's own Project access (viewer/member/admin); managing membership or running analysis from
+          the bot also needs their account to hold the global <code>projects:write</code> permission — same rule the web
+          app already enforces, not a bot-specific restriction.
+        </p>
+
+        <div className="border-t border-slate-100 pt-3 dark:border-slate-800/60">
+          <div className="mb-2 font-mono text-[10px] uppercase tracking-wider text-slate-500">Linked users</div>
+          {links.length === 0 ? (
+            <p className="font-mono text-[11px] text-slate-500 dark:text-slate-500">No one linked yet.</p>
+          ) : (
+            <div className="space-y-1">
+              {links.map((l) => (
+                <div key={l.id} className="flex items-center justify-between py-1">
+                  <span className="font-mono text-xs text-slate-700 dark:text-slate-300">
+                    {l.username} <span className="text-slate-400 dark:text-slate-600">· chat {l.chat_id}</span>
+                  </span>
+                  <button
+                    onClick={() => unlink(l.id)}
+                    className="border border-rose-200 px-2 py-0.5 font-mono text-[10px] uppercase text-rose-600 hover:bg-rose-50 dark:border-rose-800 dark:text-rose-400 dark:hover:bg-rose-950/40"
+                  >
+                    unlink
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+          <AddTelegramLinkForm onAdded={load} />
+        </div>
+      </div>
+      {msg && <div className="border border-emerald-200 bg-emerald-50 px-3 py-2 font-mono text-xs text-emerald-700 dark:border-emerald-800 dark:bg-emerald-950/30 dark:text-emerald-400">{msg}</div>}
+      {err && <div className="mt-3 font-mono text-xs text-rose-600 dark:text-rose-400">{err}</div>}
+    </IntegrationCard>
+  );
+}
+
+function AddTelegramLinkForm({ onAdded }) {
+  const [q, setQ] = useState('');
+  const [candidates, setCandidates] = useState([]);
+  const [userId, setUserId] = useState('');
+  const [chatId, setChatId] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+
+  useEffect(() => {
+    let active = true;
+    (async () => {
+      try {
+        const rows = await api.get(`/telegram/users${q ? `?q=${encodeURIComponent(q)}` : ''}`);
+        if (active) setCandidates(rows);
+      } catch (_) { /* keep last known candidates on transient failure */ }
+    })();
+    return () => { active = false; };
+  }, [q]);
+
+  const link = async (e) => {
+    e.preventDefault();
+    if (!userId || !chatId.trim()) return;
+    setBusy(true); setErr('');
+    try {
+      await api.post('/telegram/links', { user_id: Number(userId), chat_id: Number(chatId.trim()) });
+      setUserId(''); setChatId(''); setQ('');
+      onAdded();
+    } catch (ex) { setErr(ex.message); }
+    setBusy(false);
+  };
+
+  return (
+    <form onSubmit={link} className="mt-3 space-y-2">
+      <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="search users to link…" className={INPUT} />
+      <select value={userId} onChange={(e) => setUserId(e.target.value)} className={INPUT}>
+        <option value="">select a user…</option>
+        {candidates.map((c) => <option key={c.id} value={c.id}>{c.username} ({c.email})</option>)}
+      </select>
+      <div className="flex gap-2">
+        <input value={chatId} onChange={(e) => setChatId(e.target.value)} placeholder="Telegram chat ID" className={INPUT} />
+        <button
+          type="submit" disabled={busy || !userId || !chatId.trim()}
+          className="shrink-0 border border-sky-300 bg-sky-50 px-3 py-1.5 font-mono text-xs uppercase tracking-wider text-sky-700 hover:bg-sky-100 disabled:opacity-50 dark:border-sky-700 dark:bg-sky-950/40 dark:text-sky-300 dark:hover:bg-sky-900/40"
+        >
+          {busy ? '···' : 'Link'}
+        </button>
+      </div>
+      {err && <p className="font-mono text-xs text-rose-600 dark:text-rose-400">{err}</p>}
+    </form>
   );
 }

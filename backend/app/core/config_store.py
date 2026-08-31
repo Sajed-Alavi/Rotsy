@@ -391,3 +391,49 @@ async def github_app_config_masked(session: AsyncSession, settings: Settings) ->
         "app_id": cfg.app_id or None,
         "app_slug": cfg.app_slug or None,
     }
+
+
+# ---------------------------------------------------------------------------
+# Telegram bot (dashboard-managed, same encrypted-at-rest pattern as Sonar).
+# ---------------------------------------------------------------------------
+TELEGRAM_CONFIG_KEY = "telegram_connection"
+
+
+@dataclass
+class TelegramConnection:
+    token: str
+
+    def is_configured(self) -> bool:
+        return bool(self.token)
+
+
+async def get_telegram_connection(session: AsyncSession, settings: Settings) -> TelegramConnection:
+    """Dashboard value if present, otherwise the env/bootstrap default."""
+    row = await session.scalar(select(SystemConfig).where(SystemConfig.key == TELEGRAM_CONFIG_KEY))
+    if row is not None:
+        try:
+            data = json.loads(row.value_json)
+            return TelegramConnection(token=decrypt_password(data.get("token_enc", ""), settings))
+        except (json.JSONDecodeError, TypeError):
+            logger.warning("Corrupt telegram_connection config row — falling back to env.")
+
+    return TelegramConnection(token=settings.TELEGRAM_BOT_TOKEN)
+
+
+async def save_telegram_connection(session: AsyncSession, settings: Settings, token: str) -> TelegramConnection:
+    """Persist the Telegram bot token. Stored encrypted; never returned in the clear."""
+    blob = json.dumps({"token_enc": encrypt_password(token, settings)})
+    row = await session.scalar(select(SystemConfig).where(SystemConfig.key == TELEGRAM_CONFIG_KEY))
+    if row is None:
+        session.add(SystemConfig(key=TELEGRAM_CONFIG_KEY, value_json=blob))
+    else:
+        row.value_json = blob
+    await session.commit()
+    logger.info("Telegram bot token updated via dashboard.")
+    return TelegramConnection(token=token)
+
+
+async def telegram_connection_masked(session: AsyncSession, settings: Settings) -> dict:
+    """For the Settings -> Integrations -> Telegram card — never the token itself."""
+    cfg = await get_telegram_connection(session, settings)
+    return {"configured": cfg.is_configured()}

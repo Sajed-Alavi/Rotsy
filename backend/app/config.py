@@ -71,6 +71,20 @@ class Settings(BaseSettings):
     SONAR_URL: str = ""
     SONAR_ADMIN_TOKEN: str = ""
 
+    # --- Telegram bot (OPTIONAL — link Rotsy users to a Telegram chat) -----
+    # Token from @BotFather. Bootstrap default only; the dashboard value
+    # (Settings -> Integrations -> Telegram) wins once saved, same pattern as
+    # SONAR_ADMIN_TOKEN above.
+    TELEGRAM_BOT_TOKEN: str = ""
+    # api.telegram.org is DNS-blocked on some deployments' networks (e.g. ISP-
+    # level filtering) while every other outbound integration (GitHub, Nexus,
+    # SonarQube, registries) resolves fine — an environment-wide HTTPS_PROXY
+    # would needlessly reroute all of those through whatever's fixing Telegram.
+    # This scopes an optional HTTP/SOCKS5 proxy to TelegramClient alone (e.g.
+    # "http://host.docker.internal:2081" relaying to a local proxy tool that
+    # only listens on the host's loopback). Empty means "connect directly".
+    TELEGRAM_PROXY_URL: str = ""
+
     # --- Database (v2 persistence: users/roles/permissions) --------------
     DATABASE_URL: str
 

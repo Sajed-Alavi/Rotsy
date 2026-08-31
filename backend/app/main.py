@@ -61,6 +61,7 @@ from .routers import (
     storage,
     system,
     tasks,
+    telegram,
     users,
 )
 
@@ -387,6 +388,91 @@ async def _backup_schedule_loop(settings: Settings, stop: asyncio.Event) -> None
             pass
 
 
+async def _telegram_poll_loop(settings: Settings, stop: asyncio.Event) -> None:
+    """Long-poll Telegram's ``getUpdates`` for the configured bot, dispatching
+    each update through ``modules/telegram/dispatcher.py``.
+
+    Long-polling, not a webhook — this deployment has no guaranteed public
+    HTTPS endpoint (the same reasoning documented at length around the
+    GitHub App's own webhook requirement — see ``WEBHOOK_BASE_URL`` in
+    ``config.py``), and ``getUpdates`` needs nothing reachable from outside
+    at all.
+
+    Skipped (re-checked every 60s) whenever no bot token is configured, so
+    turning one on from Settings takes effect within a minute, not just at
+    restart. Unlike every other loop here, this one calls an external API in
+    a tight cycle, so a run of consecutive failures (bad token, Telegram
+    unreachable) backs off exponentially (5s -> 60s) instead of hammering
+    ``getUpdates`` every iteration.
+    """
+    from .core.config_store import get_telegram_connection
+    from .modules.telegram.client import TelegramClient, TelegramError
+    from .modules.telegram.dispatcher import handle_update
+    from .state import AppState
+
+    logger = logging.getLogger("telegram_poll_loop")
+    cache = _lifespan_state.get("cache")
+    if cache is None:
+        return
+
+    factory = get_session_factory()
+    app_state_obj = AppState(nexus=_lifespan_state.get("nexus"), cache=cache)
+    last_update_id: int | None = None
+    consecutive_failures = 0
+
+    while not stop.is_set():
+        try:
+            async with factory() as session:
+                conn = await get_telegram_connection(session, settings)
+            if not conn.is_configured():
+                try:
+                    await asyncio.wait_for(stop.wait(), timeout=60)
+                    return  # stop signaled
+                except asyncio.TimeoutError:
+                    continue
+
+            client = TelegramClient(conn.token, proxy=settings.TELEGRAM_PROXY_URL)
+            offset = None if last_update_id is None else last_update_id + 1
+            updates = await client.get_updates(offset, timeout=25)
+            consecutive_failures = 0
+        except TelegramError:
+            consecutive_failures += 1
+            # Exponent capped at 10 (backoff already caps at 60s via min()
+            # below, but 5.0 * 2**(consecutive_failures - 1) is computed as a
+            # Python int first and overflows converting to float long before
+            # that min() ever gets a chance to clamp it).
+            backoff = min(60.0, 5.0 * (2 ** min(consecutive_failures - 1, 10)))
+            logger.warning(
+                "Telegram getUpdates failed (%d in a row); retrying in %.0fs",
+                consecutive_failures, backoff, exc_info=True,
+            )
+            try:
+                await asyncio.wait_for(stop.wait(), timeout=backoff)
+                return  # stop signaled
+            except asyncio.TimeoutError:
+                continue
+        except Exception:  # noqa: BLE001 - e.g. a DB hiccup fetching the connection; must not silently kill this loop forever (see _retention_scheduler's own comment on this exact failure mode)
+            consecutive_failures += 1
+            backoff = min(60.0, 5.0 * (2 ** min(consecutive_failures - 1, 10)))
+            logger.exception(
+                "Telegram poll loop iteration failed (%d in a row); retrying in %.0fs",
+                consecutive_failures, backoff,
+            )
+            try:
+                await asyncio.wait_for(stop.wait(), timeout=backoff)
+                return  # stop signaled
+            except asyncio.TimeoutError:
+                continue
+
+        for update in updates:
+            last_update_id = update.get("update_id", last_update_id)
+            try:
+                async with factory() as session:
+                    await handle_update(session, settings, app_state_obj, client, update)
+            except Exception:  # noqa: BLE001 - one bad update must not stop the loop
+                logger.exception("Failed to handle Telegram update %s", update.get("update_id"))
+
+
 async def _load_nexus_connection_from_db(nexus: NexusClient, settings: Settings, logger: logging.Logger) -> None:
     """Load the Nexus connection from the dashboard DB if an admin has saved
     one; otherwise the env-provided defaults remain in effect."""
@@ -527,17 +613,21 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     stop_retention_interval = asyncio.Event()
     retention_interval_task = asyncio.create_task(_retention_interval_loop(settings, stop_retention_interval))
 
+    # Start the Telegram bot's long-poll loop (no-op until a bot token is configured).
+    stop_telegram = asyncio.Event()
+    telegram_task = asyncio.create_task(_telegram_poll_loop(settings, stop_telegram))
+
     logger.info("Rotsy v%s started.", __version__)
     try:
         yield
     finally:
         background = (
             metric_task, retention_task, scanner_db_task, push_watch_task,
-            backup_schedule_task, retention_interval_task,
+            backup_schedule_task, retention_interval_task, telegram_task,
         )
         for event in (
             stop_metric, stop_retention, stop_scanner_db, stop_push_watch,
-            stop_backup_schedule, stop_retention_interval,
+            stop_backup_schedule, stop_retention_interval, stop_telegram,
         ):
             event.set()
         for task in background:
@@ -619,6 +709,7 @@ def create_app() -> FastAPI:
     app.include_router(prometheus.router)  # no prefix — serves at /metrics/export
     app.include_router(alerts.router, prefix="/api")
     app.include_router(audit.router, prefix="/api")
+    app.include_router(telegram.router, prefix="/api")
     return app
 
 

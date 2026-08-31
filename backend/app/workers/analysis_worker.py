@@ -292,6 +292,14 @@ async def handle_clone_and_analyze(job: Job, progress: ProgressCallback) -> dict
             target_url="",
         )
         await progress(100, f"completed — quality gate {gate_status}")
+        try:
+            await _notify_analysis_success(
+                project_id=project_id, run=run, sonar_project=sonar_project, repo_name=repo_name, ref=ref,
+                gate_status=gate_status, issues_count=issues_count, bugs=bugs,
+                vulnerabilities=vulnerabilities, code_smells=code_smells, coverage=coverage,
+            )
+        except Exception:  # noqa: BLE001 - Telegram is a bonus delivery channel, never a reason to fail a completed analysis
+            logger.exception("Telegram notify failed for analysis run %s", run.id)
         return {"analysis_run_id": run.id, "quality_gate": gate_status, "issues_count": issues_count}
 
     except Exception as exc:  # noqa: BLE001
@@ -308,6 +316,10 @@ async def handle_clone_and_analyze(job: Job, progress: ProgressCallback) -> dict
                           run.id, repo_external_id, sha, exc)
         await _mark_failed(factory, run.id, str(exc) or f"{type(exc).__name__}: analysis failed unexpectedly.")
         await _report_failure_status(provider, credential_ref, repo_ref, sha, exc, source_module, repo_external_id)
+        try:
+            await _notify_analysis_failure(project_id=project_id, repo_name=repo_name, ref=ref, error=str(exc))
+        except Exception:  # noqa: BLE001 - same reasoning as the success-path notify above
+            logger.exception("Telegram notify failed for analysis run %s", run.id)
         raise
     finally:
         shutil.rmtree(source_dir, ignore_errors=True)
@@ -320,3 +332,48 @@ async def _mark_failed(factory, run_id: int, error: str) -> None:
             run.status = "failed"
             run.error = error[:2000]
             await session.commit()
+
+
+async def _notify_analysis_success(
+    *, project_id: int, run: AnalysisRun, sonar_project: SonarProject, repo_name: str, ref: str,
+    gate_status: str, issues_count: int, bugs: int, vulnerabilities: int, code_smells: int,
+    coverage: float | None,
+) -> None:
+    """Ship the same PDF report ``GET .../report.pdf`` produces to every
+    linked user with access to this project, as soon as the run finishes —
+    best-effort, see notify.py's own docstring."""
+    from ..modules.telegram.client import escape_html
+    from ..modules.telegram.notify import notify_project
+    from ..services.sonar_report_pdf import build_analysis_report_pdf
+
+    async def _render_pdf() -> bytes:
+        # Passed as a callable rather than pre-rendered bytes: building this
+        # report queries every issue and hotspot of the run with no limit and
+        # renders a multi-page document, and the overwhelmingly common case
+        # is a deployment with no bot token configured at all. notify_project
+        # only invokes this once it has at least one real recipient.
+        factory = get_session_factory()
+        async with factory() as session:
+            return await build_analysis_report_pdf(session, run, sonar_project)
+
+    icon = "✅" if gate_status == "OK" else "⚠️"
+    text = (
+        f"{icon} <b>Analysis complete</b> — {escape_html(repo_name)} ({escape_html(ref)})\n"
+        f"Quality gate: {escape_html(gate_status)}\n"
+        f"Issues: {issues_count} (bugs {bugs}, vulnerabilities {vulnerabilities}, code smells {code_smells})\n"
+        f"Coverage: {f'{coverage:.0f}%' if coverage is not None else 'n/a'}"
+    )
+    await notify_project(
+        project_id, text, pdf_factory=_render_pdf, filename=f"sonar-{run.commit_sha[:8]}.pdf",
+    )
+
+
+async def _notify_analysis_failure(*, project_id: int, repo_name: str, ref: str, error: str) -> None:
+    from ..modules.telegram.client import escape_html
+    from ..modules.telegram.notify import notify_project
+
+    text = (
+        f"❌ <b>Analysis failed</b> — {escape_html(repo_name)} ({escape_html(ref)})\n"
+        f"{escape_html(error[:500])}"
+    )
+    await notify_project(project_id, text)

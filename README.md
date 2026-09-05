@@ -1,8 +1,13 @@
 # Rotsy
 
-A management dashboard and API around **Sonatype Nexus Repository Manager**, with
+A self-hosted **DevSecOps console** for container and code security, with
 **static container-image vulnerability scanning** (Trivy + Grype) and **automatic
 SonarQube code analysis** on every push to GitHub or GitLab as its two centrepieces.
+
+It connects to the systems you already run — Sonatype Nexus Repository Manager
+for images, GitHub or GitLab for source, SonarQube for analysis, Telegram for
+delivery — and puts what they each know in one place, scoped per project and per
+user.
 
 | Path        | What it is                                                  |
 | ----------- | ----------------------------------------------------------- |
@@ -100,10 +105,14 @@ unscanned: onboarding 500 tags does not mean 500 scans.
 
 ## Setup
 
-**Prerequisites:** Docker + Docker Compose, a reachable Nexus with at least one
-Docker repository, and a Nexus account with repository-admin read privileges.
-Nothing else — Python, Node, Postgres and Redis all run in the stack with pinned
-versions.
+**Prerequisites:** Docker + Docker Compose. Nothing else — Python, Node, Postgres
+and Redis all run in the stack with pinned versions.
+
+Every integration is optional and connected the same way, from **Settings →
+Integrations**; nothing needs to go in `.env`. Connect only what you want:
+**Nexus** (plus an account with repository-admin read privileges) for image
+scanning, **GitHub/GitLab + SonarQube** for code analysis, **Telegram** for
+delivery. The steps below set up the image-scanning half.
 
 ```bash
 cp .env.example .env     # set JWT_SECRET, BOOTSTRAP_ADMIN_*, Postgres creds
@@ -129,9 +138,6 @@ Then, in the UI:
 4. **Vulnerability Scanning → Enable repo** — pick a repository. Existing images
    are baselined, not scanned.
 5. **Wire up push events** — see below.
-
-GitHub, GitLab, SonarQube and Telegram are all optional and all connected the
-same way, from **Settings → Integrations**. Nothing needs to go in `.env`.
 
 ### The one manual step: Nexus push webhooks
 

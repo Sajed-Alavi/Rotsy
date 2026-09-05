@@ -1,12 +1,14 @@
-# Building Rotsy: a DevSecOps console for Nexus, GitHub/GitLab, and SonarQube
+# Building Rotsy: a self-hosted DevSecOps console for containers and code
 
 **Version:** v1.02 · **Date:** 2026-09-01
 
 ---
 
-Sonatype Nexus Repository Manager is where a lot of teams' Docker images live, but Nexus itself tells you almost nothing about what's inside them. Is `myapp:latest` running a base layer with six unpatched CRITICAL CVEs? Nexus won't say. We built **Rotsy** to answer that — a FastAPI + React console that sits in front of Nexus, scans everything it holds with Trivy and Grype, and turns "click into Nexus and hope" into an actual workflow: repository → image → tag → vulnerability report, with backups, RBAC-scoped access, and PDF export for whoever has to hand something to an auditor.
+Most teams already have the pieces: a registry holding their Docker images, repositories on GitHub or GitLab, maybe a SonarQube instance somebody set up two years ago. What they don't have is a straight answer to a simple question — *is what we're shipping safe?* Is `myapp:latest` running a base layer with six unpatched CRITICAL CVEs? Did that commit that went out on Friday make the code worse? Each system knows a fragment; none of them talk.
 
-That was v1.0. Since then Rotsy grew a second centrepiece — connect a GitHub or GitLab repository and every push clones the commit, runs SonarQube, and reports back, no CI YAML — and, most recently, a Telegram bot that pushes results to the people who need them instead of waiting to be visited.
+**Rotsy** is a self-hosted console built to answer that in one place. It scans container images statically with Trivy and Grype, analyzes source with SonarQube on every push, scopes all of it per project and per user, and delivers the results to whoever needs them — with backups, retention, and PDF export for whoever has to hand something to an auditor.
+
+It started narrower. v1.0 sat in front of Sonatype Nexus Repository Manager — the registry is where the images live, and Nexus itself tells you almost nothing about what's inside them — and turned "click into Nexus and hope" into an actual workflow: repository → image → tag → vulnerability report. Nexus is still supported and still how images get discovered, but it's one integration now rather than the whole product. The second centrepiece arrived after: connect a GitHub or GitLab repository and every push clones the commit, runs SonarQube, and reports back, with no CI YAML. Most recently a Telegram bot started pushing results to the people who need them instead of waiting to be visited.
 
 This post covers all three, and it's less "here's our feature list" and more "here's what actually went wrong, and how we fixed it" — because the interesting parts of a project like this are rarely the happy path.
 
@@ -145,7 +147,7 @@ cp .env.example .env   # set JWT_SECRET, bootstrap admin credentials, Postgres c
 docker compose up --build
 ```
 
-Point it at a Nexus instance with at least one Docker repository and it discovers the rest automatically. GitHub, GitLab, SonarQube and Telegram are all optional and all connected the same way, from **Settings → Integrations** — nothing to put in `.env` to try any of them.
+Every integration is optional and connected the same way, from **Settings → Integrations** — nothing to put in `.env` to try any of them. Connect Nexus and it discovers your Docker repositories automatically; connect GitHub or GitLab plus SonarQube for the code-analysis half; add Telegram if you want results delivered. Any one of them on its own is a working setup.
 
 **Repository:** [github.com/Sajed-Alavi/Rotsy](https://github.com/Sajed-Alavi/Rotsy)
 **License:** custom attribution-required license — see [`LICENSE`](./LICENSE). Use, modification, and redistribution are permitted; the original copyright notice must be retained and not removed, altered, or obscured.

@@ -36,6 +36,7 @@ from ..core.config_store import (
 from ..core.jobs import JobQueue
 from ..core.source_provider import RepoRef
 from ..db.session import get_session_factory
+from ..core import policy
 from ..core.project_access import assert_project_access, require_project_access
 from ..dependencies import RequirePermission, get_current_user, get_session, get_settings
 from ..models import (
@@ -785,6 +786,7 @@ async def run_repository_analysis(
     session: Annotated[AsyncSession, Depends(get_session)],
     settings: Annotated[Settings, Depends(get_settings)],
     state: Annotated[AppState, Depends(app_state)],
+    user: Annotated[User, Depends(get_current_user)],
     ref: str | None = None,
 ) -> dict:
     """Trigger analysis on demand for one repository — for troubleshooting,
@@ -796,6 +798,12 @@ async def run_repository_analysis(
     sonar_project = await session.get(SonarProject, sonar_project_id)
     if sonar_project is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, _SONAR_PROJECT_NOT_FOUND)
+    # The Project comes from the row, not the URL, so require_project_access
+    # (which reads a ``project_id`` path parameter) cannot be declared on this
+    # route — which is how it shipped guarded by the global permission alone.
+    # Checked here instead, through the same policy the by-project sibling
+    # route and the Telegram bot both use.
+    await policy.assert_can_run_analysis(session, user, sonar_project.project_id)
     if state.cache is None:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Job queue is not available")
 

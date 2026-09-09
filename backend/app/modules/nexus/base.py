@@ -126,7 +126,7 @@ async def exec_scanner(
     except TimeoutError:
         proc.kill()
         await proc.wait()
-        raise TimeoutError(f"scanner exceeded {timeout:.0f}s")
+        raise TimeoutError(f"scanner exceeded {timeout:.0f}s") from None
     return proc.returncode or 0, stdout.decode(errors="replace"), stderr.decode(errors="replace")
 
 

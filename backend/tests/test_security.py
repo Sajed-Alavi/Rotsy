@@ -85,7 +85,17 @@ def test_refresh_token_rejected_when_expecting_access():
 def test_tampered_signature_rejected():
     settings = make_settings()
     token = create_access_token(settings, user_id=1)
-    tampered = token[:-1] + ("A" if token[-1] != "A" else "B")
+    header, payload, signature = token.split(".")
+    # Flip a character in the *middle* of the signature, not the last one. An
+    # HS256 signature is 32 bytes in 43 base64url characters — 258 bits of
+    # alphabet for 256 bits of data — so the final character's low 2 bits are
+    # ignored on decode and four different characters there produce the
+    # identical signature. Tampering with it therefore left the token valid
+    # roughly one time in sixteen, which made this test flaky rather than
+    # wrong: it only failed on the runs where the tamper did nothing.
+    index = len(signature) // 2
+    swapped = "A" if signature[index] != "A" else "B"
+    tampered = f"{header}.{payload}.{signature[:index]}{swapped}{signature[index + 1:]}"
     with pytest.raises(TokenError):
         decode_token(settings, tampered, expected_type="access")
 

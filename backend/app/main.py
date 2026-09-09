@@ -37,7 +37,7 @@ from . import __version__
 from .config import Settings, get_settings
 from .core import correlation
 from .core.cache import Cache
-from .core.jobs import JobRunner
+from .core.jobs import JobPolicy, JobRunner
 from .modules.nexus.connector import NexusClient
 from .db.session import get_session_factory
 from .routers import (
@@ -576,7 +576,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Start the job runner + register handlers.
     runner = JobRunner(cache)
     from .services import job_handlers
-    runner.register("collect_metrics", job_handlers.handle_collect_metrics)
     runner.register("analyze_repo", job_handlers.handle_analyze_repo)
     runner.register("run_retention", job_handlers.handle_run_retention)
     runner.register("backup", job_handlers.handle_backup)
@@ -584,8 +583,23 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     runner.register("run_scheduled_backup", job_handlers.handle_run_scheduled_backup)
     runner.register("sync", job_handlers.handle_sync)
     runner.register("scan_image", job_handlers.handle_scan_image)
-    runner.register("scanner_db_update", job_handlers.handle_scanner_db_update)
     runner.register("scanner_db_import", job_handlers.handle_scanner_db_import)
+
+    # Retries are opt-in per type, because repeating work is only safe when
+    # the work is idempotent (see core/jobs.JobPolicy). These two are: a
+    # database refresh re-downloads to the same place, and a metric snapshot
+    # re-reads the same counters. Deliberately NOT applied to backups or
+    # analysis — a retried archive job produces a second archive, and a
+    # failing analysis almost always fails deterministically, so retrying it
+    # just pays for another clone to reach the same error.
+    runner.register(
+        "scanner_db_update", job_handlers.handle_scanner_db_update,
+        JobPolicy(max_retries=2, retry_delay=30.0),
+    )
+    runner.register(
+        "collect_metrics", job_handlers.handle_collect_metrics,
+        JobPolicy(max_retries=1, retry_delay=10.0, timeout=900.0),
+    )
     from .workers.analysis_worker import handle_clone_and_analyze
     runner.register("clone_and_analyze", handle_clone_and_analyze)
     from .workers.provisioning_worker import handle_provision_repository

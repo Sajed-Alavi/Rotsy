@@ -8,7 +8,7 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
-from sqlalchemy import asc, case, delete as sa_delete, desc, func, or_, select, update as sa_update
+from sqlalchemy import delete as sa_delete, desc, func, or_, select, update as sa_update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...core.access_control import DELETE, AccessResolver

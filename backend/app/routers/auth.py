@@ -15,6 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import Settings, get_settings
+from ..core import rate_limit
 from ..core.security import (
     TokenError,
     create_access_token,
@@ -25,6 +26,7 @@ from ..core.security import (
 from ..dependencies import _load_user_permissions, get_current_user, get_session
 from ..models import User
 from ..schemas.auth import LoginRequest, MeResponse, RoleBrief
+from ..state import AppState, app_state
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -43,14 +45,35 @@ def _build_me(user: User, permissions: list[str]) -> MeResponse:
 @router.post("/login")
 async def login(
     body: LoginRequest,
+    request: Request,
     response: Response,
     settings: Annotated[Settings, Depends(get_settings)],
     session: Annotated[AsyncSession, Depends(get_session)],
+    state: Annotated[AppState, Depends(app_state)],
 ) -> MeResponse:
-    """Authenticate, set access + refresh cookies, return the user profile."""
+    """Authenticate, set access + refresh cookies, return the user profile.
+
+    Rate-limited on two axes before the password is ever hashed: per source
+    address, and per username. Bcrypt makes each attempt expensive for the
+    *server* as much as the attacker, so an unthrottled login is both a
+    guessing oracle and a way for an unauthenticated caller to burn CPU. The
+    per-username bucket exists because a distributed attempt on one account
+    would slip under a per-IP limit entirely.
+    """
+    ip = rate_limit.client_ip(request)
+    await rate_limit.check(state.cache, "login-ip", ip, rate_limit.LOGIN_PER_IP)
+    await rate_limit.check(
+        state.cache, "login-user", body.username[:64], rate_limit.LOGIN_PER_USERNAME,
+    )
+
     user = await session.scalar(select(User).where(User.username == body.username))
     if user is None or not user.is_active or not verify_password(body.password, user.password_hash):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid username or password.")
+
+    # Succeeded — clear the counters so somebody who mistyped a few times is
+    # not still throttled once they get it right.
+    await rate_limit.reset(state.cache, "login-ip", ip, rate_limit.LOGIN_PER_IP)
+    await rate_limit.reset(state.cache, "login-user", body.username[:64], rate_limit.LOGIN_PER_USERNAME)
 
     access = create_access_token(settings, user.id)
     refresh = create_refresh_token(settings, user.id)

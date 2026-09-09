@@ -8,9 +8,7 @@ be tested — and changed — independently.
 
 from __future__ import annotations
 
-import asyncio
 
-import pytest
 import pytest_asyncio
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
@@ -19,7 +17,7 @@ from conftest import make_settings
 from app.core import events
 from app.core.projects import create_project
 from app.db.base import Base
-from app.models import Permission, ProjectMember, Role, TelegramLink, User
+from app.models import Permission, Role, TelegramLink, User
 from app.notifications import Attachment, Audience, Notification, Severity
 from app.notifications import service as notification_service
 from app.notifications import subscribers

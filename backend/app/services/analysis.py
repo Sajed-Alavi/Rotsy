@@ -23,6 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import Settings
 from ..core import policy
+from ..core import rate_limit
 from ..core.config_store import get_github_app_config
 from ..core.jobs import JobQueue
 from ..core.source_provider import RepoRef
@@ -111,6 +112,13 @@ async def run_repository_analysis(
     if sonar_project is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, SONAR_PROJECT_NOT_FOUND)
     await policy.assert_can_run_analysis(session, user, sonar_project.project_id)
+    # Authorized, but still expensive: each run clones a repository and drives
+    # a scanner. Bounded per user so a stuck client — or a held-down button in
+    # chat, where every "Run Analysis" message stays tappable forever — cannot
+    # queue the same work dozens of times.
+    await rate_limit.check(
+        state.cache, "run-analysis", str(user.id), rate_limit.ANALYSIS_PER_USER,
+    )
     if state.cache is None:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Job queue is not available")
 

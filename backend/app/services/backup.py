@@ -9,7 +9,6 @@ dump because it's version-independent and can be fed into the sync service.
 
 from __future__ import annotations
 
-import json
 import logging
 from typing import Any
 

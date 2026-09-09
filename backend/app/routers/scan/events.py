@@ -56,7 +56,7 @@ async def nexus_webhook(
     try:
         payload = await request.json()
     except ValueError:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Webhook body is not valid JSON")
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Webhook body is not valid JSON") from None
 
     parsed = scan_events.parse_webhook_payload(payload if isinstance(payload, dict) else {})
     if parsed is None:

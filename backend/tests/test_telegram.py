@@ -11,14 +11,13 @@ says the HTTP endpoint is missing.
 from __future__ import annotations
 
 import pytest
-import pytest_asyncio
 from fastapi import HTTPException
 from pydantic import ValidationError
 from sqlalchemy import select
 
 from conftest import make_settings
 from app.core.projects import create_project
-from app.models import Permission, Project, ProjectMember, Role, SonarProject, TelegramLink, User
+from app.models import Permission, ProjectMember, Role, SonarProject, TelegramLink, User
 from app.modules.telegram import dispatcher
 from app.modules.telegram.auth import linked_user
 from app.modules.telegram.callback_data import Callback, CallbackDataError, build, parse

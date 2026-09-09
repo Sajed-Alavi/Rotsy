@@ -1,0 +1,38 @@
+# Linting for the backend. There was none — no ruff, mypy, flake8 or black
+# anywhere in the repo, and no CI to run them — so this starts deliberately
+# narrow: rules that catch real defects, not stylistic ones.
+#
+# Widening the rule set on a mature codebase produces thousands of findings
+# nobody triages, and a linter everybody ignores is worse than no linter. Add
+# rules when there is appetite to fix what they surface.
+
+line-length = 120
+target-version = "py313"
+
+[lint]
+select = [
+    "F",    # pyflakes — undefined names, unused imports, f-strings without placeholders
+    "E9",   # syntax/IO errors
+    "B",    # bugbear — mutable default args, except-without-raise, misuse of assert
+    "ASYNC1",# blocking calls inside async functions (this codebase has hit that twice)
+    "S102", # exec()
+    "S103", # overly permissive file permissions
+    "S108", # hardcoded temp paths
+    "S602", # subprocess with shell=True
+    "S605", # os.system
+    "T20",  # leftover print()/pprint() in application code
+]
+ignore = [
+    "B008",     # FastAPI's Depends() in a default argument is the framework's own idiom
+    "ASYNC109", # Flags any async function taking a `timeout` parameter. Every hit
+                # here forwards it to httpx or a subprocess, which is the documented
+                # way to bound those — services/notifier.py explains this in a
+                # comment predating the linter. A false positive for this codebase.
+]
+
+[lint.per-file-ignores]
+# Tests legitimately use assert, and fixtures shadow their own names.
+"tests/**" = ["S101", "B011"]
+
+[format]
+quote-style = "preserve"

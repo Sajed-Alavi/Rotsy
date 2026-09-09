@@ -423,7 +423,7 @@ async def create_repository(request: Request, body: RepoCreate) -> dict[str, Any
         resp = await nexus.client.post(endpoint, json=payload)
     except Exception as exc:  # noqa: BLE001
         logger.warning("create repo failed: %s", exc)
-        raise HTTPException(status.HTTP_502_BAD_GATEWAY, f"Failed to contact Nexus: {exc}")
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, f"Failed to contact Nexus: {exc}") from exc
 
     if resp.status_code in (200, 201, 204):
         # Bust the repo-list cache so the new repo shows up immediately.
@@ -469,7 +469,7 @@ async def delete_repository(
     try:
         resp = await nexus.client.delete(f"/service/rest/v1/repositories/{name}")
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status.HTTP_502_BAD_GATEWAY, f"Failed to contact Nexus: {exc}")
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, f"Failed to contact Nexus: {exc}") from exc
     if resp.status_code in (200, 204):
         cache = app_state(request).cache
         if cache is not None:

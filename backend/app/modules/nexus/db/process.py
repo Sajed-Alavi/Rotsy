@@ -84,7 +84,7 @@ async def run_streaming(
         proc.kill()
         await proc.wait()
         pump_task.cancel()
-        raise RuntimeError(f"timed out after {timeout:.0f}s: {args[0]} {' '.join(args[1:3])}")
+        raise RuntimeError(f"timed out after {timeout:.0f}s: {args[0]} {' '.join(args[1:3])}") from None
     except asyncio.CancelledError:
         # The job was cancelled (POST /jobs/{id}/cancel -> Task.cancel()). Kill
         # the subprocess before re-raising, or it keeps running orphaned and

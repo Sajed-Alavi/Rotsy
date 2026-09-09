@@ -26,7 +26,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..config import Settings
 from ..core import projects as projects_core
 from ..core.config_store import (
-    get_github_app_config,
     get_sonar_connection,
     get_sonar_last_success,
     record_sonar_success,

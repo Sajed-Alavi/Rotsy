@@ -15,7 +15,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 from ..dependencies import RequirePermission
 from ..modules.nexus import tasks as nexus_tasks
-from ..state import app_state, require_nexus
+from ..state import require_nexus
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
 
@@ -37,7 +37,7 @@ async def run_task(request: Request, task_id: str) -> dict[str, Any]:
     try:
         return await nexus_tasks.run_task(require_nexus(request), task_id)
     except nexus_tasks.TaskUnavailable as exc:
-        raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(exc))
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(exc)) from exc
 
 
 @router.post("/{task_id}/stop", dependencies=[Depends(RequirePermission("tasks:control"))])
@@ -46,4 +46,4 @@ async def stop_task(request: Request, task_id: str) -> dict[str, Any]:
     try:
         return await nexus_tasks.stop_task(require_nexus(request), task_id)
     except nexus_tasks.TaskUnavailable as exc:
-        raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(exc))
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(exc)) from exc

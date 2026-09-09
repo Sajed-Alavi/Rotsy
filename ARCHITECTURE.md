@@ -229,6 +229,41 @@ actually gets asked without a collector to operate.
 
 ---
 
+## Reliability and abuse control
+
+**Retries are opt-in per job type** (`core/jobs.JobPolicy`), and default to
+off. Repeating work is only safe when the work is idempotent: re-running a
+database download costs bandwidth, re-running an archive job produces a second
+archive. So a type opts in, and the opt-in is where somebody has to think
+about it. Today `scanner_db_update` (2 retries) and `collect_metrics`
+(1 retry, 15-minute timeout) do; backups and analysis deliberately do not.
+
+Timeouts are opt-in for the same reason — the scanner database download is
+legitimately allowed 45 minutes, so a blanket default would turn a working
+feature into a mystery failure on a slow link.
+
+Crash recovery already existed: `JobQueue.reap_stranded` fails jobs left
+mid-flight by a process that died holding them.
+
+**Webhook idempotency** is claimed with Redis `SET NX` — one atomic round
+trip. It was previously a read followed by a write, so a retry arriving
+alongside the original (exactly when duplicates happen) could have both
+deliveries read "not seen" and both enqueue the same analysis.
+
+**Rate limiting** (`core/rate_limit.py`) had no equivalent anywhere before.
+It matters most on login: passwords are bcrypt-hashed, so each attempt is
+deliberately expensive *for the server*, which makes an unthrottled login both
+a guessing oracle and a cheap way to burn CPU. Two buckets — per source
+address and per username, because a distributed attempt on one account slips
+under a per-IP limit entirely. Analysis triggering is bounded too, since each
+run clones a repository.
+
+The limiter **fails open**: if Redis is unavailable it allows the request. A
+limiter that denies everything when its own store hiccups converts a cache
+outage into a total one, and locks out the operator who would fix it.
+
+---
+
 ## Data flow
 
 ```

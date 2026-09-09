@@ -585,6 +585,18 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     runner.register("clone_and_analyze", handle_clone_and_analyze)
     from .workers.provisioning_worker import handle_provision_repository
     runner.register("provision_repository", handle_provision_repository)
+
+    # Notifications: register the delivery channels and subscribe them to the
+    # domain events jobs publish. Nothing here starts a task or holds a
+    # connection — jobs stay unaware of who is listening (see
+    # app/notifications/__init__.py).
+    from . import notifications
+    from .notifications import subscribers as notification_subscribers
+    from .workers.analysis_worker import _report_pdf_loader
+    notifications.setup()
+    notification_subscribers.set_report_pdf_loader(_report_pdf_loader)
+    logger.info("Notification channels registered: %s", ", ".join(notifications.registered()) or "none")
+
     runner.start()
     app.state.runner = runner
 

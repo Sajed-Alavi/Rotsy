@@ -25,6 +25,7 @@ from typing import Awaitable, Callable
 
 from ..config import get_settings
 from ..core import config_store
+from ..core import events
 from ..core.jobs import Job
 from ..core.outbound import OutboundURLError, validate_outbound_url
 from ..db.session import get_session_factory
@@ -197,12 +198,7 @@ async def _run_backup_archive(
                 run.error = str(exc)
                 run.finished_at = datetime.now(timezone.utc)
                 await session.commit()
-        try:
-            from ..modules.telegram.client import escape_html
-            from ..modules.telegram.notify import notify_admins
-            await notify_admins(f"❌ <b>Backup failed</b> ({escape_html(mode)})\n{escape_html(str(exc)[:500])}")
-        except Exception:  # noqa: BLE001 - Telegram is a bonus delivery channel, never a reason to fail the backup job's own error handling
-            logger.exception("Telegram notify failed for backup run %s", run_id)
+        await events.publish(events.BackupFailed(mode=mode, error=str(exc)))
         raise
 
     async with factory() as session:
@@ -470,15 +466,9 @@ async def handle_scanner_db_update(job: Job, progress: ProgressCallback) -> dict
             force=bool(job.payload.get("force", False)),
         )
     except Exception as exc:  # noqa: BLE001
-        try:
-            from ..modules.telegram.client import escape_html
-            from ..modules.telegram.notify import notify_admins
-            await notify_admins(
-                f"❌ <b>Scanner database update failed</b> ({escape_html(', '.join(scanners))})\n"
-                f"{escape_html(str(exc)[:500])}"
-            )
-        except Exception:  # noqa: BLE001 - Telegram is a bonus delivery channel, never a reason to mask the real failure
-            logger.exception("Telegram notify failed for scanner_db_update")
+        await events.publish(events.ScannerDatabaseUpdateFailed(
+            scanners=tuple(scanners), error=str(exc),
+        ))
         raise
     await progress(100, "done", {"stage": "done", "results": result})
     return result

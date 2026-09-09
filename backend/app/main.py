@@ -35,6 +35,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from . import __version__
 from .config import Settings, get_settings
+from .core import correlation
 from .core.cache import Cache
 from .core.jobs import JobRunner
 from .modules.nexus.connector import NexusClient
@@ -529,8 +530,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
     logging.basicConfig(
         level=getattr(logging, settings.LOG_LEVEL.upper(), logging.INFO),
-        format="%(asctime)s %(levelname)s %(name)s :: %(message)s",
+        format="%(asctime)s %(levelname)s %(name)s [%(correlation_id)s] :: %(message)s",
     )
+    # Must come after basicConfig created the handler, and before anything
+    # logs: the format above references correlation_id, which only exists on a
+    # record once this filter has run.
+    correlation.install()
     logger = logging.getLogger("nexus_wrapper")
 
     nexus = NexusClient(settings)
@@ -691,6 +696,21 @@ def create_app() -> FastAPI:
         docs_url="/docs",
         redoc_url="/redoc",
     )
+    @app.middleware("http")
+    async def _correlation_id_middleware(request, call_next):
+        """Give every request an id, and echo it back.
+
+        Honours an inbound ``X-Request-ID`` so a caller or reverse proxy can
+        correlate its own logs with Rotsy's rather than each side inventing a
+        different id for the same request.
+        """
+        incoming = request.headers.get(correlation.HEADER_NAME, "").strip()
+        request_id = incoming[:64] or correlation.new_correlation_id()
+        correlation.set_correlation_id(request_id)
+        response = await call_next(request)
+        response.headers[correlation.HEADER_NAME] = request_id
+        return response
+
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins,

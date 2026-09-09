@@ -32,6 +32,7 @@ from typing import Any, Awaitable, Callable
 
 import redis.asyncio as aioredis
 
+from . import correlation
 from .cache import Cache
 
 logger = logging.getLogger(__name__)
@@ -351,6 +352,10 @@ class JobRunner:
             logger.error("No handler registered for job type %s", job_type)
             return
 
+        # Every log line this handler produces now carries the job id, so a
+        # job's trail can be followed through the worker, the services it
+        # calls and the adapters underneath (see core/correlation.py).
+        correlation.set_correlation_id(f"job-{job_id[:16]}")
         await r.hset(f"job:{job_id}", mapping={"status": "running", "message": "started",
                                                "updated_at": str(time.time())})
         await JobQueue(self._cache).push_event(job_id, {"type": "phase", "message": "started"})

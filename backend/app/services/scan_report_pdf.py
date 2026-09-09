@@ -248,7 +248,7 @@ async def build_report_pdf(session: AsyncSession, report: ScanReport) -> bytes:
     # build_report_pdf() actually runs, that module is already fully loaded,
     # so a call-time import works and lets us reuse its severity ordering
     # instead of re-sorting findings here.
-    from ..routers.scan.reports import _ordered_findings
+    from ..core.finding_order import ordered_findings as _ordered_findings
 
     stmt = _ordered_findings(select(Vulnerability).where(Vulnerability.report_id == report.id))
     vulnerabilities = list((await session.execute(stmt)).scalars().all())

@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...core.access_control import DELETE, AccessResolver
 from ...dependencies import RequirePermission, get_access, get_session
+from ...core import finding_order
 from ...models import ScannedImage, ScanReport, Vulnerability
 from ...schemas.scan import ReportOut, VulnerabilityPage
 from ...services.scan_report_pdf import build_report_pdf
@@ -101,35 +102,11 @@ async def _readable_report_or_404(
     return report
 
 
-# Rank severities explicitly. The previous ordering keyed off the first letter
-# of the severity string, which put CRITICAL after nothing in particular and
-# collated MEDIUM with anything else starting "M".
-_SEVERITY_RANK = case(
-    {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3},
-    value=Vulnerability.severity,
-    else_=4,
-)
-
-_SORT_COLUMNS = {
-    "severity": None,  # handled specially — falls back to the rank case below
-    "cvss": Vulnerability.cvss,
-    "cve": Vulnerability.cve,
-    "package": Vulnerability.package,
-}
-
-
-def _ordered_findings(stmt, sort: str = "severity", order: str = "desc"):
-    """Most serious first by default: severity rank, then CVSS descending.
-
-    ``sort``/``order`` let the caller pick a different column; ``severity``
-    (the default) always orders by rank first, CVSS descending as a tiebreak,
-    regardless of ``order`` — the other three columns honor ``order`` directly.
-    """
-    if sort not in _SORT_COLUMNS or sort == "severity":
-        return stmt.order_by(_SEVERITY_RANK, desc(Vulnerability.cvss))
-    column = _SORT_COLUMNS[sort]
-    direction = asc if order == "asc" else desc
-    return stmt.order_by(direction(column), _SEVERITY_RANK)
+# Ordering rules live in core/finding_order.py so the PDF builder in
+# services/ can share them without importing this router.
+_SEVERITY_RANK = finding_order.SEVERITY_RANK
+_SORT_COLUMNS = finding_order.SORT_COLUMNS
+_ordered_findings = finding_order.ordered_findings
 
 
 def _apply_finding_filters(

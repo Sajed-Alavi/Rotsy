@@ -1,20 +1,15 @@
 """Routes an incoming Telegram update to the right handler.
 
-Every handler re-derives authorization from the same functions the web app
-uses — ``core.project_access``/``core.projects`` for Project membership,
-plus ``dependencies.user_permissions`` for the global RBAC side — never a
-bot-specific reimplementation of a permission decision. Two existing router
-functions (``routers.projects.list_project_repositories``,
-``routers.sonar.run_repository_analysis``) are called directly as plain
-Python functions rather than duplicating their orchestration logic; both
-take only plain parameters (no ``Request``), so this is safe, but it means
-this module — unusually for ``modules/`` — reaches into ``routers/``. Both
-are imported lazily inside the functions that use them rather than at
-module scope, so importing this dispatcher never risks a circular import
-with whatever router eventually imports it. The project's own access check
-for the run-analysis case is verified here explicitly, since that
-endpoint's own dependency only checks the global ``projects:write``
-permission, not project membership.
+No authorization decision is made here. Every handler defers to
+:mod:`app.core.policy`, the same named decisions the HTTP routes use, so the
+bot cannot grant more (or less) than the web app for the same user — and a
+rule that changes changes in one place for both.
+
+Likewise the two operations the bot shares with the web app — listing a
+Project's repositories and triggering an analysis — call ``services/``, not
+``routers/``. An earlier version imported the router functions directly,
+which pointed ``modules/`` at ``routers/`` against this project's layering
+and forced function-scope imports to dodge a cycle.
 """
 
 from __future__ import annotations
@@ -29,11 +24,14 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...config import Settings
+from ...core import policy
 from ...core import project_access
 from ...core import projects as projects_core
 from ...core.health import compute_health_score
 from ...dependencies import user_permissions
 from ...models import Project, SonarProject, TelegramLink, User
+from ...services import analysis as analysis_service
+from ...services import project_repositories
 from ...state import AppState
 from . import keyboards as kb
 from .auth import linked_user
@@ -44,23 +42,14 @@ logger = logging.getLogger(__name__)
 
 
 def _require_read(user: User) -> None:
+    """Global ``projects:read`` only — for the project *list*, which is not
+    scoped to any one Project and so has no membership half to check."""
     if "projects:read" not in user_permissions(user):
         raise HTTPException(403, "Your account can't view projects (missing the projects:read permission).")
 
 
 async def _require_project_admin_write(session: AsyncSession, user: User, project_id: int):
-    """A membership row's own ``admin`` role isn't enough on its own — same
-    double gate ``routers/projects.py``'s member-management endpoints
-    enforce: the global ``projects:write`` permission is also required."""
-    _require_read(user)
-    membership = await project_access.assert_project_access(session, user, project_id, "admin")
-    if "projects:write" not in user_permissions(user):
-        raise HTTPException(
-            403,
-            "You're a Project admin here, but your account also needs the global "
-            "'projects:write' permission — ask your Rotsy administrator to grant it.",
-        )
-    return membership
+    return await policy.assert_can_manage_members(session, user, project_id)
 
 
 async def _projects_list(session: AsyncSession, user: User, page: int) -> tuple[str, dict]:
@@ -187,13 +176,7 @@ async def _repos_list(
         or (membership is not None and project_access.meets(membership.project_role, "member"))
     ) and "projects:write" in user_permissions(user)
 
-    # Imported lazily (rather than at module scope) because it lives in
-    # routers/ — see this module's docstring — and a module-scope import
-    # here would make the first routers/ module that imports this dispatcher
-    # a circular import.
-    from ...routers.projects import list_project_repositories
-
-    all_repos = await list_project_repositories(project_id, session, settings)
+    all_repos = await project_repositories.list_connected_repositories(session, settings, project_id)
     start, end = page * kb.PAGE_SIZE, page * kb.PAGE_SIZE + kb.PAGE_SIZE
     page_items = all_repos[start:end]
     has_more = len(all_repos) > end
@@ -204,23 +187,14 @@ async def _repos_list(
 async def _run_analysis(
     session: AsyncSession, settings: Settings, app_state_obj: AppState, user: User, sonar_project_id: int,
 ) -> tuple[str, dict]:
-    _require_read(user)
-    if "projects:write" not in user_permissions(user):
-        raise HTTPException(403, "Your account needs the global 'projects:write' permission to run analysis.")
+    """Authorization is not repeated here: ``services.analysis`` performs the
+    same membership check for every caller, the HTTP route included."""
     sonar_project = await session.get(SonarProject, sonar_project_id)
     if sonar_project is None:
         raise HTTPException(404, "This repository's analysis record no longer exists.")
-    # run_repository_analysis's own dependency only checks the global
-    # projects:write permission, not project membership — verified here
-    # explicitly so the bot never triggers analysis on a project the user
-    # isn't actually a member of.
-    await project_access.assert_project_access(session, user, sonar_project.project_id, "member")
-
-    # Imported lazily for the same circular-import reason as
-    # list_project_repositories above.
-    from ...routers.sonar import run_repository_analysis
-
-    result = await run_repository_analysis(sonar_project_id, session, settings, app_state_obj)
+    result = await analysis_service.run_repository_analysis(
+        session, settings, app_state_obj, user, sonar_project_id,
+    )
     job_id = str(result.get("job_id", "?"))[:8]
     return f"▶ Analysis queued (job {job_id}).", kb.back_only(build("pr", sonar_project.project_id, 0))
 

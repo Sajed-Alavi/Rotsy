@@ -609,11 +609,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # domain events jobs publish. Nothing here starts a task or holds a
     # connection — jobs stay unaware of who is listening (see
     # app/notifications/__init__.py).
-    from . import notifications
-    from .notifications import subscribers as notification_subscribers
-    from .workers.analysis_worker import _report_pdf_loader
+    # `notifications` is a top-level package beside `app`, not inside it — see
+    # backend/notifications/__init__.py. The app registers what it owns (how a
+    # report is rendered) and the package handles the rest.
+    import notifications
+    from notifications import renderers as notification_renderers
+    from notifications.subscribers import ANALYSIS_REPORT
+    from .workers.analysis_worker import render_analysis_report
+
     notifications.setup()
-    notification_subscribers.set_report_pdf_loader(_report_pdf_loader)
+    notification_renderers.register(ANALYSIS_REPORT, render_analysis_report)
     logger.info("Notification channels registered: %s", ", ".join(notifications.registered()) or "none")
 
     runner.start()

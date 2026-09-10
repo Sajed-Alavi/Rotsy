@@ -1,64 +1,50 @@
 """Turning domain events into notifications.
 
-This module is the only place that decides a given event is worth telling
-somebody about, and what the message says. Producers publish facts; channels
-render and deliver; the translation between the two lives here, so adding a
-notification for a new event — or removing one — touches one file and no job
-handler.
+The only place that decides an event is worth telling somebody about, and what
+the message says. Producers publish facts; channels render and deliver; the
+translation between the two lives here — so adding a notification, rewording
+one, or removing it entirely touches this file and no job handler.
 
-Wording is plain text with no channel markup: see ``message.py``.
+Wording is plain text with no channel markup (see ``message.py``).
 """
 
 from __future__ import annotations
 
 import logging
-from typing import Awaitable, Callable
 
-from ..core import events
 from .message import Attachment, Audience, Notification, Severity
+from .ports import events
 from .service import dispatch
 
 logger = logging.getLogger(__name__)
 
-#: Built lazily so importing this module never pulls in the report renderer
-#: (and, through it, reportlab) on a deployment that has no channels.
-PdfLoader = Callable[[], Awaitable[bytes]]
-
-_report_pdf_loader: Callable[[events.AnalysisCompleted], PdfLoader] | None = None
-
-
-def set_report_pdf_loader(factory: Callable[[events.AnalysisCompleted], PdfLoader] | None) -> None:
-    """Supply how an analysis report's PDF is produced for a completed run.
-
-    Injected rather than imported so this package does not depend on the
-    analysis domain: notifications know a report *can* be attached, not how
-    one is built. The analysis worker registers this at startup.
-    """
-    global _report_pdf_loader
-    _report_pdf_loader = factory
+#: Attachment kind for an analysis report. The renderer for it is registered
+#: by whoever owns that data — see ``renderers.py``; this package never learns
+#: how a report is built.
+ANALYSIS_REPORT = "analysis_report"
 
 
 async def on_analysis_completed(event: events.AnalysisCompleted) -> None:
-    passed = event.quality_gate == "OK"
     coverage = f"{event.coverage:.0f}%" if event.coverage is not None else "n/a"
-    attachment = None
-    if _report_pdf_loader is not None:
-        attachment = Attachment(
-            filename=f"sonar-{event.commit_sha[:8]}.pdf",
-            media_type="application/pdf",
-            load=_report_pdf_loader(event),
-        )
     await dispatch(Notification(
         title=f"Analysis complete — {event.repo_name} ({event.ref})",
         audience=Audience.project(event.project_id),
-        severity=Severity.SUCCESS if passed else Severity.WARNING,
+        severity=Severity.SUCCESS if event.quality_gate == "OK" else Severity.WARNING,
         fields=(
             ("Quality gate", event.quality_gate),
             ("Issues", f"{event.issues_count} (bugs {event.bugs}, "
                        f"vulnerabilities {event.vulnerabilities}, code smells {event.code_smells})"),
             ("Coverage", coverage),
         ),
-        attachment=attachment,
+        attachment=Attachment(
+            filename=f"sonar-{event.commit_sha[:8]}.pdf",
+            media_type="application/pdf",
+            kind=ANALYSIS_REPORT,
+            params={
+                "analysis_run_id": event.analysis_run_id,
+                "sonar_project_id": event.sonar_project_id,
+            },
+        ),
         context={
             "analysis_run_id": event.analysis_run_id,
             "project_id": event.project_id,

@@ -1,15 +1,14 @@
 """Delivery over the Telegram bot.
 
-This is the only place that knows notifications reach Telegram as HTML, that
-its recipients are chat ids, or that a document is sent differently from a
-message. :mod:`app.modules.telegram.client` remains the protocol adapter —
-how to talk to the Bot API — while this module is the *notification channel*
-built on it.
+The only place that knows notifications reach Telegram as HTML, that its
+recipients are chat ids, or that a document is sent differently from a
+message. ``app.modules.telegram.client`` remains the protocol adapter — how to
+talk to the Bot API — while this is the *notification channel* built on it.
 
-Recipients come from ``TelegramLink`` rows, re-derived per delivery rather
-than cached: a deactivated user, or one whose Project membership was removed,
-must stop receiving that Project's notifications immediately, exactly as they
-would stop being able to open it in the web app.
+Recipients are re-derived per delivery rather than cached: a deactivated user,
+or one whose Project membership was removed, must stop receiving that
+Project's notifications immediately, exactly as they would stop being able to
+open it in the web app.
 """
 
 from __future__ import annotations
@@ -20,14 +19,20 @@ import logging
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ...config import Settings, get_settings
-from ...core import project_access
-from ...core.config_store import get_telegram_connection
-from ...dependencies import user_permissions
-from ...models import TelegramLink, User
-from ...modules.telegram.auth import linked_user
-from ...modules.telegram.client import TelegramClient, TelegramError, escape_html
 from ..message import Notification, Severity
+from ..ports import (
+    Settings,
+    TelegramClient,
+    TelegramError,
+    TelegramLink,
+    User,
+    escape_html,
+    get_settings,
+    get_telegram_connection,
+    linked_user,
+    project_access,
+    user_permissions,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -76,8 +81,7 @@ class TelegramChannel:
         live ``<a href>`` links, so an unescaped Project name is both a
         breakage and an injection vector."""
         icon = _SEVERITY_ICON.get(notification.severity, "")
-        head = f"{icon} <b>{escape_html(notification.title)}</b>".strip()
-        lines = [head]
+        lines = [f"{icon} <b>{escape_html(notification.title)}</b>".strip()]
         if notification.body:
             lines.append(escape_html(notification.body))
         lines.extend(
@@ -86,18 +90,6 @@ class TelegramChannel:
         return "\n".join(lines)
 
     # -- recipients ---------------------------------------------------------
-
-    async def _recipients(self, session: AsyncSession, notification: Notification) -> list[int]:
-        audience = notification.audience
-        chat_ids: list[int] = []
-        for link in (await session.execute(select(TelegramLink))).scalars().all():
-            user = await linked_user(session, link.chat_id)
-            if user is None:
-                continue
-            if await self._wants(session, user, notification):
-                chat_ids.append(link.chat_id)
-        del audience
-        return chat_ids
 
     async def _wants(self, session: AsyncSession, user: User, notification: Notification) -> bool:
         audience = notification.audience
@@ -109,9 +101,21 @@ class TelegramChannel:
             )
         return False
 
+    async def _recipients(self, session: AsyncSession, notification: Notification) -> list[int]:
+        chat_ids: list[int] = []
+        for link in (await session.execute(select(TelegramLink))).scalars().all():
+            user = await linked_user(session, link.chat_id)
+            if user is None:
+                continue
+            if await self._wants(session, user, notification):
+                chat_ids.append(link.chat_id)
+        return chat_ids
+
     # -- delivery -----------------------------------------------------------
 
-    async def deliver(self, session: AsyncSession, notification: Notification) -> int:
+    async def deliver(
+        self, session: AsyncSession, notification: Notification, attachment: bytes | None = None,
+    ) -> int:
         client = await self._client(session)
         if client is None:
             return 0
@@ -121,21 +125,16 @@ class TelegramChannel:
             return 0
 
         text = self.render(notification)
-        attachment = notification.attachment
-        payload = await attachment.load() if attachment is not None else None
-
+        filename = notification.attachment.filename if notification.attachment else "report.pdf"
         semaphore = asyncio.Semaphore(_MAX_CONCURRENT_SENDS)
-        delivered = 0
 
         async def _send(chat_id: int) -> bool:
             async with semaphore:
                 try:
-                    if payload is None:
+                    if attachment is None:
                         await client.send_message(chat_id, text)
                     else:
-                        await client.send_document(
-                            chat_id, payload, attachment.filename, caption=text,
-                        )
+                        await client.send_document(chat_id, attachment, filename, caption=text)
                     return True
                 except TelegramError:
                     logger.warning("Telegram delivery failed for chat %s", chat_id, exc_info=True)
@@ -144,10 +143,10 @@ class TelegramChannel:
         try:
             async with asyncio.timeout(_FANOUT_TIMEOUT):
                 results = await asyncio.gather(*(_send(chat_id) for chat_id in chat_ids))
-            delivered = sum(1 for ok in results if ok)
+            return sum(1 for ok in results if ok)
         except TimeoutError:
             logger.warning(
                 "Telegram fan-out to %d recipient(s) timed out after %.0fs",
                 len(chat_ids), _FANOUT_TIMEOUT,
             )
-        return delivered
+            return 0

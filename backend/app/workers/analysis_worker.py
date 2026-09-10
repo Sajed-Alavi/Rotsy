@@ -332,28 +332,25 @@ async def _mark_failed(factory, run_id: int, error: str) -> None:
             await session.commit()
 
 
-def _report_pdf_loader(event: events.AnalysisCompleted):
-    """How the notifications app obtains an analysis report's PDF.
+async def render_analysis_report(params: dict) -> bytes:
+    """Render an analysis report as a PDF, for the notifications package.
 
-    Registered rather than imported by that package: notifications know a
-    report *can* be attached, not how one is built, so the dependency points
-    this way — analysis -> notifications — and never back.
+    Registered with that package rather than imported by it: notifications
+    know a report *can* be attached, not how one is built, so the dependency
+    points this way — analysis -> notifications — and never back.
 
-    Returns a callable, so the render (an unbounded query over every issue and
-    hotspot, then a multi-page document) only runs if a configured channel
-    actually has a recipient for it.
+    Only called once a configured channel has resolved a real recipient, which
+    matters because this is an unbounded query over every issue and hotspot
+    followed by a multi-page render.
     """
-    async def _load() -> bytes:
-        from ..services.sonar_report_pdf import build_analysis_report_pdf
+    from ..services.sonar_report_pdf import build_analysis_report_pdf
 
-        factory = get_session_factory()
-        async with factory() as session:
-            run = await session.get(AnalysisRun, event.analysis_run_id)
-            sonar_project = await session.get(SonarProject, event.sonar_project_id)
-            if run is None or sonar_project is None:
-                raise RuntimeError(
-                    f"Analysis run {event.analysis_run_id} is no longer available to render"
-                )
-            return await build_analysis_report_pdf(session, run, sonar_project)
-
-    return _load
+    factory = get_session_factory()
+    async with factory() as session:
+        run = await session.get(AnalysisRun, params["analysis_run_id"])
+        sonar_project = await session.get(SonarProject, params["sonar_project_id"])
+        if run is None or sonar_project is None:
+            raise RuntimeError(
+                f"Analysis run {params.get('analysis_run_id')} is no longer available to render"
+            )
+        return await build_analysis_report_pdf(session, run, sonar_project)

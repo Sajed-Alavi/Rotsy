@@ -4,6 +4,10 @@ How the backend is put together and, more usefully, **why** — the constraints
 that make it this shape rather than another. [`AGENTS.md`](./AGENTS.md) holds
 the load-bearing invariants; this document explains the structure they live in.
 
+`backend/notifications/` sits outside this stack entirely — it depends on the
+app through one file (`ports.py`) and the app depends on it only to call
+`setup()`. See its own section below.
+
 Rotsy is a **modular monolith with background workers**. One deployable, clear
 internal boundaries. Not microservices: the traffic does not warrant them, and
 splitting would trade a solved problem (a function call) for an unsolved one
@@ -18,7 +22,6 @@ splitting would trade a solved problem (a function call) for an unsolved one
         │
         ▼
    services/           Business logic and orchestration. Framework-agnostic.
-   notifications/      A self-contained app (see below).
    modules/            One adapter per external system.
         │
         ▼
@@ -127,20 +130,23 @@ dependency to buy a guarantee nothing currently needs.
 
 ## Notifications — a self-contained app
 
-[`backend/app/notifications/`](backend/app/notifications/) owns *telling
-somebody something happened*, end to end.
+[`backend/notifications/`](backend/notifications/) owns *telling somebody
+something happened*, end to end. It sits beside `app/` rather than inside it,
+so the boundary is visible in the directory listing and not only in imports.
 
 ```
 notifications/
 ├── message.py      Notification, Audience, Attachment, Severity — plain data
 ├── service.py      dispatch across every configured channel
+├── renderers.py    produce attachment bytes, lazily, without knowing how
 ├── channels/       one module per mechanism, behind a Protocol
 │   ├── base.py     NotificationChannel
 │   └── telegram.py
-└── subscribers.py  which events become notifications, and the wording
+├── subscribers.py  which events become notifications, and the wording
+└── ports.py        the ONLY file that imports from `app`
 ```
 
-Three properties make it an application rather than a helper module:
+Four properties make it an application rather than a helper module:
 
 **1. Producers do not depend on it.** A job publishes an event. This package
 subscribes. Adding a channel, rewording a message, or removing a notification
@@ -173,6 +179,26 @@ await dispatch(Notification(
 ```
 
 `dispatch` never raises and returns how many recipients were reached.
+
+**4. One file touches the host.** `ports.py` names everything the package
+needs from the rest of the backend — the event bus, a session factory,
+identity/access lookups, the Telegram client — and nothing else in the folder
+imports `app`. Enforceable:
+
+```bash
+grep -rn "from app\|import app" backend/notifications --include=*.py | grep -v ports.py
+```
+
+That should print nothing. Moving the package elsewhere means rewriting that
+one file. Two choices exist to keep the move cheap: `Attachment` is a
+serialisable *description* (a `kind` plus `params`, resolved through
+`renderers.py`) rather than a closure, so a notification can be rebuilt from a
+JSON message on the far side of a queue; and `subscribers.register()` is the
+single point tying it to an in-process bus.
+
+It runs in-process today, which is right at this size — no extra container, no
+transport to operate, and `dispatch` never raises so a failure stays
+contained.
 
 Adding a channel: implement `NotificationChannel` (`is_configured`,
 `deliver`), register it in `notifications.setup()`. Nothing else changes.

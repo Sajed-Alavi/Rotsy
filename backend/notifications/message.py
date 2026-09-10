@@ -1,5 +1,8 @@
 """What a notification *is*, independent of how it is delivered.
 
+Plain, serialisable data — this service builds these from JSON events sent by
+the API, so nothing here may hold a closure or a live object.
+
 Everything here is plain data with no channel-specific markup. That rule is
 the whole point: the analysis worker used to build strings containing
 ``<b>…</b>`` and call ``html.escape`` on the values it interpolated, because
@@ -12,7 +15,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Awaitable, Callable
 
 
 class Severity(str, Enum):
@@ -27,19 +29,23 @@ class Severity(str, Enum):
 
 @dataclass(frozen=True)
 class Attachment:
-    """A file to deliver alongside the message.
+    """A file to deliver alongside the message, *described* rather than carried.
 
-    ``load`` is a callable rather than the bytes themselves so that producing
-    the payload — for an analysis report that means an unbounded query over
-    every issue and hotspot, then a multi-page render — happens only once
-    there is a real recipient on a channel that can carry it. On a deployment
-    with no notification channel configured, which is the common case, the
-    bytes are never produced at all.
+    ``kind`` names a renderer registered in ``renderers.py``; ``params`` is
+    what that renderer needs. The bytes are produced only once a configured
+    channel has resolved a real recipient — for an analysis report that means
+    an unbounded query over every issue and hotspot plus a multi-page render,
+    and most events reach nobody.
+
+    A description rather than a callable because a notification now crosses a
+    process boundary: it is rebuilt from a JSON event inside this service, so
+    there is no closure from the publisher left to carry over.
     """
 
     filename: str
     media_type: str
-    load: Callable[[], Awaitable[bytes]]
+    kind: str
+    params: dict = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

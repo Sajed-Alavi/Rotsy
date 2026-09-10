@@ -151,6 +151,8 @@ RUN pip install --no-cache-dir --upgrade "pip>=25.0" "setuptools>=78.1.1" wheel 
 
 # Copy application + migration sources.
 COPY app/ ./app/
+# Top-level package beside app/ — see backend/notifications/__init__.py
+COPY notifications/ ./notifications/
 COPY alembic.ini ./
 COPY alembic/ ./alembic/
 COPY entrypoint.sh ./entrypoint.sh

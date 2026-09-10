@@ -18,10 +18,10 @@ from app.core import events
 from app.core.projects import create_project
 from app.db.base import Base
 from app.models import Permission, Role, TelegramLink, User
-from app.notifications import Attachment, Audience, Notification, Severity
-from app.notifications import service as notification_service
-from app.notifications import subscribers
-from app.notifications.channels.telegram import TelegramChannel
+from notifications import Attachment, Audience, Notification, Severity
+from notifications import renderers, service as notification_service
+from notifications import subscribers
+from notifications.channels.telegram import TelegramChannel
 
 
 # --- a recording channel, standing in for a real one -----------------------
@@ -36,14 +36,18 @@ class RecordingChannel:
         self._configured = configured
         self._recipients = recipients
         self.delivered: list[Notification] = []
+        self.attachments: list[bytes | None] = []
         self.configured_checks = 0
 
     async def is_configured(self, session: AsyncSession) -> bool:
         self.configured_checks += 1
         return self._configured
 
-    async def deliver(self, session: AsyncSession, notification: Notification) -> int:
+    async def deliver(
+        self, session: AsyncSession, notification: Notification, attachment: bytes | None = None,
+    ) -> int:
         self.delivered.append(notification)
+        self.attachments.append(attachment)
         return self._recipients
 
 
@@ -53,7 +57,9 @@ class ExplodingChannel:
     async def is_configured(self, session: AsyncSession) -> bool:
         return True
 
-    async def deliver(self, session: AsyncSession, notification: Notification) -> int:
+    async def deliver(
+        self, session: AsyncSession, notification: Notification, attachment: bytes | None = None,
+    ) -> int:
         raise RuntimeError("channel is broken")
 
 
@@ -69,13 +75,13 @@ async def notify_env(monkeypatch):
     monkeypatch.setattr(notification_service, "get_session_factory", lambda: factory)
     notification_service.clear()
     events.clear_subscribers()
-    subscribers.set_report_pdf_loader(None)
+    renderers.clear()
 
     yield factory
 
     notification_service.clear()
     events.clear_subscribers()
-    subscribers.set_report_pdf_loader(None)
+    renderers.clear()
     await engine.dispose()
 
 
@@ -142,22 +148,75 @@ async def test_registering_the_same_channel_name_twice_replaces_it(notify_env):
 # --- attachments are built lazily ------------------------------------------
 
 
-async def test_attachment_is_not_built_when_no_channel_is_configured(notify_env):
+def _report_attachment() -> Attachment:
+    return Attachment(
+        filename="r.pdf", media_type="application/pdf", kind="report", params={"id": 1},
+    )
+
+
+async def test_attachment_is_not_rendered_when_no_channel_is_configured(notify_env):
     """Rendering an analysis report is an unbounded query plus a multi-page
     render. On a deployment with no channel configured — the common case — it
     must never run."""
     calls = []
 
-    async def _load() -> bytes:
-        calls.append(1)
+    async def _render(params) -> bytes:
+        calls.append(params)
         return b"%PDF-"
 
+    renderers.register("report", _render)
     notification_service.register(RecordingChannel(configured=False))
-    await notification_service.dispatch(_notification(
-        attachment=Attachment(filename="r.pdf", media_type="application/pdf", load=_load),
-    ))
+    await notification_service.dispatch(_notification(attachment=_report_attachment()))
 
     assert calls == []
+
+
+async def test_attachment_is_rendered_once_for_configured_channels(notify_env):
+    """Rendered by the dispatcher and shared, not once per channel — two
+    channels must not each pay for the same multi-page report."""
+    calls = []
+
+    async def _render(params) -> bytes:
+        calls.append(params)
+        return b"%PDF-"
+
+    renderers.register("report", _render)
+    first, second = RecordingChannel(), RecordingChannel()
+    second.name = "recording-2"
+    notification_service.register(first)
+    notification_service.register(second)
+
+    await notification_service.dispatch(_notification(attachment=_report_attachment()))
+
+    assert calls == [{"id": 1}]
+    assert first.attachments == [b"%PDF-"]
+    assert second.attachments == [b"%PDF-"]
+
+
+async def test_an_unregistered_attachment_kind_still_sends_the_text(notify_env):
+    """The package never learns how a report is built; with no renderer for
+    the kind it degrades to a text notification rather than losing it."""
+    channel = RecordingChannel()
+    notification_service.register(channel)
+
+    reached = await notification_service.dispatch(_notification(attachment=_report_attachment()))
+
+    assert reached == 1
+    assert channel.attachments == [None]
+
+
+async def test_a_failing_renderer_degrades_to_text(notify_env):
+    async def _broken(params) -> bytes:
+        raise RuntimeError("cannot render")
+
+    renderers.register("report", _broken)
+    channel = RecordingChannel()
+    notification_service.register(channel)
+
+    reached = await notification_service.dispatch(_notification(attachment=_report_attachment()))
+
+    assert reached == 1
+    assert channel.attachments == [None]
 
 
 # --- the event bus ---------------------------------------------------------
@@ -248,9 +307,9 @@ async def test_a_failed_quality_gate_is_a_warning_not_a_success(notify_env):
     assert channel.delivered[0].severity is Severity.WARNING
 
 
-async def test_no_report_is_attached_when_no_loader_is_registered(notify_env):
+async def test_no_report_is_attached_when_no_renderer_is_registered(notify_env):
     """The notifications app knows a report *can* be attached, never how to
-    build one — with no loader supplied it simply sends the summary."""
+    build one — with no renderer supplied it simply sends the summary."""
     channel = RecordingChannel()
     notification_service.register(channel)
     subscribers.register()
@@ -261,7 +320,7 @@ async def test_no_report_is_attached_when_no_loader_is_registered(notify_env):
         bugs=0, vulnerabilities=0, code_smells=0, coverage=None,
     ))
 
-    assert channel.delivered[0].attachment is None
+    assert channel.attachments == [None]
 
 
 # --- the Telegram channel --------------------------------------------------

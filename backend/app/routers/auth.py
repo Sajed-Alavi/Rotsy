@@ -53,27 +53,30 @@ async def login(
 ) -> MeResponse:
     """Authenticate, set access + refresh cookies, return the user profile.
 
-    Rate-limited on two axes before the password is ever hashed: per source
-    address, and per username. Bcrypt makes each attempt expensive for the
-    *server* as much as the attacker, so an unthrottled login is both a
-    guessing oracle and a way for an unauthenticated caller to burn CPU. The
-    per-username bucket exists because a distributed attempt on one account
-    would slip under a per-IP limit entirely.
+    Two guards run before the password is ever hashed. A per-source throttle
+    counts every attempt, so one host cycling through usernames is bounded.
+    A per-account lockout counts consecutive *failures*: five wrong passwords
+    in a row lock that username for 60 seconds from the fifth, and during the
+    lock even the correct password is refused — otherwise a guess that
+    happened to be right would still get through. See core/rate_limit.py.
     """
     ip = rate_limit.client_ip(request)
     await rate_limit.check(state.cache, "login-ip", ip, rate_limit.LOGIN_PER_IP)
-    await rate_limit.check(
-        state.cache, "login-user", body.username[:64], rate_limit.LOGIN_PER_USERNAME,
-    )
+    await rate_limit.assert_not_locked(state.cache, body.username)
 
     user = await session.scalar(select(User).where(User.username == body.username))
     if user is None or not user.is_active or not verify_password(body.password, user.password_hash):
+        locked_for = await rate_limit.record_login_failure(state.cache, body.username)
+        if locked_for:
+            # Tell them on the attempt that caused it, rather than letting the
+            # sixth try be the first sign anything changed.
+            raise rate_limit.lockout_error(locked_for)
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid username or password.")
 
-    # Succeeded — clear the counters so somebody who mistyped a few times is
-    # not still throttled once they get it right.
+    # Succeeded — the failures were not consecutive after all, and the source
+    # throttle should not keep counting a user who got it right.
+    await rate_limit.clear_login_failures(state.cache, body.username)
     await rate_limit.reset(state.cache, "login-ip", ip, rate_limit.LOGIN_PER_IP)
-    await rate_limit.reset(state.cache, "login-user", body.username[:64], rate_limit.LOGIN_PER_USERNAME)
 
     access = create_access_token(settings, user.id)
     refresh = create_refresh_token(settings, user.id)

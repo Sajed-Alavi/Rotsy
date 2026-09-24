@@ -279,10 +279,28 @@ deliveries read "not seen" and both enqueue the same analysis.
 **Rate limiting** (`core/rate_limit.py`) had no equivalent anywhere before.
 It matters most on login: passwords are bcrypt-hashed, so each attempt is
 deliberately expensive *for the server*, which makes an unthrottled login both
-a guessing oracle and a cheap way to burn CPU. Two buckets — per source
-address and per username, because a distributed attempt on one account slips
-under a per-IP limit entirely. Analysis triggering is bounded too, since each
-run clones a repository.
+a guessing oracle and a cheap way to burn CPU. Two guards, both before the
+password is hashed:
+
+- **Per source address** — a throttle counting every attempt (10/min), so one
+  host cycling through usernames is bounded.
+- **Per account** — a lockout counting consecutive *failures*. Five wrong
+  passwords in a row lock that username for 60 seconds, measured from the
+  fifth; a success clears the run. While locked, even the correct password is
+  refused — otherwise a guess that happened to be right would still get
+  through. Unknown usernames lock exactly like real ones, so the lockout
+  cannot be used to discover which accounts exist.
+
+A lockout rather than a fixed-window limit on purpose: the earlier
+per-username window counted *attempts* (a success used one of the five) and
+its "lock" lasted only until the window rolled over — five failures in the
+last second of a window were followed by a fresh window a second later.
+
+Trade-off: a per-account lockout lets someone lock a user out by typing wrong
+passwords for them. The short lock bounds that to an annoyance, and keeping it
+up takes five attempts a minute, which the per-source throttle also sees.
+
+Analysis triggering is bounded too, since each run clones a repository.
 
 The limiter **fails open**: if Redis is unavailable it allows the request. A
 limiter that denies everything when its own store hiccups converts a cache

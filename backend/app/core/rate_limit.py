@@ -46,10 +46,10 @@ class Limit:
 
 
 #: Login is the one endpoint an unauthenticated caller can drive into bcrypt.
-#: Per-IP catches a single host hammering; per-username catches a distributed
-#: attempt at one account, which per-IP alone would miss entirely.
+#: This per-source throttle counts every attempt, so one host cycling through
+#: usernames is bounded even though each username only sees a few tries. The
+#: per-account rule is the lockout below, which counts *failures*.
 LOGIN_PER_IP = Limit(max_attempts=10, window_seconds=60)
-LOGIN_PER_USERNAME = Limit(max_attempts=5, window_seconds=300)
 
 #: Triggering an analysis clones a repository and runs a scanner. It is
 #: authorized, so this is not an abuse control so much as a guard against a
@@ -118,3 +118,116 @@ async def reset(cache: Cache | None, bucket: str, subject: str, limit: Limit) ->
         await cache.redis.delete(f"ratelimit:{bucket}:{subject}:{window}")
     except Exception:  # noqa: BLE001
         logger.debug("Rate-limit reset failed for %s:%s", bucket, subject, exc_info=True)
+
+
+# --- login lockout -----------------------------------------------------------
+#
+# A lockout, not a rate limit, and the difference is the point. The fixed-window
+# per-username limit this replaces counted *attempts* — so a successful login
+# used one of the five — and its "lock" lasted only until the window rolled
+# over: five failures landing in the last second of a window were followed by
+# a fresh window one second later. The lockout duration was an accident of the
+# clock.
+#
+# This counts consecutive *failures* for an account, and on the fifth sets a
+# separate lock key with its own 60-second expiry, measured from that failure.
+# A success clears the count. While the lock exists every attempt is refused —
+# including one with the correct password, which is what makes it a lockout:
+# otherwise a guess that happened to be right would still get through.
+#
+# Keyed on the username as typed, whether or not that account exists. Locking
+# only real accounts would answer "does this username exist?" to anyone
+# willing to type five wrong passwords.
+#
+# Trade-off, stated plainly: per-account lockout lets someone lock a user out
+# by typing wrong passwords for them. Keeping the lock short (60s) bounds that
+# to an annoyance — sustaining it takes five attempts a minute, which the
+# per-source throttle above also sees.
+
+LOCKOUT_THRESHOLD = 5
+LOCKOUT_SECONDS = 60
+#: How long a run of failures is remembered with no new failure. Long enough
+#: that "five in a row" means five in a row, short enough that one typo last
+#: week does not count towards a lock today.
+FAILURE_MEMORY_SECONDS = 15 * 60
+
+
+def _failure_key(username: str) -> str:
+    return f"login-fail:{username[:64]}"
+
+
+def _lock_key(username: str) -> str:
+    return f"login-lock:{username[:64]}"
+
+
+def lockout_error(seconds: int) -> HTTPException:
+    """The 429 returned when an attempt triggers or meets a lockout."""
+    return HTTPException(
+        status.HTTP_429_TOO_MANY_REQUESTS,
+        f"Too many failed login attempts. Try again in {seconds} seconds.",
+        headers={"Retry-After": str(seconds)},
+    )
+
+
+async def lockout_remaining(cache: Cache | None, username: str) -> int:
+    """Seconds left on ``username``'s lock, or 0 if it is not locked.
+
+    Fails open like the rest of this module: with Redis unavailable nobody is
+    locked out, rather than everybody.
+    """
+    if cache is None or cache.redis is None:
+        return 0
+    try:
+        ttl = await cache.redis.ttl(_lock_key(username))
+    except Exception:  # noqa: BLE001
+        logger.warning("Lockout check failed for %r — allowing the attempt", username[:64], exc_info=True)
+        return 0
+    # Redis answers -2 for a missing key and -1 for one with no expiry; the
+    # latter should never exist here, and must not become a permanent lock.
+    return int(ttl) if ttl and ttl > 0 else 0
+
+
+async def assert_not_locked(cache: Cache | None, username: str) -> None:
+    """Raise 429 if ``username`` is currently locked out."""
+    remaining = await lockout_remaining(cache, username)
+    if remaining:
+        raise lockout_error(remaining)
+
+
+async def record_login_failure(cache: Cache | None, username: str) -> int:
+    """Count one failed attempt. On reaching the threshold, lock the account
+    for :data:`LOCKOUT_SECONDS` and return that duration; otherwise return 0.
+
+    The failure count is cleared when the lock is set, so once the lock expires
+    the user has a full five attempts again rather than being re-locked by the
+    next single mistake.
+    """
+    if cache is None or cache.redis is None:
+        return 0
+    redis = cache.redis
+    try:
+        failures = await redis.incr(_failure_key(username))
+        # Refreshed on every failure: the memory is "since the last failure",
+        # so a slow, steady run of wrong guesses still accumulates.
+        await redis.expire(_failure_key(username), FAILURE_MEMORY_SECONDS)
+        if failures >= LOCKOUT_THRESHOLD:
+            await redis.set(_lock_key(username), "1", ex=LOCKOUT_SECONDS)
+            await redis.delete(_failure_key(username))
+            logger.warning(
+                "Locked login for %r for %ds after %d consecutive failures",
+                username[:64], LOCKOUT_SECONDS, failures,
+            )
+            return LOCKOUT_SECONDS
+    except Exception:  # noqa: BLE001
+        logger.warning("Could not record a login failure for %r", username[:64], exc_info=True)
+    return 0
+
+
+async def clear_login_failures(cache: Cache | None, username: str) -> None:
+    """A successful login resets the run — the failures were not consecutive."""
+    if cache is None or cache.redis is None:
+        return
+    try:
+        await cache.redis.delete(_failure_key(username))
+    except Exception:  # noqa: BLE001
+        logger.debug("Could not clear login failures for %r", username[:64], exc_info=True)

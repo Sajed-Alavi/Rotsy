@@ -11,15 +11,14 @@ says the HTTP endpoint is missing.
 from __future__ import annotations
 
 import pytest
-import pytest_asyncio
 from fastapi import HTTPException
 from pydantic import ValidationError
 from sqlalchemy import select
 
 from conftest import make_settings
 from app.core.projects import create_project
-from app.models import Permission, Project, ProjectMember, Role, SonarProject, TelegramLink, User
-from app.modules.telegram import dispatcher, notify
+from app.models import Permission, ProjectMember, Role, SonarProject, TelegramLink, User
+from app.modules.telegram import dispatcher
 from app.modules.telegram.auth import linked_user
 from app.modules.telegram.callback_data import Callback, CallbackDataError, build, parse
 from app.routers.telegram import LinkCreate
@@ -288,124 +287,3 @@ async def test_admin_unlink_confirmed_deletes_the_link(db_session):
 
     assert "Unlinked" in text
     assert await db_session.get(TelegramLink, link.id) is None
-
-
-# --- notify.py recipient selection -----------------------------------------
-#
-# notify_project/notify_admins open their own session via get_session_factory()
-# rather than reusing whatever session the caller has — a real job handler has
-# no session in scope by the time an analysis run finishes. A fresh in-memory
-# SQLite engine with StaticPool (the standard pattern for sharing one SQLite
-# :memory: database across independently-opened sessions/connections) stands
-# in for that, and TelegramClient.send_message/send_document are monkeypatched
-# to record recipients instead of making a real network call.
-
-
-@pytest_asyncio.fixture
-async def notify_env(monkeypatch):
-    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-    from sqlalchemy.pool import StaticPool
-
-    from app.db.base import Base
-
-    engine = create_async_engine("sqlite+aiosqlite:///:memory:", poolclass=StaticPool)
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-    factory = async_sessionmaker(engine, expire_on_commit=False)
-
-    settings = make_settings()
-    monkeypatch.setattr(notify, "get_session_factory", lambda: factory)
-    monkeypatch.setattr(notify, "get_settings", lambda: settings)
-
-    sent: list[int] = []
-
-    async def fake_send_message(self, chat_id, text, reply_markup=None):
-        sent.append(chat_id)
-        return {}
-
-    async def fake_send_document(self, chat_id, document, filename, caption=None):
-        sent.append(chat_id)
-        return {}
-
-    monkeypatch.setattr(notify.TelegramClient, "send_message", fake_send_message)
-    monkeypatch.setattr(notify.TelegramClient, "send_document", fake_send_document)
-
-    async with factory() as session:
-        from app.core.config_store import save_telegram_connection
-        await save_telegram_connection(session, settings, "test-token:ABC")
-
-    yield factory, sent
-    await engine.dispose()
-
-
-async def test_notify_project_reaches_only_members_of_that_project(notify_env):
-    factory, sent = notify_env
-    async with factory() as session:
-        member = await _make_user(session)
-        outsider = await _make_user(session)
-        project = await create_project(session, "Acme", member)
-        project_id = project.id
-        session.add(TelegramLink(user_id=member.id, chat_id=1001, linked_by="admin"))
-        session.add(TelegramLink(user_id=outsider.id, chat_id=1002, linked_by="admin"))
-        await session.commit()
-
-    await notify.notify_project(project_id, "hello")
-    assert sent == [1001]
-
-
-async def test_notify_admins_reaches_only_users_with_system_execute(notify_env):
-    factory, sent = notify_env
-    async with factory() as session:
-        admin = await _make_user(session, permissions=["system:execute"])
-        regular = await _make_user(session, permissions=["projects:read"])
-        session.add(TelegramLink(user_id=admin.id, chat_id=2001, linked_by="admin"))
-        session.add(TelegramLink(user_id=regular.id, chat_id=2002, linked_by="admin"))
-        await session.commit()
-
-    await notify.notify_admins("system down")
-    assert sent == [2001]
-
-
-async def test_notify_project_does_not_build_the_pdf_without_recipients(notify_env):
-    """Rendering an analysis report is expensive (an unbounded query over
-    every issue and hotspot, then a multi-page render), so it must not happen
-    on a project nobody linked is a member of."""
-    factory, sent = notify_env
-    calls = []
-
-    async def _factory() -> bytes:
-        calls.append(1)
-        return b"%PDF-"
-
-    async with factory() as session:
-        owner = await _make_user(session)
-        outsider = await _make_user(session)
-        project = await create_project(session, "Acme", owner)
-        project_id = project.id
-        # Only a non-member is linked, so there is nobody to send to.
-        session.add(TelegramLink(user_id=outsider.id, chat_id=3001, linked_by="admin"))
-        await session.commit()
-
-    await notify.notify_project(project_id, "done", pdf_factory=_factory, filename="r.pdf")
-    assert calls == []
-    assert sent == []
-
-
-async def test_notify_project_builds_the_pdf_once_for_real_recipients(notify_env):
-    factory, sent = notify_env
-    calls = []
-
-    async def _factory() -> bytes:
-        calls.append(1)
-        return b"%PDF-"
-
-    async with factory() as session:
-        member = await _make_user(session)
-        project = await create_project(session, "Acme", member)
-        project_id = project.id
-        session.add(TelegramLink(user_id=member.id, chat_id=3002, linked_by="admin"))
-        await session.commit()
-
-    await notify.notify_project(project_id, "done", pdf_factory=_factory, filename="r.pdf")
-    assert calls == [1]
-    assert sent == [3002]

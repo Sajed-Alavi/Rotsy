@@ -207,6 +207,8 @@ docker compose exec backend alembic upgrade head
 docker compose --profile test run --rm backend-test    # backend test suite
 ```
 
+How the backend is structured and why — layers, jobs, events, the
+notifications app, provider contracts: [`ARCHITECTURE.md`](./ARCHITECTURE.md).
 Repo conventions and load-bearing invariants for anyone (or any agent) changing
 the code: [`AGENTS.md`](./AGENTS.md).
 

@@ -151,6 +151,8 @@ RUN pip install --no-cache-dir --upgrade "pip>=25.0" "setuptools>=78.1.1" wheel 
 
 # Copy application + migration sources.
 COPY app/ ./app/
+# Top-level package beside app/ — see backend/notifications/__init__.py
+COPY notifications/ ./notifications/
 COPY alembic.ini ./
 COPY alembic/ ./alembic/
 COPY entrypoint.sh ./entrypoint.sh
@@ -204,6 +206,7 @@ RUN pip install --no-cache-dir --retries 6 --timeout 120 -r requirements-dev.txt
 # base never copies these — pytest.ini/tests/ have no reason to be in the
 # production image either, so they're only added here, in the test stage.
 COPY pytest.ini ./
+COPY ruff.toml ./
 COPY tests/ ./tests/
 RUN chown -R app:app /app/tests
 USER app

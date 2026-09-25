@@ -86,6 +86,16 @@ services:
       # rebuilds/recreates like scanner-cache, since these are operator-facing
       # archives, not disposable cache.
       - backup-data:/app/backups
+    # Liveness only — deliberately not readiness. This decides whether the
+    # container gets restarted, and restarting the backend because Postgres
+    # blipped turns a recoverable dependency outage into a restart loop. See
+    # app/routers/health.py.
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:${BACKEND_PORT:-8000}/api/health/live || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 40s
     # Lets the container reach services on the Docker host: the Nexus REST API
     # (:8081) and every Docker connector port discovery finds, whatever they are.
     extra_hosts:

@@ -9,3 +9,8 @@ aiosqlite==0.22.1
 # Dependency CVE audit. Run after any change to requirements.txt:
 #   pip-audit -r requirements.txt
 pip-audit==2.10.1
+
+# Linting. Config in ruff.toml — a narrow, defect-focused rule set rather than
+# a style sweep. Run before committing:
+#   ruff check .
+ruff==0.14.2

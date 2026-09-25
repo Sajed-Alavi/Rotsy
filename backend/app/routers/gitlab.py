@@ -568,11 +568,22 @@ async def bulk_map_repositories(
 async def _already_seen(cache, key: str, ttl: int) -> bool:
     """True if ``key`` was already recorded (a duplicate analysis trigger);
     otherwise records it and returns False. GitLab, like GitHub, does not
-    guarantee exactly-once delivery."""
-    if await cache.get_json(key):
-        return True
-    await cache.set_json(key, True, ttl=ttl)
-    return False
+    guarantee exactly-once delivery.
+
+    Claimed with SET NX — a single atomic round trip — rather than a read
+    followed by a write. Two deliveries of the same push arriving together
+    (a retry racing the original, which is exactly when duplicates happen)
+    could both read "not seen" and both enqueue the same analysis.
+    """
+    redis = getattr(cache, "redis", None)
+    if redis is None:
+        return False
+    try:
+        claimed = await redis.set(key, "1", nx=True, ex=ttl)
+    except Exception:  # noqa: BLE001 - a dedupe failure must not drop a real push
+        logger.warning("Duplicate-delivery check failed for %s — processing anyway", key, exc_info=True)
+        return False
+    return not claimed
 
 
 async def _resolve_analyzable_repo(session: AsyncSession, repo: GitLabRepository, event) -> str | None:

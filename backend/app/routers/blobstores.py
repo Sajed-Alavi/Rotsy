@@ -21,7 +21,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
 from ..dependencies import RequirePermission
-from ..state import app_state, require_nexus
+from ..state import require_nexus
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +48,7 @@ async def list_blobstores(request: Request) -> list[dict[str, Any]]:
         resp.raise_for_status()
     except Exception as exc:  # noqa: BLE001
         logger.warning("list blobstores failed: %s", exc)
-        raise HTTPException(status.HTTP_502_BAD_GATEWAY, _explain_nexus_error(exc))
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, _explain_nexus_error(exc)) from exc
     stores = resp.json() or []
 
     # Enrich with quota status (free/used) when available. Best-effort — a
@@ -92,7 +92,7 @@ async def create_file_blobstore(request: Request, body: FileBlobstoreCreate) -> 
     try:
         resp = await nexus.client.post("/service/rest/v1/blobstores/file", json=payload)
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status.HTTP_502_BAD_GATEWAY, _explain_nexus_error(exc))
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, _explain_nexus_error(exc)) from exc
     return _handle_create_response(resp, body.name)
 
 
@@ -145,7 +145,7 @@ async def create_s3_blobstore(request: Request, body: S3BlobstoreCreate) -> dict
     try:
         resp = await nexus.client.post("/service/rest/v1/blobstores/s3", json=payload)
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status.HTTP_502_BAD_GATEWAY, _explain_nexus_error(exc))
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, _explain_nexus_error(exc)) from exc
     return _handle_create_response(resp, body.name)
 
 
@@ -160,7 +160,7 @@ async def delete_blobstore(request: Request, name: str):
     try:
         resp = await nexus.client.delete(f"/service/rest/v1/blobstores/{name}")
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status.HTTP_502_BAD_GATEWAY, _explain_nexus_error(exc))
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, _explain_nexus_error(exc)) from exc
     if resp.status_code in (200, 204):
         return
     if resp.status_code == 404:

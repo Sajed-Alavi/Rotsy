@@ -26,7 +26,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..config import Settings
 from ..core import projects as projects_core
 from ..core.config_store import (
-    get_github_app_config,
     get_sonar_connection,
     get_sonar_last_success,
     record_sonar_success,
@@ -34,17 +33,14 @@ from ..core.config_store import (
     sonar_connection_masked,
 )
 from ..core.jobs import JobQueue
-from ..core.source_provider import RepoRef
-from ..db.session import get_session_factory
+from ..services import analysis as analysis_service
 from ..core.project_access import assert_project_access, require_project_access
 from ..dependencies import RequirePermission, get_current_user, get_session, get_settings
 from ..models import (
-    AnalysisRun, GitHubInstallation, GitHubRepository, GitLabRepository, Project, QualityGateResult,
+    AnalysisRun, GitHubRepository, GitLabRepository, Project, QualityGateResult,
     SonarHotspot, SonarIssue, SonarProject, User,
 )
 from ..models.sonar import SUPPORTED_LANGUAGES
-from ..modules.github.provider import GitHubProvider
-from ..modules.gitlab.provider import GitLabProvider
 from ..modules.sonar.connector import SonarClient, SonarError
 from ..modules.sonar.provisioning import (
     QUALITY_GATE_PRESETS,
@@ -785,59 +781,20 @@ async def run_repository_analysis(
     session: Annotated[AsyncSession, Depends(get_session)],
     settings: Annotated[Settings, Depends(get_settings)],
     state: Annotated[AppState, Depends(app_state)],
+    user: Annotated[User, Depends(get_current_user)],
     ref: str | None = None,
 ) -> dict:
     """Trigger analysis on demand for one repository — for troubleshooting,
-    validating a new connection, or (via ``ref``) checking a branch other
-    than the default without waiting for a push. Looks up the current HEAD
-    of the branch, and enqueues the exact same ``clone_and_analyze`` job a
-    push or an automatic on-connect run would.
+    validating a new connection, or (via ``ref``) checking a branch other than
+    the default without waiting for a push.
+
+    The Project this repository belongs to comes from the ``SonarProject`` row
+    rather than the URL, so ``require_project_access`` cannot be declared here;
+    the membership check lives with the operation in the service instead.
     """
-    sonar_project = await session.get(SonarProject, sonar_project_id)
-    if sonar_project is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, _SONAR_PROJECT_NOT_FOUND)
-    if state.cache is None:
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Job queue is not available")
-
-    source_module, provider, credential_ref, repo_ref, repo_ids = await _resolve_repo(session, settings, state, sonar_project)
-    branch = ref or repo_ref.default_branch
-
-    try:
-        sha = await provider.get_latest_commit_sha(credential_ref, repo_ref, branch)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("Failed to resolve latest commit for manual analysis on sonar project %s: %s",
-                        sonar_project_id, exc)
-        # Every provider call already raises a specific, actionable error
-        # (GitHubProviderError/GitHubAuthError/GitLabProviderError — "App not
-        # configured", "401 Bad credentials", "branch not found", ...).
-        # Replacing it with one generic "verify the connection" sentence
-        # threw away exactly the detail needed to fix it. Fall back to the
-        # generic message only for an exception with no useful text of its
-        # own (e.g. a bare httpx.ConnectTimeout).
-        detail = str(exc).strip() or (
-            f"Unable to reach {source_module.title()} to find the latest commit on {branch!r}. "
-            "Verify the connection."
-        )
-        raise HTTPException(status.HTTP_502_BAD_GATEWAY, detail) from exc
-
-    queue = JobQueue(state.cache)
-    job_id = await queue.enqueue(
-        "clone_and_analyze",
-        {
-            "project_id": sonar_project.project_id,
-            "source_module": source_module,
-            "credential_ref": credential_ref,
-            "repo_external_id": repo_ref.external_id,
-            "repo_name": repo_ref.name,
-            "default_branch": repo_ref.default_branch,
-            "ref": branch,
-            "sha": sha,
-            "trigger": "manual",
-            "github_repository_id": repo_ids[0],
-            "gitlab_repository_id": repo_ids[1],
-        },
+    return await analysis_service.run_repository_analysis(
+        session, settings, state, user, sonar_project_id, ref,
     )
-    return {"job_id": job_id, "commit_sha": sha, "ref": branch}
 
 
 @router.post("/projects/{project_id}/run-analysis", status_code=status.HTTP_202_ACCEPTED,
@@ -962,7 +919,7 @@ async def analyze_repository(
     github_repository_id = body.repository_id if body.source_module == "github" else None
     gitlab_repository_id = body.repository_id if body.source_module == "gitlab" else None
 
-    source_module, provider, credential_ref, repo_ref, repo_ids, project_id = await _resolve_repo_by_ids(
+    source_module, provider, credential_ref, repo_ref, repo_ids, project_id = await analysis_service.resolve_repo_by_ids(
         session, settings, state, github_repository_id, gitlab_repository_id,
     )
     if project_id is None:
@@ -1002,57 +959,3 @@ async def analyze_repository(
     return {"job_id": job_id, "commit_sha": sha, "ref": branch, "sonar_project_id": sonar_project.id}
 
 
-async def _resolve_repo(session: AsyncSession, settings: Settings, state: AppState, sonar_project: SonarProject):
-    """Provider/credential/RepoRef for whichever repository a SonarProject
-    belongs to, plus its (github_repository_id, gitlab_repository_id) pair
-    for re-threading into the job payload."""
-    (source_module, provider, credential_ref, repo_ref, repo_ids, _project_id) = await _resolve_repo_by_ids(
-        session, settings, state, sonar_project.github_repository_id, sonar_project.gitlab_repository_id,
-    )
-    return source_module, provider, credential_ref, repo_ref, repo_ids
-
-
-async def _resolve_repo_by_ids(
-    session: AsyncSession, settings: Settings, state: AppState,
-    github_repository_id: int | None, gitlab_repository_id: int | None,
-):
-    """Lower-level version of :func:`_resolve_repo`, identified directly by
-    a (github_repository_id, gitlab_repository_id) pair rather than an
-    existing ``SonarProject`` — what ``/analyze`` uses, since a repository
-    picked from the global Code Quality section may not have a
-    ``SonarProject`` yet. Also returns the repository's ``project_id`` (the
-    Rotsy Project it's mapped to), needed to provision one.
-    """
-    if github_repository_id:
-        github_repo = await session.get(GitHubRepository, github_repository_id)
-        if github_repo is None:
-            raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, "Connected GitHub repository is missing")
-        # installation_id is NULL for a repo connected by URL (public, no App
-        # installation — see connect_public_repository) — expected, not an
-        # error; credential_ref="" tells GitHubProvider to act anonymously.
-        installation = (
-            await session.get(GitHubInstallation, github_repo.installation_id)
-            if github_repo.installation_id else None
-        )
-        if github_repo.installation_id and installation is None:
-            raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, "GitHub installation for this repository is missing")
-        if state.cache is None:
-            raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Cache not initialised")
-        github_app_config = await get_github_app_config(session, settings)
-        provider = GitHubProvider(github_app_config, state.cache)
-        repo_ref = RepoRef(external_id=github_repo.full_name, name=github_repo.full_name.rsplit("/", 1)[-1],
-                            default_branch=github_repo.default_branch, private=installation is not None)
-        credential_ref = str(installation.installation_id) if installation else ""
-        return "github", provider, credential_ref, repo_ref, (github_repo.id, None), github_repo.project_id
-
-    if gitlab_repository_id:
-        gitlab_repo = await session.get(GitLabRepository, gitlab_repository_id)
-        if gitlab_repo is None:
-            raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, "Connected GitLab repository is missing")
-        provider = GitLabProvider(get_session_factory())
-        repo_ref = RepoRef(external_id=gitlab_repo.full_path, name=gitlab_repo.full_path.rsplit("/", 1)[-1],
-                            default_branch=gitlab_repo.default_branch, private=True)
-        return "gitlab", provider, str(gitlab_repo.id), repo_ref, (None, gitlab_repo.id), gitlab_repo.project_id
-
-    raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR,
-                         "Repository is missing both a GitHub and GitLab id")

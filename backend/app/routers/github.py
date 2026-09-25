@@ -695,11 +695,22 @@ async def _already_seen(cache: Cache, key: str, ttl: int) -> bool:
     """True if ``key`` was already recorded (a duplicate delivery/analysis);
     otherwise records it and returns False. Shared idempotency check —
     GitHub's at-least-once delivery (plus a possible retry after our 202 but
-    before the sender sees it) can otherwise double-process the same event."""
-    if await cache.get_json(key):
-        return True
-    await cache.set_json(key, True, ttl=ttl)
-    return False
+    before the sender sees it) can otherwise double-process the same event.
+
+    Claimed with SET NX — one atomic round trip — rather than a read then a
+    write: a retry arriving alongside the original (precisely when duplicates
+    occur) could otherwise have both deliveries read "not seen" and both
+    enqueue the same analysis.
+    """
+    redis = getattr(cache, "redis", None)
+    if redis is None:
+        return False
+    try:
+        claimed = await redis.set(key, "1", nx=True, ex=ttl)
+    except Exception:  # noqa: BLE001 - a dedupe failure must not drop a real delivery
+        logger.warning("Duplicate-delivery check failed for %s — processing anyway", key, exc_info=True)
+        return False
+    return not claimed
 
 
 async def _resolve_analyzable_repo(

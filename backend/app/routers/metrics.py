@@ -100,7 +100,7 @@ async def health_checks(request: Request) -> dict[str, Any]:
         raw = resp.json() or {}
     except Exception as exc:  # noqa: BLE001
         logger.warning("health check fetch failed: %s", exc)
-        raise HTTPException(status.HTTP_502_BAD_GATEWAY, "Failed to read Nexus health checks")
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, "Failed to read Nexus health checks") from exc
 
     # Keywords that map a probe to a category.
     CRITICAL_KEYWORDS = ("blob", "cpu", "scheduler", "deadlock", "node", "upgrade", "h2", "limit")
@@ -141,7 +141,7 @@ async def blobstore_stats(request: Request) -> list[dict[str, Any]]:
         resp.raise_for_status()
     except Exception as exc:  # noqa: BLE001
         logger.warning("blobstore stats fetch failed: %s", exc)
-        raise HTTPException(status.HTTP_502_BAD_GATEWAY, "Failed to read blobstore stats")
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, "Failed to read blobstore stats") from exc
     out = []
     for b in resp.json() or []:
         total = int(b.get("totalSizeInBytes") or 0)

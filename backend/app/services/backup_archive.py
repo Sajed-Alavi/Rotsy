@@ -158,7 +158,7 @@ async def _download_asset(
             finally:
                 await asyncio.to_thread(f.close)
         except PermissionError as exc:
-            raise _permission_error(output_dir, exc)
+            raise _permission_error(output_dir, exc) from exc
         return size
     finally:
         await upstream.aclose()
@@ -181,7 +181,7 @@ def _prepare_archive_target(
         run_dir.mkdir(parents=True, exist_ok=True)
         return run_dir, None, None, None
     except PermissionError as exc:
-        raise _permission_error(output_dir, exc)
+        raise _permission_error(output_dir, exc) from exc
 
 
 async def _backup_repo_assets(
@@ -291,7 +291,7 @@ async def create_archive(
     try:
         output_dir.mkdir(parents=True, exist_ok=True)
     except PermissionError as exc:
-        raise _permission_error(output_dir, exc)
+        raise _permission_error(output_dir, exc) from exc
     _ensure_disk_space(output_dir, min_free_bytes)
 
     run_id = _new_run_id()

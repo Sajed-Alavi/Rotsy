@@ -35,8 +35,9 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from . import __version__
 from .config import Settings, get_settings
+from .core import correlation
 from .core.cache import Cache
-from .core.jobs import JobRunner
+from .core.jobs import JobPolicy, JobRunner
 from .modules.nexus.connector import NexusClient
 from .db.session import get_session_factory
 from .routers import (
@@ -529,8 +530,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
     logging.basicConfig(
         level=getattr(logging, settings.LOG_LEVEL.upper(), logging.INFO),
-        format="%(asctime)s %(levelname)s %(name)s :: %(message)s",
+        format="%(asctime)s %(levelname)s %(name)s [%(correlation_id)s] :: %(message)s",
     )
+    # Must come after basicConfig created the handler, and before anything
+    # logs: the format above references correlation_id, which only exists on a
+    # record once this filter has run.
+    correlation.install()
     logger = logging.getLogger("nexus_wrapper")
 
     nexus = NexusClient(settings)
@@ -571,7 +576,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Start the job runner + register handlers.
     runner = JobRunner(cache)
     from .services import job_handlers
-    runner.register("collect_metrics", job_handlers.handle_collect_metrics)
     runner.register("analyze_repo", job_handlers.handle_analyze_repo)
     runner.register("run_retention", job_handlers.handle_run_retention)
     runner.register("backup", job_handlers.handle_backup)
@@ -579,12 +583,44 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     runner.register("run_scheduled_backup", job_handlers.handle_run_scheduled_backup)
     runner.register("sync", job_handlers.handle_sync)
     runner.register("scan_image", job_handlers.handle_scan_image)
-    runner.register("scanner_db_update", job_handlers.handle_scanner_db_update)
     runner.register("scanner_db_import", job_handlers.handle_scanner_db_import)
+
+    # Retries are opt-in per type, because repeating work is only safe when
+    # the work is idempotent (see core/jobs.JobPolicy). These two are: a
+    # database refresh re-downloads to the same place, and a metric snapshot
+    # re-reads the same counters. Deliberately NOT applied to backups or
+    # analysis — a retried archive job produces a second archive, and a
+    # failing analysis almost always fails deterministically, so retrying it
+    # just pays for another clone to reach the same error.
+    runner.register(
+        "scanner_db_update", job_handlers.handle_scanner_db_update,
+        JobPolicy(max_retries=2, retry_delay=30.0),
+    )
+    runner.register(
+        "collect_metrics", job_handlers.handle_collect_metrics,
+        JobPolicy(max_retries=1, retry_delay=10.0, timeout=900.0),
+    )
     from .workers.analysis_worker import handle_clone_and_analyze
     runner.register("clone_and_analyze", handle_clone_and_analyze)
     from .workers.provisioning_worker import handle_provision_repository
     runner.register("provision_repository", handle_provision_repository)
+
+    # Notifications: register the delivery channels and subscribe them to the
+    # domain events jobs publish. Nothing here starts a task or holds a
+    # connection — jobs stay unaware of who is listening (see
+    # app/notifications/__init__.py).
+    # `notifications` is a top-level package beside `app`, not inside it — see
+    # backend/notifications/__init__.py. The app registers what it owns (how a
+    # report is rendered) and the package handles the rest.
+    import notifications
+    from notifications import renderers as notification_renderers
+    from notifications.subscribers import ANALYSIS_REPORT
+    from .workers.analysis_worker import render_analysis_report
+
+    notifications.setup()
+    notification_renderers.register(ANALYSIS_REPORT, render_analysis_report)
+    logger.info("Notification channels registered: %s", ", ".join(notifications.registered()) or "none")
+
     runner.start()
     app.state.runner = runner
 
@@ -679,6 +715,21 @@ def create_app() -> FastAPI:
         docs_url="/docs",
         redoc_url="/redoc",
     )
+    @app.middleware("http")
+    async def _correlation_id_middleware(request, call_next):
+        """Give every request an id, and echo it back.
+
+        Honours an inbound ``X-Request-ID`` so a caller or reverse proxy can
+        correlate its own logs with Rotsy's rather than each side inventing a
+        different id for the same request.
+        """
+        incoming = request.headers.get(correlation.HEADER_NAME, "").strip()
+        request_id = incoming[:64] or correlation.new_correlation_id()
+        correlation.set_correlation_id(request_id)
+        response = await call_next(request)
+        response.headers[correlation.HEADER_NAME] = request_id
+        return response
+
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins,

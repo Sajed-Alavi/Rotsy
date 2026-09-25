@@ -32,6 +32,7 @@ from typing import Any, Awaitable, Callable
 
 import redis.asyncio as aioredis
 
+from . import correlation
 from .cache import Cache
 
 logger = logging.getLogger(__name__)
@@ -57,6 +58,11 @@ class Job:
     # Structured counterpart to ``message`` for the last progress report:
     # bytes, speed, ETA, stage. Absent for handlers that report prose only.
     detail: dict[str, Any] | None = None
+    # How many times this job has already been retried, and the ceiling from
+    # its type's JobPolicy. Persisted on the job rather than held in the
+    # runner so an attempt survives the process that made it.
+    retry_count: int = 0
+    max_retries: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -70,6 +76,8 @@ class Job:
             "created_at": self.created_at,
             "updated_at": self.updated_at,
             "detail": self.detail,
+            "retry_count": self.retry_count,
+            "max_retries": self.max_retries,
         }
 
 
@@ -78,6 +86,37 @@ class Job:
 # closure in JobRunner._run_one.
 ProgressCallback = Callable[..., Awaitable[None]]
 JobHandler = Callable[[Job, ProgressCallback], Awaitable[dict[str, Any]]]
+
+
+@dataclass(frozen=True)
+class JobPolicy:
+    """Retry and timeout rules for one job type.
+
+    **Both default to off**, and that is deliberate rather than lazy. Retrying
+    is only safe for work that is idempotent: re-running a vulnerability
+    database download costs bandwidth, but re-running an archive job would
+    produce a second archive, and re-running anything that has already had a
+    partial external effect can make things worse. So a type opts in, and the
+    opt-in is where somebody has to think about whether repeating it is safe.
+
+    A blanket timeout is equally wrong as a default — the scanner database
+    download is legitimately allowed 45 minutes (see
+    ``GRYPE_DB_UPDATE_DOWNLOAD_TIMEOUT``), and a default that killed it would
+    turn a working feature into a mystery failure on slow links.
+    """
+
+    #: Re-enqueue attempts after a failure. 0 disables retrying entirely.
+    max_retries: int = 0
+    #: Seconds before the first retry; doubles per attempt, capped at 5 min.
+    retry_delay: float = 5.0
+    #: Wall-clock ceiling for one attempt. ``None`` means no limit.
+    timeout: float | None = None
+
+    def delay_for(self, attempt: int) -> float:
+        return min(300.0, self.retry_delay * (2 ** min(attempt, 6)))
+
+
+DEFAULT_POLICY = JobPolicy()
 
 
 class JobQueue:
@@ -205,6 +244,8 @@ def _unflatten(raw: dict[str, str]) -> Job:
         created_at=float(raw.get("created_at", 0)),
         updated_at=float(raw.get("updated_at", 0)),
         detail=load("detail", None),
+        retry_count=int(raw.get("retry_count", 0) or 0),
+        max_retries=int(raw.get("max_retries", 0) or 0),
     )
 
 
@@ -220,6 +261,8 @@ class JobRunner:
     def __init__(self, cache: Cache) -> None:
         self._cache = cache
         self._handlers: dict[str, JobHandler] = {}
+        self._policies: dict[str, JobPolicy] = {}
+        self._retry_tasks: set[asyncio.Task] = set()
         self._task: asyncio.Task | None = None
         self._stop = asyncio.Event()
         self._dedicated: aioredis.Redis | None = None
@@ -233,9 +276,41 @@ class JobRunner:
         # await point rather than waiting on a polling interval.
         self._running: dict[str, asyncio.Task] = {}
 
-    def register(self, job_type: str, handler: JobHandler) -> None:
+    def register(self, job_type: str, handler: JobHandler, policy: JobPolicy | None = None) -> None:
         self._handlers[job_type] = handler
-        logger.info("Registered job handler: %s", job_type)
+        if policy is not None:
+            self._policies[job_type] = policy
+        logger.info(
+            "Registered job handler: %s%s", job_type,
+            f" (retries={policy.max_retries}, timeout={policy.timeout})" if policy else "",
+        )
+
+    def policy_for(self, job_type: str) -> JobPolicy:
+        return self._policies.get(job_type, DEFAULT_POLICY)
+
+    def _schedule_retry(self, job_id: str, job_type: str, delay: float) -> None:
+        """Push the job back onto the queue after ``delay``.
+
+        A detached task rather than sleeping inline: this runs on the worker
+        that just failed the job, and blocking it for the backoff would idle
+        the runner instead of letting it pick up other work. The reference is
+        kept so the task is not garbage-collected mid-sleep.
+        """
+        async def _requeue() -> None:
+            try:
+                await asyncio.sleep(delay)
+                r = self._cache.redis
+                if r is None:
+                    return
+                await r.rpush(_QUEUE_KEY, f"{job_id}:{job_type}")
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - a lost retry is recovered by reap_stranded on the next start
+                logger.exception("Failed to re-queue job %s for retry", job_id)
+
+        task = asyncio.create_task(_requeue())
+        self._retry_tasks.add(task)
+        task.add_done_callback(self._retry_tasks.discard)
 
     def start(self) -> None:
         if self._task is not None:
@@ -351,11 +426,20 @@ class JobRunner:
             logger.error("No handler registered for job type %s", job_type)
             return
 
+        # Every log line this handler produces now carries the job id, so a
+        # job's trail can be followed through the worker, the services it
+        # calls and the adapters underneath (see core/correlation.py).
+        correlation.set_correlation_id(f"job-{job_id[:16]}")
         await r.hset(f"job:{job_id}", mapping={"status": "running", "message": "started",
                                                "updated_at": str(time.time())})
         await JobQueue(self._cache).push_event(job_id, {"type": "phase", "message": "started"})
+        policy = self.policy_for(job_type)
         try:
-            result = await handler(job, progress)
+            if policy.timeout is None:
+                result = await handler(job, progress)
+            else:
+                async with asyncio.timeout(policy.timeout):
+                    result = await handler(job, progress)
             await r.hset(
                 f"job:{job_id}",
                 mapping={"status": "done", "progress": "100", "message": "completed",
@@ -383,10 +467,35 @@ class JobRunner:
                 job_id, {"type": "phase", "status": "cancelled", "message": "cancelled by user"},
             )
             raise
-        except Exception as exc:  # noqa: BLE001
+        except (Exception, TimeoutError) as exc:  # noqa: BLE001
+            # A timeout is reported as a failure like any other, but with a
+            # message that says so — "cancelled by user" and "ran out of time"
+            # look identical in the UI otherwise, and only one of them is
+            # something the operator did.
+            detail = (
+                f"timed out after {policy.timeout:.0f}s" if isinstance(exc, TimeoutError)
+                else str(exc)
+            )
+            if job.retry_count < policy.max_retries:
+                attempt = job.retry_count + 1
+                delay = policy.delay_for(job.retry_count)
+                logger.warning("Job %s failed (%s); retry %d/%d in %.0fs",
+                                job_id, detail, attempt, policy.max_retries, delay)
+                await r.hset(f"job:{job_id}", mapping={
+                    "status": "pending", "retry_count": str(attempt),
+                    "message": f"retrying after failure: {detail}",
+                    "updated_at": str(time.time()),
+                })
+                await JobQueue(self._cache).push_event(
+                    job_id, {"type": "phase", "message": f"retry {attempt}/{policy.max_retries}: {detail}"},
+                )
+                # Re-queued on a detached task so the delay does not hold this
+                # worker: the runner is free to pick up other jobs meanwhile.
+                self._schedule_retry(job_id, job_type, delay)
+                return
             logger.exception("Job %s failed", job_id)
             await r.hset(
                 f"job:{job_id}",
-                mapping={"status": "failed", "message": str(exc), "updated_at": str(time.time())},
+                mapping={"status": "failed", "message": detail, "updated_at": str(time.time())},
             )
-            await JobQueue(self._cache).push_event(job_id, {"type": "error", "message": str(exc)})
+            await JobQueue(self._cache).push_event(job_id, {"type": "error", "message": detail})

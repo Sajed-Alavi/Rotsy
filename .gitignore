@@ -81,3 +81,6 @@ docker-compose-gitlab/
 # itself is tracked so the docker-compose bind mount always has a target.
 offline-db/*
 !offline-db/.gitkeep
+
+# Article drafts — kept locally and edited freely, never published with the code.
+ARTICLE_EN.md
